@@ -1,3 +1,4 @@
-from .core import Blockchain, Wallet
+from .config import NodeConfig
+from .service import NodeService, Wallet
 
-__all__ = ["Blockchain", "Wallet"]
+__all__ = ["NodeConfig", "NodeService", "Wallet"]

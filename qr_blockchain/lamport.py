@@ -69,3 +69,9 @@ def verify_signature(message: bytes, signature: list[str], public_key: list[list
             return False
 
     return True
+
+
+def address_from_public_key(public_key: list[list[str]] | tuple[tuple[str, str], ...]) -> str:
+    normalized_public_key = [tuple(row) for row in public_key]
+    serialized = "".join(left + right for left, right in normalized_public_key)
+    return sha256_hex(serialized.encode("ascii"))

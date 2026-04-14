@@ -1,43 +1,74 @@
-# Quantum-Resistant Blockchain Prototype
+# Quantum-Resistant Blockchain Node
 
-This project is a small educational blockchain prototype that uses Lamport one-time signatures to simulate a post-quantum transaction flow.
+This repository is transitioning from an educational demo into a service-oriented node prototype that keeps the quantum-resistant goal central.
 
-## What it includes
+Phase 1 adds:
 
-- UTXO-based transaction model
-- Lamport one-time signature keypairs
-- Wallets that rotate to fresh addresses
-- Simple proof-of-work mining
-- Genesis funding and mining rewards
-- Runnable demo script
+- persistent SQLite-backed chain state
+- structured node configuration
+- a service layer for validation and mining
+- a JSON HTTP node API
+- automated tests around persistence and transaction behavior
 
-## Why Lamport signatures?
+## Quantum-resistant direction
 
-Lamport signatures are hash-based and are widely used as a teaching example for post-quantum cryptography because their security does not rely on factoring or elliptic curves.
+The current signing path still uses Lamport one-time signatures because they are simple, hash-based, and quantum-resistant. For a true production cryptography stack, the next phase should migrate from raw Lamport keys to standardized post-quantum signature families such as XMSS, LMS, or SPHINCS+ with robust key lifecycle management.
 
-This prototype is intentionally simplified:
+This means the repo is now production-shaped rather than fully production-ready.
 
-- It is not production-ready
-- It keeps blockchain state in memory
-- It uses single-input wallet spends for clarity
-- It demonstrates concepts rather than network consensus
+## Architecture
 
-## Run it
+- `qr_blockchain/config.py`: environment-driven node configuration
+- `qr_blockchain/models.py`: transaction and block models
+- `qr_blockchain/storage.py`: SQLite persistence for blocks, pending transactions, and UTXOs
+- `qr_blockchain/service.py`: validation, mining, wallet flow, and mempool rules
+- `qr_blockchain/api.py`: HTTP API for health, summary, balances, UTXOs, genesis, and mining
+- `tests/`: unit tests for config, persistence, and transaction behavior
+
+## Run the node
 
 ```powershell
 python main.py
 ```
 
-## Project layout
+Optional environment variables:
 
-- `main.py` runs a guided demo
-- `qr_blockchain/lamport.py` contains the hash-based signature scheme
-- `qr_blockchain/core.py` contains the blockchain, wallet, block, and transaction logic
+```powershell
+$env:QR_CHAIN_DB_PATH = "data/chain.db"
+$env:QR_CHAIN_DIFFICULTY = "3"
+$env:QR_CHAIN_MINING_REWARD = "30"
+$env:QR_CHAIN_HOST = "127.0.0.1"
+$env:QR_CHAIN_PORT = "8080"
+python main.py
+```
 
-## Expected demo flow
+## API endpoints
 
-1. Alice receives genesis funds.
-2. Alice pays Bob using a Lamport-signed transaction.
-3. A miner confirms the transaction in a block.
-4. Bob spends part of his funds back to Alice using a fresh Lamport key.
-5. Final balances are printed.
+- `GET /health`
+- `GET /chain/summary`
+- `GET /addresses/{address}/balance`
+- `GET /addresses/{address}/utxos`
+- `POST /genesis`
+- `POST /transactions`
+- `POST /mine`
+
+Example genesis request:
+
+```powershell
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8080/genesis -ContentType "application/json" -Body '{"allocations":{"alice-address":120}}'
+```
+
+## Run tests
+
+```powershell
+python -m unittest discover -s tests -v
+```
+
+## What phase 2 should add
+
+- standardized post-quantum signature schemes
+- authenticated peer-to-peer networking
+- deterministic block validation across nodes
+- replay protection and chain reorganization logic
+- secure key management and hardware-backed secrets
+- observability, metrics, and operational hardening
