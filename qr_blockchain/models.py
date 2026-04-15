@@ -41,6 +41,8 @@ class TxInput:
 class Transaction:
     inputs: list[TxInput]
     outputs: list[TxOutput]
+    chain_id: str = "qr-chain-devnet"
+    signature_scheme: str = "hash_lamport_v1"
     timestamp: float = field(default_factory=lambda: round(time.time(), 6))
     fee: int = 0
     tx_id: str = ""
@@ -52,6 +54,8 @@ class Transaction:
                 for tx_input in self.inputs
             ],
             "outputs": [asdict(output) for output in self.outputs],
+            "chain_id": self.chain_id,
+            "signature_scheme": self.signature_scheme,
             "timestamp": self.timestamp,
             "fee": self.fee,
         }
@@ -62,6 +66,8 @@ class Transaction:
             {
                 "inputs": [asdict(tx_input) for tx_input in self.inputs],
                 "outputs": [asdict(output) for output in self.outputs],
+                "chain_id": self.chain_id,
+                "signature_scheme": self.signature_scheme,
                 "timestamp": self.timestamp,
                 "fee": self.fee,
             }
@@ -72,6 +78,8 @@ class Transaction:
             {
                 "inputs": [asdict(tx_input) for tx_input in self.inputs],
                 "outputs": [asdict(output) for output in self.outputs],
+                "chain_id": self.chain_id,
+                "signature_scheme": self.signature_scheme,
                 "timestamp": self.timestamp,
                 "fee": self.fee,
                 "tx_id": self.tx_id,
@@ -86,6 +94,8 @@ class Transaction:
         transaction = Transaction(
             inputs=[TxInput.from_dict(item) for item in data.get("inputs", [])],
             outputs=[TxOutput.from_dict(item) for item in data.get("outputs", [])],
+            chain_id=str(data.get("chain_id", "qr-chain-devnet")),
+            signature_scheme=str(data.get("signature_scheme", "hash_lamport_v1")),
             timestamp=float(data.get("timestamp", round(time.time(), 6))),
             fee=int(data.get("fee", 0)),
             tx_id=str(data.get("tx_id", "")),
@@ -102,6 +112,8 @@ class Block:
     transactions: list[Transaction]
     miner: str
     difficulty: int
+    chain_id: str = "qr-chain-devnet"
+    version: int = 2
     timestamp: float = field(default_factory=lambda: round(time.time(), 6))
     nonce: int = 0
     block_hash: str = ""
@@ -113,6 +125,8 @@ class Block:
             "transactions": [transaction.serialize_with_id() for transaction in self.transactions],
             "miner": self.miner,
             "difficulty": self.difficulty,
+            "chain_id": self.chain_id,
+            "version": self.version,
             "timestamp": self.timestamp,
             "nonce": self.nonce,
         }
@@ -134,7 +148,24 @@ class Block:
             "transactions": [json.loads(transaction.serialize_with_id()) for transaction in self.transactions],
             "miner": self.miner,
             "difficulty": self.difficulty,
+            "chain_id": self.chain_id,
+            "version": self.version,
             "timestamp": self.timestamp,
             "nonce": self.nonce,
             "block_hash": self.block_hash,
         }
+
+    @staticmethod
+    def from_dict(data: dict[str, object]) -> "Block":
+        return Block(
+            index=int(data["index"]),
+            previous_hash=str(data["previous_hash"]),
+            transactions=[Transaction.from_dict(item) for item in data.get("transactions", [])],
+            miner=str(data["miner"]),
+            difficulty=int(data["difficulty"]),
+            chain_id=str(data.get("chain_id", "qr-chain-devnet")),
+            version=int(data.get("version", 2)),
+            timestamp=float(data.get("timestamp", round(time.time(), 6))),
+            nonce=int(data.get("nonce", 0)),
+            block_hash=str(data.get("block_hash", "")),
+        )

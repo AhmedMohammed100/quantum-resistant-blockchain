@@ -45,6 +45,9 @@ class SQLiteChainStore:
                     amount INTEGER NOT NULL,
                     PRIMARY KEY (tx_id, output_index)
                 );
+                CREATE TABLE IF NOT EXISTS peers (
+                    url TEXT PRIMARY KEY
+                );
                 """
             )
 
@@ -60,6 +63,30 @@ class SQLiteChainStore:
             row = connection.execute("SELECT COUNT(*) AS count FROM blocks").fetchone()
             return int(row["count"])
 
+    def block_at_height(self, height: int) -> Block | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT body_json FROM blocks WHERE height = ?",
+                (height,),
+            ).fetchone()
+        if row is None:
+            return None
+        return Block.from_dict(json.loads(row["body_json"]))
+
+    def blocks_from_height(self, start_height: int) -> list[Block]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT body_json FROM blocks WHERE height >= ? ORDER BY height ASC",
+                (start_height,),
+            ).fetchall()
+        return [Block.from_dict(json.loads(row["body_json"])) for row in rows]
+
+    def all_utxos(self) -> dict[tuple[str, int], TxOutput]:
+        return {
+            (tx_id, output_index): output
+            for tx_id, output_index, output in self.list_utxos()
+        }
+
     def pending_transactions(self) -> list[Transaction]:
         with self._connect() as connection:
             rows = connection.execute(
@@ -72,6 +99,16 @@ class SQLiteChainStore:
             connection.execute(
                 "INSERT INTO pending_transactions (tx_id, body_json, created_at) VALUES (?, ?, ?)",
                 (transaction.tx_id, transaction.serialize_with_id(), transaction.timestamp),
+            )
+
+    def remove_pending_transactions(self, transaction_ids: list[str]) -> None:
+        if not transaction_ids:
+            return
+        placeholders = ",".join("?" for _ in transaction_ids)
+        with self._connect() as connection:
+            connection.execute(
+                f"DELETE FROM pending_transactions WHERE tx_id IN ({placeholders})",
+                transaction_ids,
             )
 
     def list_utxos(self, addresses: list[str] | None = None) -> list[tuple[str, int, TxOutput]]:
@@ -120,6 +157,7 @@ class SQLiteChainStore:
                     json.dumps(block.to_dict(), sort_keys=True, separators=(",", ":")),
                 ),
             )
+            included_ids = [transaction.tx_id for transaction in block.transactions if transaction.tx_id]
             for transaction in block.transactions:
                 for tx_input in transaction.inputs:
                     connection.execute(
@@ -131,7 +169,24 @@ class SQLiteChainStore:
                         "INSERT INTO utxos (tx_id, output_index, recipient, amount) VALUES (?, ?, ?, ?)",
                         (transaction.tx_id, output_index, output.recipient, output.amount),
                     )
-            connection.execute("DELETE FROM pending_transactions")
+            if included_ids:
+                placeholders = ",".join("?" for _ in included_ids)
+                connection.execute(
+                    f"DELETE FROM pending_transactions WHERE tx_id IN ({placeholders})",
+                    included_ids,
+                )
+
+    def add_peer(self, url: str) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT OR IGNORE INTO peers (url) VALUES (?)",
+                (url,),
+            )
+
+    def list_peers(self) -> list[str]:
+        with self._connect() as connection:
+            rows = connection.execute("SELECT url FROM peers ORDER BY url ASC").fetchall()
+        return [str(row["url"]) for row in rows]
 
     def summary(self) -> dict[str, object]:
         latest = self.latest_block()

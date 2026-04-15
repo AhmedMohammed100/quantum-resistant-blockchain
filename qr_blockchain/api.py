@@ -3,10 +3,10 @@ from __future__ import annotations
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from .config import NodeConfig
-from .models import Transaction
+from .models import Block, Transaction
 from .service import NodeService
 
 
@@ -14,12 +14,30 @@ class NodeRequestHandler(BaseHTTPRequestHandler):
     service: NodeService
 
     def do_GET(self) -> None:
-        path = urlparse(self.path).path
+        parsed = urlparse(self.path)
+        path = parsed.path
         if path == "/health":
             self._respond(HTTPStatus.OK, {"status": "ok"})
             return
         if path == "/chain/summary":
             self._respond(HTTPStatus.OK, self.service.chain_summary())
+            return
+        if path == "/peers":
+            self._respond(HTTPStatus.OK, {"peers": self.service.list_peers()})
+            return
+        if path == "/blocks":
+            query = parse_qs(parsed.query)
+            start_height = int(query.get("start_height", ["0"])[0])
+            blocks = [block.to_dict() for block in self.service.get_blocks_from_height(start_height)]
+            self._respond(HTTPStatus.OK, {"blocks": blocks})
+            return
+        if path.startswith("/blocks/"):
+            height = int(path.split("/")[2])
+            block = self.service.get_block(height)
+            if block is None:
+                self._respond(HTTPStatus.NOT_FOUND, {"error": "Block not found"})
+                return
+            self._respond(HTTPStatus.OK, block.to_dict())
             return
         if path.startswith("/addresses/") and path.endswith("/balance"):
             address = path.split("/")[2]
@@ -68,6 +86,41 @@ class NodeRequestHandler(BaseHTTPRequestHandler):
                 self._respond(HTTPStatus.BAD_REQUEST, {"error": str(error)})
                 return
             self._respond(HTTPStatus.CREATED, {"height": block.index, "block_hash": block.block_hash, "transaction_count": len(block.transactions)})
+            return
+
+        if path == "/peers":
+            peer_url = str(payload.get("url", ""))
+            if not peer_url:
+                self._respond(HTTPStatus.BAD_REQUEST, {"error": "url is required"})
+                return
+            try:
+                normalized = self.service.register_peer(peer_url)
+            except ValueError as error:
+                self._respond(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+                return
+            self._respond(HTTPStatus.CREATED, {"url": normalized})
+            return
+
+        if path == "/sync":
+            peer_url = str(payload.get("peer_url", ""))
+            try:
+                if peer_url:
+                    imported = self.service.sync_with_peer(peer_url)
+                    self._respond(HTTPStatus.OK, {"peer_url": peer_url, "imported_blocks": imported})
+                else:
+                    self._respond(HTTPStatus.OK, {"results": self.service.sync_with_peers()})
+            except ValueError as error:
+                self._respond(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+            return
+
+        if path == "/blocks":
+            try:
+                block = Block.from_dict(payload)
+                self.service.import_block(block)
+            except ValueError as error:
+                self._respond(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+                return
+            self._respond(HTTPStatus.CREATED, {"height": block.index, "block_hash": block.block_hash})
             return
 
         if path == "/genesis":
