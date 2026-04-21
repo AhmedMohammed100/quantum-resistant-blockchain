@@ -24,16 +24,16 @@ class TxOutput:
 class TxInput:
     prev_tx_id: str
     output_index: int
-    public_key: list[list[str]] = field(default_factory=list)
-    signature: list[str] = field(default_factory=list)
+    public_key: object = field(default_factory=dict)
+    signature: object = field(default_factory=dict)
 
     @staticmethod
     def from_dict(data: dict[str, object]) -> "TxInput":
         return TxInput(
             prev_tx_id=str(data["prev_tx_id"]),
             output_index=int(data["output_index"]),
-            public_key=[[str(value) for value in row] for row in data.get("public_key", [])],
-            signature=[str(value) for value in data.get("signature", [])],
+            public_key=data.get("public_key", {}),
+            signature=data.get("signature", {}),
         )
 
 

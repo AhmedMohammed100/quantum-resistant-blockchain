@@ -17,8 +17,13 @@ class NodeConfigTests(unittest.TestCase):
             "QR_CHAIN_PORT": "9000",
             "QR_CHAIN_ID": "qr-chain-testnet",
             "QR_CHAIN_NODE_ID": "node-7",
+            "QR_CHAIN_ADVERTISED_URL": "http://node-7:9000",
             "QR_CHAIN_PEERS": "http://node-a:8080, http://node-b:8080",
             "QR_CHAIN_MAX_TRANSACTIONS_PER_BLOCK": "77",
+            "QR_CHAIN_DEFAULT_SIGNATURE_PROVIDER": "xmss_merkle_lamport_v1",
+            "QR_CHAIN_WALLET_STATE_DB_PATH": "runtime/wallet_state.db",
+            "QR_CHAIN_AUTH_TIME_SKEW_SECONDS": "120",
+            "QR_CHAIN_PEER_SESSION_TTL_SECONDS": "1800",
         }
         with patch.dict(os.environ, env, clear=False):
             config = NodeConfig.from_env()
@@ -30,8 +35,13 @@ class NodeConfigTests(unittest.TestCase):
         self.assertEqual(config.port, 9000)
         self.assertEqual(config.chain_id, "qr-chain-testnet")
         self.assertEqual(config.node_id, "node-7")
+        self.assertEqual(config.advertised_url, "http://node-7:9000")
         self.assertEqual(config.peers, ("http://node-a:8080", "http://node-b:8080"))
         self.assertEqual(config.max_transactions_per_block, 77)
+        self.assertEqual(config.default_signature_provider, "xmss_merkle_lamport_v1")
+        self.assertEqual(config.wallet_state_db_path.as_posix(), "runtime/wallet_state.db")
+        self.assertEqual(config.auth_time_skew_seconds, 120)
+        self.assertEqual(config.peer_session_ttl_seconds, 1800)
 
 
 if __name__ == "__main__":

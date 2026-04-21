@@ -113,6 +113,34 @@ class NodeRequestHandler(BaseHTTPRequestHandler):
                 self._respond(HTTPStatus.BAD_REQUEST, {"error": str(error)})
             return
 
+        if path == "/peer/handshake":
+            try:
+                response = self.service.accept_peer_handshake(payload.get("auth", {}))
+            except ValueError as error:
+                self._respond(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+                return
+            self._respond(HTTPStatus.OK, response)
+            return
+
+        if path == "/peer/summary":
+            try:
+                response = self.service.authenticated_chain_summary(payload.get("auth", {}))
+            except ValueError as error:
+                self._respond(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+                return
+            self._respond(HTTPStatus.OK, response)
+            return
+
+        if path == "/peer/blocks":
+            start_height = int(payload.get("start_height", 0))
+            try:
+                response = self.service.authenticated_blocks(payload.get("auth", {}), start_height)
+            except ValueError as error:
+                self._respond(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+                return
+            self._respond(HTTPStatus.OK, response)
+            return
+
         if path == "/blocks":
             try:
                 block = Block.from_dict(payload)
