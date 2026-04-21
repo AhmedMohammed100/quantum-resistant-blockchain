@@ -69,6 +69,18 @@ class SignatureProvider(ABC):
     def sign_with_reservation(self, keypair: object, message: bytes, reservation: object) -> tuple[object, object]:
         return self.sign(keypair, message)
 
+    def backend_status(self) -> dict[str, object]:
+        return {
+            "provider_id": self.metadata.provider_id,
+            "scheme_id": self.metadata.scheme_id,
+            "algorithm_family": self.metadata.algorithm_family,
+            "implementation": self.metadata.implementation,
+            "status": self.metadata.status,
+            "supports_signing": self.metadata.supports_signing,
+            "available": self.metadata.supports_signing or self.metadata.status == "available",
+            "notes": self.metadata.notes,
+        }
+
 
 @dataclass
 class XMSSMerkleLamportKeyPair:
@@ -365,6 +377,14 @@ class UnavailableExternalProvider(SignatureProvider):
             f"Provider {self.metadata.provider_id} has no address derivation backend configured yet."
         )
 
+    def backend_status(self) -> dict[str, object]:
+        status = super().backend_status()
+        status["available"] = False
+        status["error"] = (
+            f"Provider {self.metadata.provider_id} is reserved as a migration boundary and has no backend configured yet."
+        )
+        return status
+
 
 class ExternalModuleSignatureProvider(SignatureProvider):
     def __init__(
@@ -419,6 +439,17 @@ class ExternalModuleSignatureProvider(SignatureProvider):
             )
         return function
 
+    def _required_functions(self) -> tuple[str, ...]:
+        return (
+            "generate_keypair",
+            "derive_address",
+            "sign",
+            "verify",
+            "address_from_public_key",
+            "serialize_keypair",
+            "deserialize_keypair",
+        )
+
     def generate_keypair(self) -> object:
         return self._backend_function("generate_keypair")()
 
@@ -467,6 +498,32 @@ class ExternalModuleSignatureProvider(SignatureProvider):
             return result
         return self.sign(keypair, message)
 
+    def backend_status(self) -> dict[str, object]:
+        status = super().backend_status()
+        status["module_path"] = self._module_path()
+        try:
+            backend = self._load_backend()
+            missing = [
+                name
+                for name in self._required_functions()
+                if not callable(getattr(backend, name, None))
+            ]
+            if missing:
+                status["available"] = False
+                status["error"] = (
+                    f"Backend module '{self._module_path()}' is missing required callables: {', '.join(missing)}."
+                )
+                return status
+            status["available"] = True
+            status["backend_module"] = getattr(backend, "__name__", self._module_path())
+            status["supports_stateful_signing"] = callable(getattr(backend, "reserve_signing_material", None))
+            status["supports_reserved_signing"] = callable(getattr(backend, "sign_with_reservation", None))
+            return status
+        except ValueError as error:
+            status["available"] = False
+            status["error"] = str(error)
+            return status
+
 
 PROVIDERS: dict[str, SignatureProvider] = {}
 SCHEME_VERIFIERS: dict[str, SignatureProvider] = {}
@@ -494,6 +551,10 @@ def get_signature_verifier(scheme_id: str) -> SignatureProvider:
 
 def list_signature_providers() -> list[SignatureProviderMetadata]:
     return [provider.metadata for provider in PROVIDERS.values()]
+
+
+def list_signature_provider_statuses() -> list[dict[str, object]]:
+    return [provider.backend_status() for provider in PROVIDERS.values()]
 
 
 def get_signature_suite(identifier: str) -> SignatureProvider:

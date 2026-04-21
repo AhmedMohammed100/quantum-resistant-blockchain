@@ -22,6 +22,9 @@ class NodeRequestHandler(BaseHTTPRequestHandler):
         if path == "/chain/summary":
             self._respond(HTTPStatus.OK, self.service.chain_summary())
             return
+        if path == "/crypto/providers":
+            self._respond(HTTPStatus.OK, self.service.signature_provider_statuses())
+            return
         if path == "/peers":
             self._respond(HTTPStatus.OK, {"peers": self.service.list_peers()})
             return

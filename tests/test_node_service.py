@@ -401,6 +401,17 @@ class NodeServiceTests(unittest.TestCase):
         reloaded = Wallet("Alice", state_db_path=wallet_db)
         self.assertEqual(reloaded._keys[funding].next_index, 2)
 
+    def test_reports_signature_provider_statuses(self) -> None:
+        service, _ = self.make_service()
+
+        status = service.signature_provider_statuses()
+        providers = {item["provider_id"]: item for item in status["providers"]}
+
+        self.assertEqual(status["default_signature_provider"], service.config.default_signature_provider)
+        self.assertIn("xmss_merkle_lamport_v1", providers)
+        self.assertIn("xmss_nist_v1", providers)
+        self.assertIn("module_path", providers["xmss_nist_v1"])
+
 
 if __name__ == "__main__":
     unittest.main()

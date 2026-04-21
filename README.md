@@ -55,6 +55,12 @@ Phase 7 now hardens peer transport:
 - peer requests must target the local advertised URL exactly
 - expired sessions are rejected and replayed nonces still fail closed
 
+Phase 8 now improves external PQ backend readiness:
+
+- the provider registry can report live backend readiness instead of failing only at signing time
+- external adapters expose whether their backend module is installed and whether stateful signing hooks are present
+- the node API can now report provider readiness through `GET /crypto/providers`
+
 ## Quantum-resistant direction
 
 The chain now supports a provider registry with both active and reserved backends:
@@ -131,6 +137,7 @@ python main.py
 
 - `GET /health`
 - `GET /chain/summary`
+- `GET /crypto/providers`
 - `GET /blocks?start_height=0`
 - `GET /blocks/{height}`
 - `GET /peers`

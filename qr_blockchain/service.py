@@ -8,7 +8,7 @@ import time
 
 from .auth import NodeIdentityManager, request_claims_digest, verify_signed_envelope
 from .config import NodeConfig
-from .crypto import get_signature_provider, get_signature_verifier
+from .crypto import get_signature_provider, get_signature_verifier, list_signature_provider_statuses
 from .models import Block, Transaction, TxInput, TxOutput
 from .network import fetch_json, normalize_peer_url, with_path
 from .storage import SQLiteChainStore
@@ -351,6 +351,13 @@ class NodeService:
         summary["advertised_url"] = normalize_peer_url(self.config.advertised_url)
         summary["best_head_hash"] = self.store.best_head_hash()
         return summary
+
+    def signature_provider_statuses(self) -> dict[str, object]:
+        providers = list_signature_provider_statuses()
+        return {
+            "default_signature_provider": self.config.default_signature_provider,
+            "providers": providers,
+        }
 
     def select_inputs(self, addresses: list[str], target_amount: int) -> tuple[list[tuple[str, int, TxOutput]], int]:
         selected: list[tuple[str, int, TxOutput]] = []
