@@ -61,6 +61,14 @@ Phase 8 now improves external PQ backend readiness:
 - external adapters expose whether their backend module is installed and whether stateful signing hooks are present
 - the node API can now report provider readiness through `GET /crypto/providers`
 
+Phase 9 now starts the real XMSS backend integration path:
+
+- `qr_chain_xmss_backend` is now a real adapter package instead of a dead placeholder
+- the default mode is an in-repo software XMSS-compatible backend used to exercise the external-provider seam end to end
+- the package can also switch to an installed external XMSS library module by environment variable
+- provider diagnostics now report which XMSS implementation mode is active
+- external library modules must now satisfy a stricter manifest-and-callable validation contract before they are accepted
+
 ## Quantum-resistant direction
 
 The chain now supports a provider registry with both active and reserved backends:
@@ -73,7 +81,12 @@ The chain now supports a provider registry with both active and reserved backend
 
 The XMSS-style backend is still the default software provider for new wallets. It remains an in-repo reference implementation rather than a standards-audited production library, but the app is now structured so a real external provider can be registered without changing transaction, node, or API contracts.
 
-The `xmss_nist_v1` adapter expects an optional external Python module, configured with `QR_CHAIN_XMSS_BACKEND_MODULE` and defaulting to the in-repo scaffold package `qr_chain_xmss_backend`. That module should expose:
+The `xmss_nist_v1` adapter loads `qr_chain_xmss_backend` by default. That package now supports two modes:
+
+- `QR_CHAIN_XMSS_BACKEND_IMPLEMENTATION=reference` to use the in-repo software backend
+- `QR_CHAIN_XMSS_BACKEND_IMPLEMENTATION=module` plus `QR_CHAIN_XMSS_LIBRARY_MODULE=<module>` to use an installed external XMSS backend
+
+Whichever backend is active should expose:
 
 - `generate_keypair()`
 - `derive_address(keypair)`
@@ -85,7 +98,32 @@ The `xmss_nist_v1` adapter expects an optional external Python module, configure
 - `verify(message, signature, public_key)`
 - `address_from_public_key(public_key)`
 
-The scaffold package is intentionally present but non-functional: it raises precise “not integrated yet” errors until it is wired to a real audited XMSS implementation.
+External library-backed modules should also expose `XMSS_BACKEND_MANIFEST` (or `backend_manifest()`) with:
+
+- `backend_name`
+- `api_version=1`
+- `scheme_id="xmss_nist_v1"`
+- `algorithm_family="xmss"`
+- `implementation_type`
+- `supports_signing=True`
+- `supports_stateful_signing=True`
+- `supports_reserved_signing=True`
+
+The default `qr_chain_xmss_backend` package now exposes a working software backend so the `xmss_nist_v1` adapter path can be exercised end to end. It is still a development bridge, not a standards-audited NIST XMSS implementation.
+
+Inside that package, `reference_backend.py` provides the in-repo bridge backend and `module_backend.py` provides the stricter library-backed loading path for future audited integrations.
+
+The first concrete library-backed target is `qr_chain_xmss_backend.oqs_backend`, which adapts the Open Quantum Safe Python bindings (`oqs` from `liboqs-python`) into this contract. In `module` mode, `module_backend.py` now defaults to that OQS target unless you override `QR_CHAIN_XMSS_LIBRARY_MODULE`.
+
+For the OQS-backed target, you can also set:
+
+- `QR_CHAIN_XMSS_OQS_MECHANISM=XMSS-SHA2_10_256`
+
+That target requires both the Python wrapper and the native `liboqs` shared library to be available. Provider diagnostics now distinguish between:
+
+- missing `oqs` Python package
+- installed `oqs` package but missing native `liboqs` runtime
+- installed runtime but disabled or unsupported XMSS mechanism
 
 The wallet layer now also has a persistent SQLite-backed key-state store for stateful PQ signing. That gives XMSS-style providers a durable place to save leaf/index progress so a restart does not accidentally reuse one-time signing material.
 
@@ -127,6 +165,9 @@ $env:QR_CHAIN_PEERS = "http://127.0.0.1:8081"
 $env:QR_CHAIN_ADVERTISED_URL = "http://127.0.0.1:8080"
 $env:QR_CHAIN_DEFAULT_SIGNATURE_PROVIDER = "xmss_merkle_lamport_v1"
 $env:QR_CHAIN_XMSS_BACKEND_MODULE = "qr_chain_xmss_backend"
+$env:QR_CHAIN_XMSS_BACKEND_IMPLEMENTATION = "reference"
+$env:QR_CHAIN_XMSS_LIBRARY_MODULE = ""
+$env:QR_CHAIN_XMSS_OQS_MECHANISM = "XMSS-SHA2_10_256"
 $env:QR_CHAIN_WALLET_STATE_DB_PATH = "data/wallet_state.db"
 $env:QR_CHAIN_AUTH_TIME_SKEW_SECONDS = "300"
 $env:QR_CHAIN_PEER_SESSION_TTL_SECONDS = "900"

@@ -446,8 +446,11 @@ class ExternalModuleSignatureProvider(SignatureProvider):
             "sign",
             "verify",
             "address_from_public_key",
+            "export_public_key",
             "serialize_keypair",
             "deserialize_keypair",
+            "reserve_signing_material",
+            "sign_with_reservation",
         )
 
     def generate_keypair(self) -> object:
@@ -503,6 +506,11 @@ class ExternalModuleSignatureProvider(SignatureProvider):
         status["module_path"] = self._module_path()
         try:
             backend = self._load_backend()
+            backend_info = getattr(backend, "backend_info", None)
+            if callable(backend_info):
+                info = backend_info()
+                if isinstance(info, dict):
+                    status.update(info)
             missing = [
                 name
                 for name in self._required_functions()
@@ -515,7 +523,7 @@ class ExternalModuleSignatureProvider(SignatureProvider):
                 )
                 return status
             status["available"] = True
-            status["backend_module"] = getattr(backend, "__name__", self._module_path())
+            status.setdefault("backend_module", getattr(backend, "__name__", self._module_path()))
             status["supports_stateful_signing"] = callable(getattr(backend, "reserve_signing_material", None))
             status["supports_reserved_signing"] = callable(getattr(backend, "sign_with_reservation", None))
             return status
