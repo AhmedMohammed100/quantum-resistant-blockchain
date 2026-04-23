@@ -69,6 +69,36 @@ Phase 9 now starts the real XMSS backend integration path:
 - provider diagnostics now report which XMSS implementation mode is active
 - external library modules must now satisfy a stricter manifest-and-callable validation contract before they are accepted
 
+Phase 10 now adds secure wallet custody:
+
+- persisted wallet and node-identity key state is now protected at rest instead of stored as raw serialized JSON
+- the Windows build uses DPAPI by default, binding protected blobs to the local user context
+- protected wallet blobs are also bound to wallet label, address, and provider id so state cannot be trivially swapped between rows
+- legacy plaintext wallet rows are migrated forward into protected storage on load
+- provider diagnostics now also report the active wallet-custody backend
+
+Phase 11 now adds crash-safe signer coordination:
+
+- signing now uses a durable reservation journal instead of only in-memory coordination
+- reservation completion writes the final post-sign key state back to storage for stateful providers like OQS/XMSS
+- stale ambiguous reservations are promoted into a recovery-required state instead of risking signer-state reuse after a crash
+- multi-process workers sharing the same wallet-state database now coordinate through reservation ownership and expiry rules
+
+Phase 12 now hardens mempool policy and peer transport:
+
+- mempool admission now enforces duplicate rejection, pending-capacity limits, minimum fee policy, timestamp sanity, and transaction shape limits
+- the pending transaction store now tracks transaction fee and serialized size for policy enforcement and observability
+- peer RPCs now use explicit framed messages with protocol versioning and message types instead of loose ad hoc JSON bodies
+- framed peer requests and responses carry a canonical frame digest so malformed or cross-type payloads fail closed
+- peer block export is now batch-limited per request
+
+Phase 13 now adds adversarial and invariant testing:
+
+- adversarial tests now cover malformed peer frames, tampered digests, and invalid framed block requests
+- randomized property-style tests now exercise transaction and block roundtrips plus framed peer message roundtrips
+- supply conservation is checked across mined chains as a regression guard
+- signer reservation status counts are now exposed in node diagnostics for operational visibility
+
 ## Quantum-resistant direction
 
 The chain now supports a provider registry with both active and reserved backends:
@@ -129,19 +159,29 @@ The wallet layer now also has a persistent SQLite-backed key-state store for sta
 
 That store now performs atomic signer-state reservations inside SQLite write transactions, so multiple local wallet instances sharing the same state database can coordinate XMSS-style leaf allocation without reusing the same one-time leaf.
 
+On this Windows machine, persisted wallet state is now protected with DPAPI before it is written to SQLite. The database keeps a neutral `__protected__` marker plus an encrypted blob, rather than storing raw serialized key material directly.
+
+The wallet-state store now also keeps a reservation ledger for in-flight signatures. That lets the node distinguish between:
+
+- completed reservations that safely persisted the next signer state
+- expired reservations where state had already advanced and the leaf/use was safely burned
+- ambiguous interrupted reservations that require operator recovery before the key can sign again
+
+The peer transport is still HTTP-based, but it is now stricter than before: peer endpoints speak a versioned `qr-peer-v1` framed protocol rather than relying on unstructured JSON payloads alone.
+
 This means the repo is now production-shaped rather than fully production-ready.
 
 ## Architecture
 
 - `qr_blockchain/config.py`: environment-driven node configuration, chain identity, peers, and default signature provider selection
 - `qr_blockchain/crypto.py`: formal signature-provider interface, provider registry, and current software PQ backends
+- `qr_blockchain/custody.py`: wallet custody backends, including Windows DPAPI protection for stored signer state
 - `qr_blockchain/models.py`: transaction and block models
 - `qr_blockchain/storage.py`: SQLite persistence for blocks, pending transactions, and UTXOs
 - `qr_blockchain/network.py`: simple peer URL normalization and JSON fetch helpers
 - `qr_blockchain/auth.py`: node identity management and signed peer envelopes
-- `qr_blockchain/auth.py`: node identity management, session-bound peer envelopes, and request binding helpers
+- `qr_blockchain/wallet_store.py`: SQLite-backed protected wallet-state persistence and reservation coordination
 - `qr_blockchain/service.py`: validation, mining, block import, wallet flow, mempool rules, and sync
-- `qr_blockchain/storage.py`: canonical head tracking, side-branch storage, and canonical state rebuilds
 - `qr_blockchain/api.py`: HTTP API for health, summary, balances, UTXOs, blocks, peers, genesis, mining, and sync
 - `tests/`: unit tests for config, persistence, and transaction behavior
 
@@ -163,16 +203,56 @@ $env:QR_CHAIN_ID = "qr-chain-devnet"
 $env:QR_CHAIN_NODE_ID = "node-a"
 $env:QR_CHAIN_PEERS = "http://127.0.0.1:8081"
 $env:QR_CHAIN_ADVERTISED_URL = "http://127.0.0.1:8080"
+$env:QR_CHAIN_MAX_TRANSACTIONS_PER_BLOCK = "500"
+$env:QR_CHAIN_MAX_PENDING_TRANSACTIONS = "2000"
+$env:QR_CHAIN_MIN_TRANSACTION_FEE = "1"
+$env:QR_CHAIN_MAX_TRANSACTION_SIZE_BYTES = "16777216"
+$env:QR_CHAIN_MAX_TRANSACTION_INPUTS = "64"
+$env:QR_CHAIN_MAX_TRANSACTION_OUTPUTS = "64"
 $env:QR_CHAIN_DEFAULT_SIGNATURE_PROVIDER = "xmss_merkle_lamport_v1"
 $env:QR_CHAIN_XMSS_BACKEND_MODULE = "qr_chain_xmss_backend"
 $env:QR_CHAIN_XMSS_BACKEND_IMPLEMENTATION = "reference"
 $env:QR_CHAIN_XMSS_LIBRARY_MODULE = ""
 $env:QR_CHAIN_XMSS_OQS_MECHANISM = "XMSS-SHA2_10_256"
 $env:QR_CHAIN_WALLET_STATE_DB_PATH = "data/wallet_state.db"
+$env:QR_CHAIN_WALLET_CUSTODY_MODE = "auto"
+$env:QR_CHAIN_WALLET_CUSTODY_SCOPE = "current_user"
+$env:QR_CHAIN_WALLET_RESERVATION_TTL_SECONDS = "60"
 $env:QR_CHAIN_AUTH_TIME_SKEW_SECONDS = "300"
 $env:QR_CHAIN_PEER_SESSION_TTL_SECONDS = "900"
+$env:QR_CHAIN_PEER_PROTOCOL_VERSION = "qr-peer-v1"
+$env:QR_CHAIN_MAX_PEER_BLOCKS_PER_REQUEST = "128"
 python main.py
 ```
+
+Wallet custody modes:
+
+- `auto`: use Windows DPAPI on Windows, otherwise fall back to plaintext development mode
+- `windows_dpapi`: require Windows DPAPI protection explicitly
+- `plaintext`: explicit insecure development mode only
+
+Wallet custody scopes for `windows_dpapi`:
+
+- `current_user`: only the current Windows user can decrypt stored wallet state
+- `local_machine`: any process with machine-level DPAPI access can decrypt it
+
+Wallet reservation coordination:
+
+- `QR_CHAIN_WALLET_RESERVATION_TTL_SECONDS` controls how long a signing reservation may stay pending before the key is treated as interrupted
+- if a provider had already advanced its state at reservation time, the expired reservation is treated as safely burned
+- if a provider had not yet advanced its state, the key is placed into a recovery-required state to avoid ambiguous reuse after a crash
+
+Mempool policy:
+
+- `QR_CHAIN_MAX_PENDING_TRANSACTIONS` bounds the local mempool size
+- `QR_CHAIN_MIN_TRANSACTION_FEE` sets the minimum relay fee for non-coinbase transactions
+- `QR_CHAIN_MAX_TRANSACTION_SIZE_BYTES` caps serialized transaction size
+- `QR_CHAIN_MAX_TRANSACTION_INPUTS` and `QR_CHAIN_MAX_TRANSACTION_OUTPUTS` bound transaction fan-in and fan-out
+
+Peer framing:
+
+- `QR_CHAIN_PEER_PROTOCOL_VERSION` selects the framed peer RPC version expected by this node
+- `QR_CHAIN_MAX_PEER_BLOCKS_PER_REQUEST` limits how many blocks a peer can request or receive in one framed block response
 
 ## API endpoints
 

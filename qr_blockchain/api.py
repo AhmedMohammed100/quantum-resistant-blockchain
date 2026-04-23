@@ -7,6 +7,7 @@ from urllib.parse import parse_qs, urlparse
 
 from .config import NodeConfig
 from .models import Block, Transaction
+from .protocol import parse_peer_frame
 from .service import NodeService
 
 
@@ -118,7 +119,12 @@ class NodeRequestHandler(BaseHTTPRequestHandler):
 
         if path == "/peer/handshake":
             try:
-                response = self.service.accept_peer_handshake(payload.get("auth", {}))
+                _, auth = parse_peer_frame(
+                    payload,
+                    expected_protocol_version=self.service.config.peer_protocol_version,
+                    expected_message_type="peer_handshake_request",
+                )
+                response = self.service.accept_peer_handshake(auth)
             except ValueError as error:
                 self._respond(HTTPStatus.BAD_REQUEST, {"error": str(error)})
                 return
@@ -127,7 +133,12 @@ class NodeRequestHandler(BaseHTTPRequestHandler):
 
         if path == "/peer/summary":
             try:
-                response = self.service.authenticated_chain_summary(payload.get("auth", {}))
+                _, auth = parse_peer_frame(
+                    payload,
+                    expected_protocol_version=self.service.config.peer_protocol_version,
+                    expected_message_type="peer_summary_request",
+                )
+                response = self.service.authenticated_chain_summary(auth)
             except ValueError as error:
                 self._respond(HTTPStatus.BAD_REQUEST, {"error": str(error)})
                 return
@@ -135,9 +146,14 @@ class NodeRequestHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/peer/blocks":
-            start_height = int(payload.get("start_height", 0))
             try:
-                response = self.service.authenticated_blocks(payload.get("auth", {}), start_height)
+                frame_payload, auth = parse_peer_frame(
+                    payload,
+                    expected_protocol_version=self.service.config.peer_protocol_version,
+                    expected_message_type="peer_blocks_request",
+                )
+                start_height = int(frame_payload.get("start_height", 0))
+                response = self.service.authenticated_blocks(auth, start_height)
             except ValueError as error:
                 self._respond(HTTPStatus.BAD_REQUEST, {"error": str(error)})
                 return

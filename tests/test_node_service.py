@@ -1,15 +1,68 @@
 from __future__ import annotations
 
+import json
+import os
 from pathlib import Path
+import sqlite3
 import shutil
+import sys
+import types
 import unittest
 from unittest.mock import patch
 
 from qr_blockchain import NodeConfig, NodeService, Wallet
 from qr_blockchain.crypto import XMSSMerkleLamportKeyPair, get_signature_suite
+from qr_blockchain.protocol import build_peer_frame
 
 
 class NodeServiceTests(unittest.TestCase):
+    @staticmethod
+    def build_fake_oqs_module(*, mechanisms: list[str] | None = None) -> types.ModuleType:
+        module = types.ModuleType("oqs")
+        available_mechanisms = mechanisms or ["XMSS-SHA2_10_256"]
+
+        class FakeNativeLibrary:
+            def __init__(self):
+                self.OQS_SIG_STFL_SECRET_KEY_serialize = lambda *args: 0
+                self.OQS_SIG_STFL_SECRET_KEY_deserialize = lambda *args: 0
+                self.OQS_SIG_STFL_SECRET_KEY_free = lambda *args: None
+                self.OQS_MEM_insecure_free = lambda *args: None
+
+        class FakeStatefulSignature:
+            def __init__(self, mechanism: str, secret_key: bytes | None = None):
+                self.mechanism = mechanism
+                self.secret_key = bytes(secret_key or b"secret:0")
+                self.public_key = f"public:{self.mechanism}".encode("utf-8")
+
+            def generate_keypair(self):
+                self.secret_key = b"secret:0"
+                self.public_key = f"public:{self.mechanism}".encode("utf-8")
+                return self.public_key
+
+            def export_secret_key(self):
+                return self.secret_key
+
+            def import_secret_key(self, secret_key: bytes):
+                self.secret_key = bytes(secret_key)
+
+            def sign(self, message: bytes):
+                counter = int(self.secret_key.decode("utf-8").split(":")[1])
+                signature = f"sig:{self.mechanism}:{counter}:{message.decode('utf-8')}".encode("utf-8")
+                self.secret_key = f"secret:{counter + 1}".encode("utf-8")
+                return signature
+
+            def verify(self, message: bytes, signature: bytes, public_key: bytes):
+                return (
+                    public_key == f"public:{self.mechanism}".encode("utf-8")
+                    and signature.decode("utf-8").endswith(message.decode("utf-8"))
+                )
+
+        module.__version__ = "0.test"
+        module.StatefulSignature = FakeStatefulSignature
+        module.get_enabled_stateful_sig_mechanisms = lambda: list(available_mechanisms)
+        module.native = lambda: FakeNativeLibrary()
+        return module
+
     def make_config(
         self,
         db_path: Path,
@@ -23,10 +76,16 @@ class NodeServiceTests(unittest.TestCase):
             wallet_state_db_path=db_path.parent / "wallet_state.db",
             difficulty=1,
             mining_reward=10,
+            min_transaction_fee=1,
+            max_pending_transactions=8,
+            max_transaction_size_bytes=16777216,
+            max_transaction_inputs=64,
+            max_transaction_outputs=64,
             chain_id=chain_id,
             node_id=node_id,
             advertised_url=advertised_url,
             peer_session_ttl_seconds=120,
+            max_peer_blocks_per_request=32,
         )
 
     def make_service(self) -> tuple[NodeService, Path]:
@@ -116,6 +175,34 @@ class NodeServiceTests(unittest.TestCase):
 
         service.submit_transaction(first)
         with self.assertRaisesRegex(ValueError, "pending spend"):
+            service.submit_transaction(second)
+
+    def test_rejects_low_fee_transaction_under_mempool_policy(self) -> None:
+        service, _ = self.make_service()
+        alice = Wallet("Alice")
+        bob = Wallet("Bob")
+
+        funding = alice.create_address()
+        service.create_genesis_block({funding: 25})
+        transaction = alice.create_transaction(service, bob.create_address(), amount=10, fee=0)
+
+        with self.assertRaisesRegex(ValueError, "minimum relay policy"):
+            service.submit_transaction(transaction)
+
+    def test_rejects_transaction_when_mempool_is_full(self) -> None:
+        service, _ = self.make_service()
+        service.config = NodeConfig(**{**service.config.__dict__, "max_pending_transactions": 1})
+        alice = Wallet("Alice")
+        bob = Wallet("Bob")
+        carol = Wallet("Carol")
+
+        funding = alice.create_address()
+        service.create_genesis_block({funding: 25})
+        first = alice.create_transaction(service, bob.create_address(), amount=5, fee=1)
+        second = alice.create_transaction(service, carol.create_address(), amount=5, fee=1)
+
+        service.submit_transaction(first)
+        with self.assertRaisesRegex(ValueError, "Mempool is full"):
             service.submit_transaction(second)
 
     def test_rejects_cross_chain_replay(self) -> None:
@@ -225,7 +312,8 @@ class NodeServiceTests(unittest.TestCase):
             if url.endswith("/peer/summary"):
                 return source.authenticated_chain_summary(payload["auth"])
             if url.endswith("/peer/blocks"):
-                return source.authenticated_blocks(payload["auth"], int(payload["start_height"]))
+                frame_payload = payload["payload"]
+                return source.authenticated_blocks(payload["auth"], int(frame_payload["start_height"]))
             raise AssertionError(f"Unexpected URL {url}")
 
         with patch("qr_blockchain.service.fetch_json", side_effect=fake_fetch_json):
@@ -234,6 +322,25 @@ class NodeServiceTests(unittest.TestCase):
         self.assertEqual(imported, 1)
         self.assertEqual(target.balance_for_address(bob_address), 14)
         self.assertIn(peer_url, target.list_peers())
+
+    def test_rejects_peer_frame_with_wrong_protocol_version(self) -> None:
+        source = self.make_additional_service("source")
+        target = self.make_additional_service("target")
+
+        handshake = build_peer_frame(
+            protocol_version="qr-peer-wrong",
+            message_type="peer_handshake_request",
+            payload={},
+            auth=target.build_signed_envelope("peer_handshake_v2", {"target_url": source.config.advertised_url}),
+        )
+
+        with self.assertRaisesRegex(ValueError, "protocol version"):
+            from qr_blockchain.protocol import parse_peer_frame
+            parse_peer_frame(
+                handshake,
+                expected_protocol_version=source.config.peer_protocol_version,
+                expected_message_type="peer_handshake_request",
+            )
 
     def test_authenticated_handshake_admits_peer(self) -> None:
         source = self.make_additional_service("source")
@@ -380,6 +487,153 @@ class NodeServiceTests(unittest.TestCase):
         self.assertIn(funding, reloaded.addresses())
         self.assertEqual(reloaded._keys[funding].next_index, 1)
 
+    def test_wallet_state_is_protected_at_rest(self) -> None:
+        service, _ = self.make_service()
+        wallet_db = self.wallet_state_db_path("protected_wallet_state.db")
+        alice = Wallet("Alice", state_db_path=wallet_db)
+        bob = Wallet("Bob")
+
+        funding = alice.create_address()
+        service.create_genesis_block({funding: 25})
+        alice.create_transaction(service, bob.create_address(), amount=10, fee=1)
+
+        with sqlite3.connect(wallet_db) as connection:
+            row = connection.execute(
+                """
+                SELECT key_state_json, key_state_blob, custody_backend
+                FROM wallet_keys
+                WHERE label = ? AND address = ?
+                """,
+                ("Alice", funding),
+            ).fetchone()
+
+        self.assertIsNotNone(row)
+        self.assertEqual(row[0], "__protected__")
+        self.assertIsNotNone(row[1])
+        self.assertGreater(len(bytes(row[1])), 0)
+        self.assertNotIn(b"private_key", bytes(row[1]))
+        self.assertNotIn(b"leaf_keypairs", bytes(row[1]))
+        self.assertEqual(row[2], "windows_dpapi")
+
+    def test_wallet_store_migrates_legacy_plaintext_rows(self) -> None:
+        wallet_db = self.wallet_state_db_path("legacy_wallet_state.db")
+        provider = get_signature_suite("xmss_merkle_lamport_v1")
+        keypair = provider.generate_keypair()
+        address = provider.derive_address(keypair)
+        legacy_json = provider.serialize_keypair(keypair)
+
+        with sqlite3.connect(wallet_db) as connection:
+            connection.executescript(
+                """
+                CREATE TABLE wallet_keys (
+                    label TEXT NOT NULL,
+                    address TEXT NOT NULL,
+                    provider_id TEXT NOT NULL,
+                    key_state_json TEXT NOT NULL,
+                    state_version INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (label, address)
+                );
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO wallet_keys (label, address, provider_id, key_state_json, state_version)
+                VALUES (?, ?, ?, ?, 0)
+                """,
+                ("Alice", address, "xmss_merkle_lamport_v1", json.dumps(legacy_json)),
+            )
+
+        reloaded = Wallet("Alice", state_db_path=wallet_db)
+        self.assertIn(address, reloaded.addresses())
+
+        with sqlite3.connect(wallet_db) as connection:
+            row = connection.execute(
+                """
+                SELECT key_state_json, key_state_blob, custody_backend
+                FROM wallet_keys
+                WHERE label = ? AND address = ?
+                """,
+                ("Alice", address),
+            ).fetchone()
+
+        self.assertIsNotNone(row)
+        self.assertEqual(row[0], "__protected__")
+        self.assertIsNotNone(row[1])
+        self.assertEqual(row[2], "windows_dpapi")
+
+    def test_reservation_completion_persists_stateful_oqs_progress(self) -> None:
+        service, _ = self.make_service()
+        wallet_db = self.wallet_state_db_path("oqs_wallet_state.db")
+        fake_oqs = self.build_fake_oqs_module()
+
+        with patch.dict(
+            os.environ,
+            {
+                "QR_CHAIN_XMSS_BACKEND_IMPLEMENTATION": "module",
+                "QR_CHAIN_XMSS_LIBRARY_MODULE": "qr_chain_xmss_backend.oqs_backend",
+                "QR_CHAIN_XMSS_OQS_MECHANISM": "XMSS-SHA2_10_256",
+            },
+            clear=False,
+        ):
+            with patch.dict(sys.modules, {"oqs": fake_oqs}, clear=False):
+                alice = Wallet("Alice", signature_provider="xmss_nist_v1", state_db_path=wallet_db)
+                bob = Wallet("Bob")
+                funding = alice.create_address()
+                service.create_genesis_block({funding: 25})
+                alice.create_transaction(service, bob.create_address(), amount=10, fee=1)
+
+                reloaded = Wallet("Alice", signature_provider="xmss_nist_v1", state_db_path=wallet_db)
+                state = reloaded._provider.serialize_keypair(reloaded._keys[funding])
+
+        self.assertEqual(state["signatures_used"], 1)
+        self.assertEqual(state["secret_key_hex"], b"secret:1".hex())
+
+    def test_stale_ambiguous_reservation_requires_recovery(self) -> None:
+        wallet_db = self.wallet_state_db_path("stale_reservation_wallet.db")
+        fake_oqs = self.build_fake_oqs_module()
+
+        with patch.dict(
+            os.environ,
+            {
+                "QR_CHAIN_XMSS_BACKEND_IMPLEMENTATION": "module",
+                "QR_CHAIN_XMSS_LIBRARY_MODULE": "qr_chain_xmss_backend.oqs_backend",
+                "QR_CHAIN_XMSS_OQS_MECHANISM": "XMSS-SHA2_10_256",
+            },
+            clear=False,
+        ):
+            with patch.dict(sys.modules, {"oqs": fake_oqs}, clear=False):
+                alice = Wallet(
+                    "Alice",
+                    signature_provider="xmss_nist_v1",
+                    state_db_path=wallet_db,
+                    reservation_ttl_seconds=1,
+                )
+                funding = alice.create_address()
+
+                def reserve_fn(current_state: object) -> tuple[object, object]:
+                    keypair = alice._provider.deserialize_keypair(current_state)
+                    reservation = alice._provider.reserve_signing_material(keypair)
+                    return alice._provider.serialize_keypair(keypair), reservation
+
+                alice._state_store.reserve_wallet_key_state(
+                    alice.label,
+                    funding,
+                    alice.signature_provider,
+                    reserve_fn,
+                    owner_id=alice._owner_id,
+                    now=0.0,
+                )
+
+                with self.assertRaisesRegex(ValueError, "requires operator recovery"):
+                    alice._state_store.reserve_wallet_key_state(
+                        alice.label,
+                        funding,
+                        alice.signature_provider,
+                        reserve_fn,
+                        owner_id=alice._owner_id,
+                        now=2.0,
+                    )
+
     def test_shared_wallet_instances_coordinate_leaf_reservations(self) -> None:
         service, _ = self.make_service()
         wallet_db = self.wallet_state_db_path("shared_wallet_state.db")
@@ -408,6 +662,7 @@ class NodeServiceTests(unittest.TestCase):
         providers = {item["provider_id"]: item for item in status["providers"]}
 
         self.assertEqual(status["default_signature_provider"], service.config.default_signature_provider)
+        self.assertEqual(status["wallet_custody"]["backend_id"], "windows_dpapi")
         self.assertIn("xmss_merkle_lamport_v1", providers)
         self.assertIn("xmss_nist_v1", providers)
         self.assertIn("module_path", providers["xmss_nist_v1"])

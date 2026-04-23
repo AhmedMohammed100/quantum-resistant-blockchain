@@ -48,6 +48,8 @@ class SQLiteChainStore:
                 CREATE TABLE IF NOT EXISTS pending_transactions (
                     tx_id TEXT PRIMARY KEY,
                     body_json TEXT NOT NULL,
+                    fee INTEGER NOT NULL DEFAULT 0,
+                    size_bytes INTEGER NOT NULL DEFAULT 0,
                     created_at REAL NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS utxos (
@@ -87,6 +89,14 @@ class SQLiteChainStore:
                 );
                 """
             )
+            columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(pending_transactions)").fetchall()
+            }
+            if "fee" not in columns:
+                connection.execute("ALTER TABLE pending_transactions ADD COLUMN fee INTEGER NOT NULL DEFAULT 0")
+            if "size_bytes" not in columns:
+                connection.execute("ALTER TABLE pending_transactions ADD COLUMN size_bytes INTEGER NOT NULL DEFAULT 0")
 
     def latest_block(self) -> sqlite3.Row | None:
         best_hash = self.best_head_hash()
@@ -204,11 +214,28 @@ class SQLiteChainStore:
         return [Transaction.from_dict(json.loads(row["body_json"])) for row in rows]
 
     def save_pending_transaction(self, transaction: Transaction) -> None:
+        serialized = transaction.serialize_with_id()
         with self._connect() as connection:
             connection.execute(
-                "INSERT INTO pending_transactions (tx_id, body_json, created_at) VALUES (?, ?, ?)",
-                (transaction.tx_id, transaction.serialize_with_id(), transaction.timestamp),
+                """
+                INSERT INTO pending_transactions (tx_id, body_json, fee, size_bytes, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (transaction.tx_id, serialized, transaction.fee, len(serialized.encode("utf-8")), transaction.timestamp),
             )
+
+    def has_pending_transaction(self, tx_id: str) -> bool:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM pending_transactions WHERE tx_id = ? LIMIT 1",
+                (tx_id,),
+            ).fetchone()
+        return row is not None
+
+    def pending_transaction_count(self) -> int:
+        with self._connect() as connection:
+            row = connection.execute("SELECT COUNT(*) AS count FROM pending_transactions").fetchone()
+        return int(row["count"])
 
     def remove_pending_transactions(self, transaction_ids: list[str]) -> None:
         if not transaction_ids:

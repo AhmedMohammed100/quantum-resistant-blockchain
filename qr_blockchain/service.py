@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 from pathlib import Path
 import sqlite3
 import secrets
@@ -9,8 +10,10 @@ import time
 from .auth import NodeIdentityManager, request_claims_digest, verify_signed_envelope
 from .config import NodeConfig
 from .crypto import get_signature_provider, get_signature_verifier, list_signature_provider_statuses
+from .custody import WalletCustodyConfig
 from .models import Block, Transaction, TxInput, TxOutput
 from .network import fetch_json, normalize_peer_url, with_path
+from .protocol import build_peer_frame, parse_peer_frame
 from .storage import SQLiteChainStore
 from .wallet_store import SQLiteWalletStateStore
 
@@ -61,9 +64,13 @@ class NodeService:
         return block
 
     def submit_transaction(self, transaction: Transaction) -> None:
+        self._enforce_mempool_policy(transaction)
         self._validate_transaction_against_view(transaction, self.store.all_utxos())
         self._check_pending_double_spends(transaction)
-        self.store.save_pending_transaction(transaction)
+        try:
+            self.store.save_pending_transaction(transaction)
+        except sqlite3.IntegrityError as error:
+            raise ValueError("Transaction is already pending.") from error
 
     def mine_pending_transactions(self, miner_address: str) -> Block:
         latest = self.store.latest_block()
@@ -167,16 +174,19 @@ class NodeService:
         summary = fetch_json(
             with_path(normalized, "/peer/summary"),
             method="POST",
-            payload={
-                "auth": self.build_peer_session_envelope(
+            payload=self._build_peer_request_frame(
+                message_type="peer_summary_request",
+                payload={},
+                auth=self.build_peer_session_envelope(
                     "peer_summary_v2",
                     normalized,
                     session["session_id"],
                     "/peer/summary",
-                )
-            },
+                ),
+            ),
         )
-        remote_height = int(summary.get("height", 0))
+        summary_payload = self._parse_peer_response_frame(summary, "peer_summary_response")
+        remote_height = int(summary_payload.get("height", 0))
         local_height = self.store.block_count()
         imported = 0
         if remote_height <= local_height:
@@ -186,18 +196,20 @@ class NodeService:
         response = fetch_json(
             with_path(normalized, "/peer/blocks"),
             method="POST",
-            payload={
-                "start_height": local_height,
-                "auth": self.build_peer_session_envelope(
+            payload=self._build_peer_request_frame(
+                message_type="peer_blocks_request",
+                payload={"start_height": local_height},
+                auth=self.build_peer_session_envelope(
                     "peer_blocks_v2",
                     normalized,
                     session["session_id"],
                     "/peer/blocks",
                     {"start_height": local_height},
                 ),
-            },
+            ),
         )
-        for item in response.get("blocks", []):
+        response_payload = self._parse_peer_response_frame(response, "peer_blocks_response")
+        for item in response_payload.get("blocks", []):
             block = Block.from_dict(item)
             self.import_block(block)
             imported += 1
@@ -252,9 +264,17 @@ class NodeService:
         response = fetch_json(
             with_path(normalized, "/peer/handshake"),
             method="POST",
-            payload={"auth": request_envelope},
+            payload=self._build_peer_request_frame(
+                message_type="peer_handshake_request",
+                payload={},
+                auth=request_envelope,
+            ),
         )
-        response_envelope = response.get("auth", {})
+        response_payload, response_envelope = parse_peer_frame(
+            response,
+            expected_protocol_version=self.config.peer_protocol_version,
+            expected_message_type="peer_handshake_response",
+        )
         peer_identity = verify_signed_envelope(
             response_envelope,
             expected_purpose="peer_handshake_ack_v2",
@@ -262,6 +282,8 @@ class NodeService:
             time_skew_seconds=self.config.auth_time_skew_seconds,
         )
         claims = peer_identity["claims"]
+        if response_payload.get("node_id") != peer_identity["node_id"]:
+            raise ValueError("Peer handshake response node id does not match signed identity.")
         if claims.get("target_url") != normalize_peer_url(self.config.advertised_url):
             raise ValueError("Peer handshake ack target does not match this node.")
         session_id = str(claims.get("session_id", ""))
@@ -295,16 +317,22 @@ class NodeService:
         )
         self._admit_peer(peer_identity)
         session = self._issue_peer_session(peer_identity)
-        return {
-            "auth": self.build_signed_envelope(
+        return self._build_peer_response_frame(
+            message_type="peer_handshake_response",
+            payload={
+                "node_id": self.config.node_id,
+                "session_id": session["session_id"],
+                "session_expires_at": int(session["expires_at"]),
+            },
+            auth=self.build_signed_envelope(
                 "peer_handshake_ack_v2",
                 {
                     "target_url": peer_identity["advertised_url"],
                     "session_id": session["session_id"],
                     "session_expires_at": int(session["expires_at"]),
                 },
-            )
-        }
+            ),
+        )
 
     def authenticated_chain_summary(self, envelope: dict[str, object]) -> dict[str, object]:
         self._authenticate_peer_envelope(
@@ -312,16 +340,25 @@ class NodeService:
             expected_purpose="peer_summary_v2",
             request_path="/peer/summary",
         )
-        return self.chain_summary()
+        return self._build_peer_response_frame(
+            message_type="peer_summary_response",
+            payload=self.chain_summary(),
+        )
 
     def authenticated_blocks(self, envelope: dict[str, object], start_height: int) -> dict[str, object]:
+        if start_height < 0:
+            raise ValueError("Peer block request start height is invalid.")
         self._authenticate_peer_envelope(
             envelope,
             expected_purpose="peer_blocks_v2",
             request_path="/peer/blocks",
             request_claims={"start_height": start_height},
         )
-        return {"blocks": [block.to_dict() for block in self.get_blocks_from_height(start_height)]}
+        blocks = self.get_blocks_from_height(start_height)[: self.config.max_peer_blocks_per_request]
+        return self._build_peer_response_frame(
+            message_type="peer_blocks_response",
+            payload={"blocks": [block.to_dict() for block in blocks]},
+        )
 
     def list_peers(self) -> list[str]:
         stored = set(self.store.list_peers())
@@ -356,6 +393,9 @@ class NodeService:
         providers = list_signature_provider_statuses()
         return {
             "default_signature_provider": self.config.default_signature_provider,
+            "wallet_custody": self.identity.custody_status(),
+            "wallet_reservation_status": self.identity.reservation_status_counts(),
+            "peer_protocol_version": self.config.peer_protocol_version,
             "providers": providers,
         }
 
@@ -423,6 +463,25 @@ class NodeService:
             pending_inputs = {(item.prev_tx_id, item.output_index) for item in pending.inputs}
             if candidate_inputs & pending_inputs:
                 raise ValueError("Transaction conflicts with a pending spend.")
+
+    def _enforce_mempool_policy(self, transaction: Transaction) -> None:
+        if not transaction.tx_id:
+            transaction.finalize()
+        if self.store.has_pending_transaction(transaction.tx_id):
+            raise ValueError("Transaction is already pending.")
+        if self.store.pending_transaction_count() >= self.config.max_pending_transactions:
+            raise ValueError("Mempool is full.")
+        serialized = transaction.serialize_with_id().encode("utf-8")
+        if len(serialized) > self.config.max_transaction_size_bytes:
+            raise ValueError("Transaction exceeds the maximum mempool size policy.")
+        if len(transaction.inputs) > self.config.max_transaction_inputs:
+            raise ValueError("Transaction exceeds the maximum input policy.")
+        if len(transaction.outputs) > self.config.max_transaction_outputs:
+            raise ValueError("Transaction exceeds the maximum output policy.")
+        if transaction.inputs and transaction.fee < self.config.min_transaction_fee:
+            raise ValueError("Transaction fee is below the minimum relay policy.")
+        if transaction.timestamp > time.time() + self.config.auth_time_skew_seconds:
+            raise ValueError("Transaction timestamp is too far in the future.")
 
     def _select_best_chain(self, candidate_head_hash: str) -> None:
         current_best = self.store.best_head_hash()
@@ -554,6 +613,42 @@ class NodeService:
 
         return peer_identity
 
+    def _build_peer_request_frame(
+        self,
+        *,
+        message_type: str,
+        payload: dict[str, object],
+        auth: dict[str, object],
+    ) -> dict[str, object]:
+        return build_peer_frame(
+            protocol_version=self.config.peer_protocol_version,
+            message_type=message_type,
+            payload=payload,
+            auth=auth,
+        )
+
+    def _build_peer_response_frame(
+        self,
+        *,
+        message_type: str,
+        payload: dict[str, object],
+        auth: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        return build_peer_frame(
+            protocol_version=self.config.peer_protocol_version,
+            message_type=message_type,
+            payload=payload,
+            auth=auth,
+        )
+
+    def _parse_peer_response_frame(self, frame: dict[str, object], expected_message_type: str) -> dict[str, object]:
+        payload, _ = parse_peer_frame(
+            frame,
+            expected_protocol_version=self.config.peer_protocol_version,
+            expected_message_type=expected_message_type,
+        )
+        return payload
+
 
 class Wallet:
     def __init__(
@@ -561,11 +656,26 @@ class Wallet:
         label: str,
         signature_provider: str = "xmss_merkle_lamport_v1",
         state_db_path: Path | None = None,
+        custody_mode: str = "auto",
+        custody_scope: str = "current_user",
+        reservation_ttl_seconds: int = 60,
     ):
         self.label = label
         self.signature_provider = signature_provider
         self._provider = get_signature_provider(signature_provider)
-        self._state_store = None if state_db_path is None else SQLiteWalletStateStore(Path(state_db_path))
+        self._owner_id = f"wallet:{label}:{os.getpid()}:{secrets.token_hex(8)}"
+        self._state_store = (
+            None
+            if state_db_path is None
+            else SQLiteWalletStateStore(
+                Path(state_db_path),
+                custody_config=WalletCustodyConfig(
+                    mode=custody_mode,
+                    scope=custody_scope,
+                ),
+                reservation_ttl_seconds=reservation_ttl_seconds,
+            )
+        )
         self._keys: dict[str, object] = {}
         self._load_persisted_keys()
 
@@ -582,26 +692,27 @@ class Wallet:
         key_state = self._provider.serialize_keypair(keypair)
         self._state_store.save_wallet_key(self.label, address, self.signature_provider, key_state)
 
-    def _reserve_key_usage(self, address: str) -> tuple[object, object]:
+    def _reserve_key_usage(self, address: str) -> tuple[object, object, str | None]:
         if self._state_store is None:
             keypair = self._keys[address]
             reservation = self._provider.reserve_signing_material(keypair)
-            return keypair, reservation
+            return keypair, reservation, None
 
         def reserve_fn(current_state: object) -> tuple[object, object]:
             keypair = self._provider.deserialize_keypair(current_state)
             reservation = self._provider.reserve_signing_material(keypair)
             return self._provider.serialize_keypair(keypair), reservation
 
-        next_state, reservation = self._state_store.reserve_wallet_key_state(
+        next_state, reservation, reservation_id = self._state_store.reserve_wallet_key_state(
             self.label,
             address,
             self.signature_provider,
             reserve_fn,
+            owner_id=self._owner_id,
         )
         keypair = self._provider.deserialize_keypair(next_state)
         self._keys[address] = keypair
-        return keypair, reservation
+        return keypair, reservation, reservation_id
 
     def create_address(self) -> str:
         keypair = self._provider.generate_keypair()
@@ -640,13 +751,36 @@ class Wallet:
         signing_payload = transaction.signing_payload()
         for tx_input, (_, _, previous_output) in zip(transaction.inputs, selected):
             address = previous_output.recipient
-            keypair, reservation = self._reserve_key_usage(address)
-            if reservation is not None:
-                tx_input.public_key, tx_input.signature = self._provider.sign_with_reservation(
-                    keypair, signing_payload, reservation
-                )
-            else:
-                tx_input.public_key, tx_input.signature = self._provider.sign(keypair, signing_payload)
-                self._persist_key(address)
+            keypair, reservation, reservation_id = self._reserve_key_usage(address)
+            try:
+                if reservation is not None:
+                    tx_input.public_key, tx_input.signature = self._provider.sign_with_reservation(
+                        keypair, signing_payload, reservation
+                    )
+                    if self._state_store is not None and reservation_id is not None:
+                        self._state_store.complete_wallet_key_reservation(
+                            self.label,
+                            address,
+                            self.signature_provider,
+                            reservation_id,
+                            self._provider.serialize_keypair(keypair),
+                            owner_id=self._owner_id,
+                        )
+                    else:
+                        self._persist_key(address)
+                else:
+                    tx_input.public_key, tx_input.signature = self._provider.sign(keypair, signing_payload)
+                    self._persist_key(address)
+            except Exception as error:
+                if self._state_store is not None and reservation_id is not None:
+                    self._state_store.fail_wallet_key_reservation(
+                        self.label,
+                        address,
+                        self.signature_provider,
+                        reservation_id,
+                        owner_id=self._owner_id,
+                        error_message=str(error),
+                    )
+                raise
         transaction.finalize()
         return transaction

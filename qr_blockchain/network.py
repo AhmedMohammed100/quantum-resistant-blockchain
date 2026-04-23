@@ -15,7 +15,7 @@ def normalize_peer_url(url: str) -> str:
 
 def fetch_json(url: str, *, method: str = "GET", payload: dict[str, object] | None = None, timeout: float = 10.0) -> dict[str, object]:
     data = None
-    headers = {"Content-Type": "application/json"}
+    headers = {"Content-Type": "application/json", "Accept": "application/json"}
     if payload is not None:
         data = json.dumps(payload, sort_keys=True).encode("utf-8")
     req = request.Request(url, data=data, headers=headers, method=method)

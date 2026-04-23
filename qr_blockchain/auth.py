@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
+import os
 import secrets
 import time
 from pathlib import Path
 
 from .config import NodeConfig
 from .crypto import get_signature_provider, get_signature_verifier
+from .custody import WalletCustodyConfig
 from .models import canonical_json
 from .network import normalize_peer_url
 from .wallet_store import SQLiteWalletStateStore
@@ -29,8 +31,16 @@ class NodeIdentityManager:
 
     def __post_init__(self) -> None:
         self._provider = get_signature_provider(self.provider_id)
-        self._store = SQLiteWalletStateStore(self.state_db_path)
+        self._store = SQLiteWalletStateStore(
+            self.state_db_path,
+            custody_config=WalletCustodyConfig(
+                mode=self.config.wallet_custody_mode,
+                scope=self.config.wallet_custody_scope,
+            ),
+            reservation_ttl_seconds=self.config.wallet_reservation_ttl_seconds,
+        )
         self._label = f"__node_identity__:{self.config.node_id}"
+        self._owner_id = f"node-identity:{self.config.node_id}:{os.getpid()}:{secrets.token_hex(8)}"
         self._key_address: str | None = None
         self._keypair: object | None = None
         self._load_or_create_identity()
@@ -67,6 +77,12 @@ class NodeIdentityManager:
             "public_key": self._provider.export_public_key(self._keypair),
         }
 
+    def custody_status(self) -> dict[str, object]:
+        return self._store.custody_status()
+
+    def reservation_status_counts(self) -> dict[str, int]:
+        return self._store.reservation_status_counts()
+
     def sign_claims(self, purpose: str, claims: dict[str, object]) -> dict[str, object]:
         if self._keypair is None or self._key_address is None:
             raise ValueError("Node identity is not initialized.")
@@ -85,14 +101,34 @@ class NodeIdentityManager:
             reservation = self._provider.reserve_signing_material(keypair)
             return self._provider.serialize_keypair(keypair), reservation
 
-        next_state, reservation = self._store.reserve_wallet_key_state(
+        next_state, reservation, reservation_id = self._store.reserve_wallet_key_state(
             self._label,
             self._key_address,
             self.provider_id,
             reserve_fn,
+            owner_id=self._owner_id,
         )
         self._keypair = self._provider.deserialize_keypair(next_state)
-        public_key, signature = self._provider.sign_with_reservation(self._keypair, message, reservation)
+        try:
+            public_key, signature = self._provider.sign_with_reservation(self._keypair, message, reservation)
+            self._store.complete_wallet_key_reservation(
+                self._label,
+                self._key_address,
+                self.provider_id,
+                reservation_id,
+                self._provider.serialize_keypair(self._keypair),
+                owner_id=self._owner_id,
+            )
+        except Exception as error:
+            self._store.fail_wallet_key_reservation(
+                self._label,
+                self._key_address,
+                self.provider_id,
+                reservation_id,
+                owner_id=self._owner_id,
+                error_message=str(error),
+            )
+            raise
 
         return {
             "purpose": purpose,
