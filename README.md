@@ -151,6 +151,37 @@ Phase 22 now adds migration load and chaos coverage:
 - migration claims are exercised through authenticated node sync
 - canonical migration claims are tested across reorgs
 
+Phase 23 now adds auditable migration snapshot imports:
+
+- migration sources can now be imported as deterministic snapshot bundles instead of only being seeded one address at a time
+- imported bundles are validated for duplicate addresses, positive amounts, and allowed classical-provider policy before they reach chain state
+- each snapshot now records a manifest hash, entries root, entry count, and total amount for operator auditability
+- repeated imports of the same snapshot are idempotent, while conflicting re-import attempts fail closed
+
+Phase 24 now adds chain-aware legacy address compatibility:
+
+- migration sources now distinguish between the canonical verifier claim address and the user-facing legacy source address
+- built-in profiles now exist for Bitcoin-style, Ethereum-style, RSA, and demo migration networks
+- source addresses are validated by format before they are accepted into migration state
+- migration claims now carry the seeded source-address metadata so replayed or mismatched claims fail closed
+
+Phase 25 now adds trusted snapshot issuer policy:
+
+- nodes can now require snapshot artifacts to be signed before import
+- operators can allow-list trusted snapshot signer addresses and trusted signer node ids
+- snapshot signatures are now treated as durable artifact signatures rather than short-lived peer-auth envelopes
+
+Phase 26 now adds live snapshot export tooling:
+
+- nodes can now export a deterministic snapshot bundle directly from stored migration sources
+- exports can include only unclaimed sources or the full seeded set
+- live exports can be signed immediately for operator handoff between systems
+
+Phase 27 now adds an operator CLI:
+
+- `qr-chain` can now list migration network profiles and export, sign, validate, or import snapshot artifacts
+- the same workflow is also available through `python -m qr_blockchain`
+
 ## Quantum-resistant direction
 
 The chain now supports a provider registry with both active and reserved backends:
@@ -231,6 +262,15 @@ That migration layer now includes:
 - a real `rsa_pkcs1v15_sha256` verifier path for legacy RSA ownership proofs
 - optional dual-control windows where the destination PQ wallet must also explicitly accept the migration claim
 
+It now also has a more operational import path: nodes can ingest full deterministic migration snapshot bundles, persist their manifest metadata separately, and expose both imported snapshots and resulting claimable sources through the API.
+
+That path is now stronger in four practical ways:
+
+- source-chain addresses can be stored in their real external format instead of only the canonical verifier address
+- snapshot imports can be gated by trusted signer policy
+- nodes can export a fresh snapshot artifact from current migration state
+- operators can run the snapshot workflow from a CLI without hand-building JSON requests
+
 This means the repo is now production-shaped rather than fully production-ready.
 
 ## Architecture
@@ -238,7 +278,9 @@ This means the repo is now production-shaped rather than fully production-ready.
 - `qr_blockchain/config.py`: environment-driven node configuration, chain identity, peers, and default signature provider selection
 - `qr_blockchain/crypto.py`: formal signature-provider interface, provider registry, and current software PQ backends
 - `qr_blockchain/custody.py`: wallet custody backends, including Windows DPAPI protection for stored signer state
+- `qr_blockchain/legacy_networks.py`: source-network profiles and legacy address-format validation for migration imports
 - `qr_blockchain/migration.py`: classical-claim verifier registry and migration-proof helpers
+- `qr_blockchain/snapshot.py`: deterministic migration snapshot bundle validation and manifest hashing
 - `qr_blockchain/models.py`: transaction and block models
 - `qr_blockchain/storage.py`: SQLite persistence for blocks, pending transactions, and UTXOs
 - `qr_blockchain/network.py`: simple peer URL normalization and JSON fetch helpers
@@ -246,6 +288,7 @@ This means the repo is now production-shaped rather than fully production-ready.
 - `qr_blockchain/wallet_store.py`: SQLite-backed protected wallet-state persistence and reservation coordination
 - `qr_blockchain/service.py`: validation, mining, block import, wallet flow, mempool rules, and sync
 - `qr_blockchain/api.py`: HTTP API for health, summary, balances, UTXOs, blocks, peers, genesis, mining, and sync
+- `qr_blockchain/cli.py`: operator CLI for migration network discovery and snapshot artifact workflows
 - `tests/`: unit tests for config, persistence, and transaction behavior
 
 ## Run the node
@@ -289,7 +332,10 @@ $env:QR_CHAIN_MIGRATION_CLAIM_START_HEIGHT = "1"
 $env:QR_CHAIN_MIGRATION_CLAIM_END_HEIGHT = "0"
 $env:QR_CHAIN_MIGRATION_DUAL_CONTROL_START_HEIGHT = "0"
 $env:QR_CHAIN_MIGRATION_DUAL_CONTROL_END_HEIGHT = "0"
+$env:QR_CHAIN_MIGRATION_REQUIRE_SNAPSHOT_SIGNATURES = "0"
 $env:QR_CHAIN_MIGRATION_ALLOWED_CLASSICAL_PROVIDERS = "ecdsa_secp256k1_migration_v1,rsa_pkcs1v15_sha256_migration_v1,classical_claim_demo_v1"
+$env:QR_CHAIN_MIGRATION_TRUSTED_SNAPSHOT_SIGNERS = ""
+$env:QR_CHAIN_MIGRATION_TRUSTED_SNAPSHOT_NODES = ""
 $env:QR_CHAIN_PREFERRED_SIGNATURE_PROVIDERS = "sphincsplus_v1,lms_nist_v1,xmss_nist_v1,xmss_merkle_lamport_v1"
 $env:QR_CHAIN_ALLOWED_SIGNATURE_PROVIDERS = ""
 python main.py
@@ -329,7 +375,10 @@ Migration policy:
 - `QR_CHAIN_MIGRATION_CLAIM_START_HEIGHT` sets the first block height where migration claims are accepted
 - `QR_CHAIN_MIGRATION_CLAIM_END_HEIGHT` optionally closes the claim window after a given height; `0` means no configured end
 - `QR_CHAIN_MIGRATION_DUAL_CONTROL_START_HEIGHT` and `QR_CHAIN_MIGRATION_DUAL_CONTROL_END_HEIGHT` define an optional range where the destination PQ wallet must also sign an acceptance proof
+- `QR_CHAIN_MIGRATION_REQUIRE_SNAPSHOT_SIGNATURES` forces imported snapshot artifacts to include a signed envelope
 - `QR_CHAIN_MIGRATION_ALLOWED_CLASSICAL_PROVIDERS` allow-lists which classical proof systems this node will accept for migration
+- `QR_CHAIN_MIGRATION_TRUSTED_SNAPSHOT_SIGNERS` optionally allow-lists signer addresses for snapshot imports
+- `QR_CHAIN_MIGRATION_TRUSTED_SNAPSHOT_NODES` optionally allow-lists signer node ids for snapshot imports
 
 Provider policy:
 
@@ -344,6 +393,8 @@ Provider policy:
 - `GET /chain/summary`
 - `GET /crypto/providers`
 - `GET /migration/policy`
+- `GET /migration/networks`
+- `GET /migration/snapshots`
 - `GET /migration/sources`
 - `GET /wallets/status`
 - `GET /blocks?start_height=0`
@@ -358,6 +409,9 @@ Provider policy:
 - `POST /mine`
 - `POST /sync`
 - `POST /migration/sources`
+- `POST /migration/snapshots`
+- `POST /migration/snapshots/export`
+- `POST /migration/snapshots/sign`
 - `POST /wallets/recovery`
 - `POST /peer/handshake`
 - `POST /peer/summary`
@@ -396,7 +450,31 @@ Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8080/wallets/recovery -Cont
 Example seeding of a classical migration source:
 
 ```powershell
-Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8080/migration/sources -ContentType "application/json" -Body '{"classical_address":"legacy-address","provider_id":"ecdsa_secp256k1_migration_v1","source_network":"legacy-ecc-ledger","amount":120,"snapshot_ref":"snapshot-2026-04"}'
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8080/migration/sources -ContentType "application/json" -Body '{"classical_address":"secp256k1-p2pkh:00112233445566778899aabbccddeeff00112233","provider_id":"ecdsa_secp256k1_migration_v1","source_network":"legacy-btc-mainnet","source_address":"1BoatSLRHtKNngkdXEeobR76b53LETtpyT","source_address_format":"bitcoin_base58","amount":120,"snapshot_ref":"snapshot-2026-04"}'
+```
+
+Example import of a deterministic migration snapshot bundle:
+
+```powershell
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8080/migration/snapshots -ContentType "application/json" -Body '{"source_network":"legacy-btc-mainnet","snapshot_ref":"snapshot-2026-04","generated_at":1775000000.0,"entries":[{"classical_address":"secp256k1-p2pkh:00112233445566778899aabbccddeeff00112233","provider_id":"ecdsa_secp256k1_migration_v1","source_address":"1BoatSLRHtKNngkdXEeobR76b53LETtpyT","source_address_format":"bitcoin_base58","amount":120}]}'
+```
+
+Example migration snapshot listing:
+
+```powershell
+Invoke-RestMethod -Method Get -Uri http://127.0.0.1:8080/migration/snapshots
+```
+
+Example migration snapshot export and signing:
+
+```powershell
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8080/migration/snapshots/export -ContentType "application/json" -Body '{"source_network":"legacy-btc-mainnet","snapshot_ref":"snapshot-2026-04","include_claimed":false,"sign":true}'
+```
+
+Example migration network profile query:
+
+```powershell
+Invoke-RestMethod -Method Get -Uri http://127.0.0.1:8080/migration/networks
 ```
 
 Example migration policy query:
@@ -411,9 +489,18 @@ Invoke-RestMethod -Method Get -Uri http://127.0.0.1:8080/migration/policy
 python -m unittest discover -s tests -v
 ```
 
+## Operator CLI
+
+```powershell
+qr-chain migration-networks
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-snapshot-export --source-network legacy-demo-ledger --snapshot-ref snapshot-2026-04 --sign --output snapshot.json
+qr-chain migration-snapshot-validate --input snapshot.json
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-snapshot-import --input snapshot.json
+```
+
 ## What should follow next
 
-- production-grade address-format compatibility for specific legacy ecosystems and live snapshot tooling
+- stronger proof-of-ownership linkage between specific external address formats and canonical verifier claim addresses for real Bitcoin/Ethereum migration flows
 - production-quality LMS and SPHINCS+ runtime integration and chain-level provider rollout policy
 - stronger distributed signer coordination for multi-node or remote signer deployments
 - secure key management with hardware-backed custody or isolated signer processes

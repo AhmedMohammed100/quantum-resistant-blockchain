@@ -11,6 +11,11 @@ from .auth import NodeIdentityManager, request_claims_digest, verify_signed_enve
 from .config import NodeConfig
 from .crypto import get_signature_provider, get_signature_verifier, list_signature_provider_statuses
 from .custody import WalletCustodyConfig
+from .legacy_networks import (
+    describe_legacy_network,
+    list_legacy_network_profiles,
+    validate_legacy_source_binding,
+)
 from .migration import (
     classical_claim_message_bytes,
     destination_acceptance_message_bytes,
@@ -20,6 +25,13 @@ from .migration import (
 from .models import Block, Transaction, TxInput, TxOutput
 from .network import fetch_json, normalize_peer_url, with_path
 from .protocol import build_peer_frame, parse_peer_frame
+from .snapshot import (
+    MigrationSnapshotEntry,
+    MigrationSnapshotBundle,
+    parse_snapshot_import_payload,
+    snapshot_manifest_claims,
+    validate_snapshot_bundle,
+)
 from .storage import SQLiteChainStore
 from .wallet_store import SQLiteWalletStateStore
 
@@ -439,6 +451,14 @@ class NodeService:
             "dual_control_start_height": self.config.migration_dual_control_start_height,
             "dual_control_end_height": self.config.migration_dual_control_end_height,
             "allowed_classical_providers": list(self.config.migration_allowed_classical_providers),
+            "require_snapshot_signatures": self.config.migration_require_snapshot_signatures,
+            "trusted_snapshot_signers": list(self.config.migration_trusted_snapshot_signers),
+            "trusted_snapshot_nodes": list(self.config.migration_trusted_snapshot_nodes),
+        }
+
+    def migration_network_profiles(self) -> dict[str, object]:
+        return {
+            "profiles": list_legacy_network_profiles(),
         }
 
     def signature_provider_statuses(self) -> dict[str, object]:
@@ -547,6 +567,10 @@ class NodeService:
                 "migration_provider_ids": [item["provider_id"] for item in migration_provider_statuses],
             },
             "migration_policy": self.migration_policy(chain["height"]),
+            "migration_snapshots": {
+                "count": len(self.store.list_migration_snapshots()),
+                "signature_required": self.config.migration_require_snapshot_signatures,
+            },
             "peers": {
                 "configured": len(self.config.peers),
                 "known": len(self.list_peers()),
@@ -569,6 +593,7 @@ class NodeService:
             "utxo_count": int(chain["utxo_count"]),
             "migration_source_count": int(chain.get("migration_source_count", 0)),
             "migration_claim_count": int(chain.get("migration_claim_count", 0)),
+            "migration_snapshot_count": len(self.store.list_migration_snapshots()),
             "peer_count": len(self.list_peers()),
             "admitted_peer_count": self.store.peer_identity_count(status="admitted"),
             "active_peer_sessions": int(peer_session_counts.get("active", 0)),
@@ -580,6 +605,26 @@ class NodeService:
             "migration_provider_count": len(list_classical_claim_verifier_statuses()),
         }
 
+    def _validate_migration_source_binding(
+        self,
+        *,
+        classical_address: str,
+        provider_id: str,
+        source_network: str,
+        source_address: str,
+        source_address_format: str,
+    ) -> dict[str, object]:
+        if not source_network:
+            raise ValueError("source_network is required.")
+        source_address_value = source_address or classical_address
+        return validate_legacy_source_binding(
+            source_network=source_network,
+            provider_id=provider_id,
+            classical_address=classical_address,
+            source_address=source_address_value,
+            source_address_format=source_address_format,
+        )
+
     def seed_migration_source(
         self,
         *,
@@ -588,24 +633,171 @@ class NodeService:
         source_network: str,
         amount: int,
         snapshot_ref: str = "",
+        source_address: str = "",
+        source_address_format: str = "",
     ) -> dict[str, object]:
         if not classical_address:
             raise ValueError("classical_address is required.")
         if amount <= 0:
             raise ValueError("migration source amount must be positive.")
         get_classical_claim_verifier(provider_id)
+        binding = self._validate_migration_source_binding(
+            classical_address=classical_address,
+            provider_id=provider_id,
+            source_network=source_network,
+            source_address=source_address,
+            source_address_format=source_address_format,
+        )
         self.store.add_migration_source(
             classical_address=classical_address,
             provider_id=provider_id,
             source_network=source_network,
             amount=amount,
             snapshot_ref=snapshot_ref,
+            source_address=str(binding["source_address"]),
+            source_address_format=str(binding["source_address_format"]),
             added_at=time.time(),
         )
         source = self.store.migration_source(classical_address)
         if source is None:
             raise ValueError("Failed to store migration source.")
         return source
+
+    def import_migration_snapshot(self, payload: dict[str, object]) -> dict[str, object]:
+        bundle, envelope = parse_snapshot_import_payload(payload)
+        allowed = set(self.config.migration_allowed_classical_providers)
+        for entry in bundle.entries:
+            if allowed and entry.provider_id not in allowed:
+                raise ValueError(
+                    f"Migration snapshot entry provider '{entry.provider_id}' is not allowed by node policy."
+                )
+            self._validate_migration_source_binding(
+                classical_address=entry.classical_address,
+                provider_id=entry.provider_id,
+                source_network=bundle.source_network,
+                source_address=entry.source_address,
+                source_address_format=entry.source_address_format,
+            )
+        signer_metadata = {
+            "signer_address": "",
+            "signer_node_id": "",
+            "signer_signature_scheme": "",
+            "signer_signature_provider": "",
+        }
+        if envelope is None and self.config.migration_require_snapshot_signatures:
+            raise ValueError("Migration snapshot imports require a signed snapshot envelope by node policy.")
+        if envelope is not None:
+            verified = verify_signed_envelope(
+                envelope,
+                expected_purpose="migration_snapshot_manifest_v1",
+                expected_chain_id=self.config.chain_id,
+                time_skew_seconds=None,
+            )
+            claims = snapshot_manifest_claims(bundle)
+            envelope_claims = dict(envelope.get("claims", {}))
+            for key, value in claims.items():
+                if envelope_claims.get(key) != value:
+                    raise ValueError(f"Migration snapshot signed claim mismatch for '{key}'.")
+            signer_metadata = {
+                "signer_address": str(verified["address"]),
+                "signer_node_id": str(verified["node_id"]),
+                "signer_signature_scheme": str(verified["signature_scheme"]),
+                "signer_signature_provider": str(verified["signature_provider"]),
+            }
+            if self.config.migration_trusted_snapshot_signers and signer_metadata["signer_address"] not in set(
+                self.config.migration_trusted_snapshot_signers
+            ):
+                raise ValueError("Migration snapshot signer address is not trusted by node policy.")
+            if self.config.migration_trusted_snapshot_nodes and signer_metadata["signer_node_id"] not in set(
+                self.config.migration_trusted_snapshot_nodes
+            ):
+                raise ValueError("Migration snapshot signer node_id is not trusted by node policy.")
+        finalized = bundle.to_dict()
+        self.store.import_migration_snapshot(
+            snapshot_ref=bundle.snapshot_ref,
+            source_network=bundle.source_network,
+            manifest_hash=str(finalized["manifest_hash"]),
+            entries_root=str(finalized["entries_root"]),
+            entry_count=int(finalized["entry_count"]),
+            total_amount=int(finalized["total_amount"]),
+            generated_at=float(bundle.generated_at),
+            imported_at=time.time(),
+            entries=[dict(item) for item in finalized["entries"]],
+            signer_address=signer_metadata["signer_address"],
+            signer_node_id=signer_metadata["signer_node_id"],
+            signer_signature_scheme=signer_metadata["signer_signature_scheme"],
+            signer_signature_provider=signer_metadata["signer_signature_provider"],
+        )
+        snapshots = self.store.list_migration_snapshots()
+        return next(item for item in snapshots if item["snapshot_ref"] == bundle.snapshot_ref)
+
+    def list_migration_snapshots(self) -> list[dict[str, object]]:
+        return self.store.list_migration_snapshots()
+
+    def sign_migration_snapshot(self, payload: dict[str, object]) -> dict[str, object]:
+        bundle = validate_snapshot_bundle(MigrationSnapshotBundle.from_dict(payload))
+        for entry in bundle.entries:
+            self._validate_migration_source_binding(
+                classical_address=entry.classical_address,
+                provider_id=entry.provider_id,
+                source_network=bundle.source_network,
+                source_address=entry.source_address,
+                source_address_format=entry.source_address_format,
+            )
+        claims = snapshot_manifest_claims(bundle)
+        envelope = self.identity.sign_claims("migration_snapshot_manifest_v1", claims)
+        return {
+            "bundle": bundle.to_dict(),
+            "envelope": envelope,
+        }
+
+    def export_migration_snapshot(
+        self,
+        *,
+        source_network: str,
+        snapshot_ref: str = "",
+        include_claimed: bool = False,
+        sign: bool = False,
+        generated_at: float | None = None,
+    ) -> dict[str, object]:
+        exported_sources = self.store.export_migration_sources(
+            source_network=source_network,
+            snapshot_ref=snapshot_ref,
+            include_claimed=include_claimed,
+        )
+        if not exported_sources:
+            raise ValueError("No migration sources matched the requested export filter.")
+        resolved_generated_at = round(time.time(), 6) if generated_at is None else generated_at
+        resolved_snapshot_ref = snapshot_ref or f"{source_network}-live-export"
+        bundle = validate_snapshot_bundle(
+            MigrationSnapshotBundle(
+                source_network=source_network,
+                snapshot_ref=resolved_snapshot_ref,
+                generated_at=resolved_generated_at,
+                entries=tuple(
+                    MigrationSnapshotEntry(
+                        classical_address=str(item["classical_address"]),
+                        provider_id=str(item["provider_id"]),
+                        amount=int(item["amount"]),
+                        source_address=str(item["source_address"]),
+                        source_address_format=str(item["source_address_format"]),
+                    )
+                    for item in exported_sources
+                ),
+            )
+        )
+        payload = {
+            "bundle": bundle.to_dict(),
+            "source_count": len(exported_sources),
+            "include_claimed": include_claimed,
+            "source_network_profile": describe_legacy_network(source_network),
+        }
+        if sign:
+            payload["envelope"] = self.identity.sign_claims(
+                "migration_snapshot_manifest_v1",
+                snapshot_manifest_claims(bundle),
+            )
+        return payload
 
     def list_migration_sources(self) -> list[dict[str, object]]:
         items = self.store.list_migration_sources()
@@ -615,6 +807,7 @@ class NodeService:
             item["claims_open"] = policy["claims_open"]
             item["dual_control_required"] = policy["dual_control_required"]
             item["claimable"] = policy["claims_open"] and not item["claimed"]
+            item["source_network_profile"] = describe_legacy_network(str(item["source_network"]))
         return items
 
     def build_migration_claim_draft(
@@ -644,6 +837,8 @@ class NodeService:
                 "classical_provider_id": classical_provider_id,
                 "source_network": source_network,
                 "snapshot_ref": snapshot_ref or str(source.get("snapshot_ref", "")),
+                "source_address": str(source.get("source_address", classical_address)),
+                "source_address_format": str(source.get("source_address_format", "")),
                 "classical_public_key": {} if classical_public_key is None else classical_public_key,
             },
         )
@@ -941,6 +1136,8 @@ class NodeService:
         public_key = transaction.metadata.get("classical_public_key", {})
         proof = transaction.metadata.get("classical_signature", {})
         snapshot_ref = str(transaction.metadata.get("snapshot_ref", ""))
+        source_address = str(transaction.metadata.get("source_address", ""))
+        source_address_format = str(transaction.metadata.get("source_address_format", ""))
 
         if not classical_address or not provider_id or not source_network:
             raise ValueError("Migration claim metadata is incomplete.")
@@ -961,6 +1158,10 @@ class NodeService:
             raise ValueError("Migration claim source network does not match the seeded source.")
         if snapshot_ref and source["snapshot_ref"] and snapshot_ref != source["snapshot_ref"]:
             raise ValueError("Migration claim snapshot reference does not match the seeded source.")
+        if source_address and source_address != str(source.get("source_address", "")):
+            raise ValueError("Migration claim source address does not match the seeded source.")
+        if source_address_format and source_address_format != str(source.get("source_address_format", "")):
+            raise ValueError("Migration claim source address format does not match the seeded source.")
         if classical_address in (claimed_classical_addresses or set()):
             raise ValueError("Migration source has already been claimed on this branch.")
         if claimed_classical_addresses is None and self.store.migration_claim(classical_address) is not None:

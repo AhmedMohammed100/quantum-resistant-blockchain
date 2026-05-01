@@ -340,7 +340,7 @@ class NodeServiceTests(unittest.TestCase):
         classical_address = service.seed_migration_source(
             classical_address=build_demo_classical_claim_address(classical_public_key),
             provider_id="classical_claim_demo_v1",
-            source_network="legacy-rsa-ledger",
+            source_network="legacy-demo-ledger",
             amount=25,
             snapshot_ref="snapshot-001",
         )["classical_address"]
@@ -354,7 +354,7 @@ class NodeServiceTests(unittest.TestCase):
             metadata={
                 "classical_address": classical_address,
                 "classical_provider_id": "classical_claim_demo_v1",
-                "source_network": "legacy-rsa-ledger",
+                "source_network": "legacy-demo-ledger",
                 "snapshot_ref": "snapshot-001",
                 "classical_public_key": classical_public_key,
             },
@@ -384,7 +384,7 @@ class NodeServiceTests(unittest.TestCase):
         service.seed_migration_source(
             classical_address=classical_address,
             provider_id="classical_claim_demo_v1",
-            source_network="legacy-ecc-ledger",
+            source_network="legacy-demo-ledger",
             amount=15,
             snapshot_ref="snapshot-002",
         )
@@ -399,7 +399,7 @@ class NodeServiceTests(unittest.TestCase):
                 metadata={
                     "classical_address": classical_address,
                     "classical_provider_id": "classical_claim_demo_v1",
-                    "source_network": "legacy-ecc-ledger",
+                    "source_network": "legacy-demo-ledger",
                     "snapshot_ref": "snapshot-002",
                     "classical_public_key": classical_public_key,
                 },

@@ -35,11 +35,14 @@ class NodeConfig:
     migration_claim_end_height: int = 0
     migration_dual_control_start_height: int = 0
     migration_dual_control_end_height: int = 0
+    migration_require_snapshot_signatures: bool = False
     migration_allowed_classical_providers: tuple[str, ...] = (
         "ecdsa_secp256k1_migration_v1",
         "rsa_pkcs1v15_sha256_migration_v1",
         "classical_claim_demo_v1",
     )
+    migration_trusted_snapshot_signers: tuple[str, ...] = ()
+    migration_trusted_snapshot_nodes: tuple[str, ...] = ()
     preferred_signature_providers: tuple[str, ...] = (
         "sphincsplus_v1",
         "lms_nist_v1",
@@ -58,6 +61,8 @@ class NodeConfig:
         allowed_providers_env = os.getenv("QR_CHAIN_ALLOWED_SIGNATURE_PROVIDERS", "").strip()
         preferred_providers_env = os.getenv("QR_CHAIN_PREFERRED_SIGNATURE_PROVIDERS", "").strip()
         migration_providers_env = os.getenv("QR_CHAIN_MIGRATION_ALLOWED_CLASSICAL_PROVIDERS", "").strip()
+        trusted_snapshot_signers_env = os.getenv("QR_CHAIN_MIGRATION_TRUSTED_SNAPSHOT_SIGNERS", "").strip()
+        trusted_snapshot_nodes_env = os.getenv("QR_CHAIN_MIGRATION_TRUSTED_SNAPSHOT_NODES", "").strip()
         return NodeConfig(
             db_path=Path(os.getenv("QR_CHAIN_DB_PATH", "data/chain.db")),
             difficulty=int(os.getenv("QR_CHAIN_DIFFICULTY", "3")),
@@ -87,6 +92,10 @@ class NodeConfig:
             migration_claim_end_height=int(os.getenv("QR_CHAIN_MIGRATION_CLAIM_END_HEIGHT", "0")),
             migration_dual_control_start_height=int(os.getenv("QR_CHAIN_MIGRATION_DUAL_CONTROL_START_HEIGHT", "0")),
             migration_dual_control_end_height=int(os.getenv("QR_CHAIN_MIGRATION_DUAL_CONTROL_END_HEIGHT", "0")),
+            migration_require_snapshot_signatures=os.getenv(
+                "QR_CHAIN_MIGRATION_REQUIRE_SNAPSHOT_SIGNATURES", "0"
+            ).strip().lower()
+            in {"1", "true", "yes", "on"},
             migration_allowed_classical_providers=tuple(
                 item.strip()
                 for item in migration_providers_env.split(",")
@@ -96,6 +105,16 @@ class NodeConfig:
                 "ecdsa_secp256k1_migration_v1",
                 "rsa_pkcs1v15_sha256_migration_v1",
                 "classical_claim_demo_v1",
+            ),
+            migration_trusted_snapshot_signers=tuple(
+                item.strip()
+                for item in trusted_snapshot_signers_env.split(",")
+                if item.strip()
+            ),
+            migration_trusted_snapshot_nodes=tuple(
+                item.strip()
+                for item in trusted_snapshot_nodes_env.split(",")
+                if item.strip()
             ),
             preferred_signature_providers=tuple(
                 item.strip()

@@ -37,6 +37,12 @@ class NodeRequestHandler(BaseHTTPRequestHandler):
         if path == "/migration/policy":
             self._respond(HTTPStatus.OK, self.service.migration_policy())
             return
+        if path == "/migration/networks":
+            self._respond(HTTPStatus.OK, self.service.migration_network_profiles())
+            return
+        if path == "/migration/snapshots":
+            self._respond(HTTPStatus.OK, {"snapshots": self.service.list_migration_snapshots()})
+            return
         if path == "/migration/sources":
             self._respond(HTTPStatus.OK, {"sources": self.service.list_migration_sources()})
             return
@@ -158,11 +164,45 @@ class NodeRequestHandler(BaseHTTPRequestHandler):
                     source_network=source_network,
                     amount=amount,
                     snapshot_ref=str(payload.get("snapshot_ref", "")),
+                    source_address=str(payload.get("source_address", "")),
+                    source_address_format=str(payload.get("source_address_format", "")),
                 )
             except ValueError as error:
                 self._respond(HTTPStatus.BAD_REQUEST, {"error": str(error)})
                 return
             self._respond(HTTPStatus.CREATED, source)
+            return
+
+        if path == "/migration/snapshots/export":
+            try:
+                exported = self.service.export_migration_snapshot(
+                    source_network=str(payload.get("source_network", "")),
+                    snapshot_ref=str(payload.get("snapshot_ref", "")),
+                    include_claimed=bool(payload.get("include_claimed", False)),
+                    sign=bool(payload.get("sign", False)),
+                )
+            except ValueError as error:
+                self._respond(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+                return
+            self._respond(HTTPStatus.OK, exported)
+            return
+
+        if path == "/migration/snapshots":
+            try:
+                snapshot = self.service.import_migration_snapshot(payload)
+            except ValueError as error:
+                self._respond(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+                return
+            self._respond(HTTPStatus.CREATED, snapshot)
+            return
+
+        if path == "/migration/snapshots/sign":
+            try:
+                signed_snapshot = self.service.sign_migration_snapshot(payload)
+            except ValueError as error:
+                self._respond(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+                return
+            self._respond(HTTPStatus.OK, signed_snapshot)
             return
 
         if path == "/wallets/recovery":

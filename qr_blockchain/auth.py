@@ -146,7 +146,7 @@ def verify_signed_envelope(
     *,
     expected_purpose: str,
     expected_chain_id: str,
-    time_skew_seconds: int,
+    time_skew_seconds: int | None,
 ) -> dict[str, object]:
     if str(envelope.get("purpose", "")) != expected_purpose:
         raise ValueError("Auth purpose mismatch.")
@@ -157,9 +157,10 @@ def verify_signed_envelope(
     if str(claims.get("chain_id", "")) != expected_chain_id:
         raise ValueError("Auth chain mismatch.")
 
-    timestamp = int(claims.get("timestamp", 0))
-    if abs(int(time.time()) - timestamp) > time_skew_seconds:
-        raise ValueError("Auth timestamp outside allowed skew.")
+    if time_skew_seconds is not None:
+        timestamp = int(claims.get("timestamp", 0))
+        if abs(int(time.time()) - timestamp) > time_skew_seconds:
+            raise ValueError("Auth timestamp outside allowed skew.")
 
     scheme_id = str(envelope.get("signature_scheme", ""))
     provider = get_signature_verifier(scheme_id)

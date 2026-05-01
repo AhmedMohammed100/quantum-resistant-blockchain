@@ -93,7 +93,24 @@ class SQLiteChainStore:
                     source_network TEXT NOT NULL,
                     amount INTEGER NOT NULL,
                     snapshot_ref TEXT NOT NULL,
+                    snapshot_hash TEXT NOT NULL DEFAULT '',
+                    source_address TEXT NOT NULL DEFAULT '',
+                    source_address_format TEXT NOT NULL DEFAULT '',
                     added_at REAL NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS migration_snapshots (
+                    snapshot_ref TEXT PRIMARY KEY,
+                    source_network TEXT NOT NULL,
+                    manifest_hash TEXT NOT NULL,
+                    entries_root TEXT NOT NULL,
+                    entry_count INTEGER NOT NULL,
+                    total_amount INTEGER NOT NULL,
+                    generated_at REAL NOT NULL,
+                    imported_at REAL NOT NULL,
+                    signer_address TEXT NOT NULL DEFAULT '',
+                    signer_node_id TEXT NOT NULL DEFAULT '',
+                    signer_signature_scheme TEXT NOT NULL DEFAULT '',
+                    signer_signature_provider TEXT NOT NULL DEFAULT ''
                 );
                 CREATE TABLE IF NOT EXISTS migration_claims (
                     classical_address TEXT PRIMARY KEY,
@@ -114,6 +131,34 @@ class SQLiteChainStore:
                 connection.execute("ALTER TABLE pending_transactions ADD COLUMN fee INTEGER NOT NULL DEFAULT 0")
             if "size_bytes" not in columns:
                 connection.execute("ALTER TABLE pending_transactions ADD COLUMN size_bytes INTEGER NOT NULL DEFAULT 0")
+            migration_source_columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(migration_sources)").fetchall()
+            }
+            if "snapshot_hash" not in migration_source_columns:
+                connection.execute("ALTER TABLE migration_sources ADD COLUMN snapshot_hash TEXT NOT NULL DEFAULT ''")
+            if "source_address" not in migration_source_columns:
+                connection.execute("ALTER TABLE migration_sources ADD COLUMN source_address TEXT NOT NULL DEFAULT ''")
+            if "source_address_format" not in migration_source_columns:
+                connection.execute(
+                    "ALTER TABLE migration_sources ADD COLUMN source_address_format TEXT NOT NULL DEFAULT ''"
+                )
+            migration_snapshot_columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(migration_snapshots)").fetchall()
+            }
+            if "signer_address" not in migration_snapshot_columns:
+                connection.execute("ALTER TABLE migration_snapshots ADD COLUMN signer_address TEXT NOT NULL DEFAULT ''")
+            if "signer_node_id" not in migration_snapshot_columns:
+                connection.execute("ALTER TABLE migration_snapshots ADD COLUMN signer_node_id TEXT NOT NULL DEFAULT ''")
+            if "signer_signature_scheme" not in migration_snapshot_columns:
+                connection.execute(
+                    "ALTER TABLE migration_snapshots ADD COLUMN signer_signature_scheme TEXT NOT NULL DEFAULT ''"
+                )
+            if "signer_signature_provider" not in migration_snapshot_columns:
+                connection.execute(
+                    "ALTER TABLE migration_snapshots ADD COLUMN signer_signature_provider TEXT NOT NULL DEFAULT ''"
+                )
 
     def latest_block(self) -> sqlite3.Row | None:
         best_hash = self.best_head_hash()
@@ -282,30 +327,170 @@ class SQLiteChainStore:
         source_network: str,
         amount: int,
         snapshot_ref: str,
+        snapshot_hash: str = "",
+        source_address: str = "",
+        source_address_format: str = "",
         added_at: float,
     ) -> None:
         with self._connect() as connection:
             connection.execute(
                 """
                 INSERT INTO migration_sources (
-                    classical_address, provider_id, source_network, amount, snapshot_ref, added_at
+                    classical_address, provider_id, source_network, amount, snapshot_ref, snapshot_hash,
+                    source_address, source_address_format, added_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(classical_address) DO UPDATE SET
                     provider_id = excluded.provider_id,
                     source_network = excluded.source_network,
                     amount = excluded.amount,
                     snapshot_ref = excluded.snapshot_ref,
+                    snapshot_hash = excluded.snapshot_hash,
+                    source_address = excluded.source_address,
+                    source_address_format = excluded.source_address_format,
                     added_at = excluded.added_at
                 """,
-                (classical_address, provider_id, source_network, amount, snapshot_ref, added_at),
+                (
+                    classical_address,
+                    provider_id,
+                    source_network,
+                    amount,
+                    snapshot_ref,
+                    snapshot_hash,
+                    source_address,
+                    source_address_format,
+                    added_at,
+                ),
             )
+
+    def import_migration_snapshot(
+        self,
+        *,
+        snapshot_ref: str,
+        source_network: str,
+        manifest_hash: str,
+        entries_root: str,
+        entry_count: int,
+        total_amount: int,
+        generated_at: float,
+        imported_at: float,
+        entries: list[dict[str, object]],
+        signer_address: str = "",
+        signer_node_id: str = "",
+        signer_signature_scheme: str = "",
+        signer_signature_provider: str = "",
+    ) -> None:
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                """
+                SELECT snapshot_ref, source_network, manifest_hash, entries_root, entry_count, total_amount, generated_at,
+                       signer_address, signer_node_id, signer_signature_scheme, signer_signature_provider
+                FROM migration_snapshots
+                WHERE snapshot_ref = ?
+                """,
+                (snapshot_ref,),
+            ).fetchone()
+            if existing is not None:
+                if (
+                    str(existing["source_network"]) != source_network
+                    or str(existing["manifest_hash"]) != manifest_hash
+                    or str(existing["entries_root"]) != entries_root
+                    or int(existing["entry_count"]) != entry_count
+                    or int(existing["total_amount"]) != total_amount
+                    or float(existing["generated_at"]) != generated_at
+                    or str(existing["signer_address"]) != signer_address
+                    or str(existing["signer_node_id"]) != signer_node_id
+                    or str(existing["signer_signature_scheme"]) != signer_signature_scheme
+                    or str(existing["signer_signature_provider"]) != signer_signature_provider
+                ):
+                    raise ValueError("Migration snapshot_ref already exists with different contents.")
+            else:
+                connection.execute(
+                    """
+                    INSERT INTO migration_snapshots (
+                        snapshot_ref, source_network, manifest_hash, entries_root, entry_count, total_amount, generated_at, imported_at,
+                        signer_address, signer_node_id, signer_signature_scheme, signer_signature_provider
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        snapshot_ref,
+                        source_network,
+                        manifest_hash,
+                        entries_root,
+                        entry_count,
+                        total_amount,
+                        generated_at,
+                        imported_at,
+                        signer_address,
+                        signer_node_id,
+                        signer_signature_scheme,
+                        signer_signature_provider,
+                    ),
+                )
+
+            for entry in entries:
+                classical_address = str(entry["classical_address"])
+                provider_id = str(entry["provider_id"])
+                amount = int(entry["amount"])
+                existing_source = connection.execute(
+                    """
+                    SELECT provider_id, source_network, amount, snapshot_ref, snapshot_hash,
+                           source_address, source_address_format
+                    FROM migration_sources
+                    WHERE classical_address = ?
+                    """,
+                    (classical_address,),
+                ).fetchone()
+                if existing_source is not None:
+                    if (
+                        str(existing_source["provider_id"]) != provider_id
+                        or str(existing_source["source_network"]) != source_network
+                        or int(existing_source["amount"]) != amount
+                        or str(existing_source["snapshot_ref"]) != snapshot_ref
+                        or str(existing_source["snapshot_hash"]) != manifest_hash
+                        or str(existing_source["source_address"]) != str(entry["source_address"])
+                        or str(existing_source["source_address_format"]) != str(entry["source_address_format"])
+                    ):
+                        raise ValueError(
+                            f"Migration source '{classical_address}' already exists with different contents."
+                        )
+                    continue
+                connection.execute(
+                    """
+                    INSERT INTO migration_sources (
+                        classical_address, provider_id, source_network, amount, snapshot_ref, snapshot_hash,
+                        source_address, source_address_format, added_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        classical_address,
+                        provider_id,
+                        source_network,
+                        amount,
+                        snapshot_ref,
+                        manifest_hash,
+                        str(entry["source_address"]),
+                        str(entry["source_address_format"]),
+                        imported_at,
+                    ),
+                )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
 
     def migration_source(self, classical_address: str) -> dict[str, object] | None:
         with self._connect() as connection:
             row = connection.execute(
                 """
-                SELECT classical_address, provider_id, source_network, amount, snapshot_ref, added_at
+                SELECT classical_address, provider_id, source_network, amount, snapshot_ref, snapshot_hash,
+                       source_address, source_address_format, added_at
                 FROM migration_sources
                 WHERE classical_address = ?
                 """,
@@ -319,8 +504,39 @@ class SQLiteChainStore:
             "source_network": str(row["source_network"]),
             "amount": int(row["amount"]),
             "snapshot_ref": str(row["snapshot_ref"]),
+            "snapshot_hash": str(row["snapshot_hash"]),
+            "source_address": str(row["source_address"]),
+            "source_address_format": str(row["source_address_format"]),
             "added_at": float(row["added_at"]),
         }
+
+    def list_migration_snapshots(self) -> list[dict[str, object]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT snapshot_ref, source_network, manifest_hash, entries_root, entry_count, total_amount, generated_at, imported_at,
+                       signer_address, signer_node_id, signer_signature_scheme, signer_signature_provider
+                FROM migration_snapshots
+                ORDER BY imported_at ASC, snapshot_ref ASC
+                """
+            ).fetchall()
+        return [
+            {
+                "snapshot_ref": str(row["snapshot_ref"]),
+                "source_network": str(row["source_network"]),
+                "manifest_hash": str(row["manifest_hash"]),
+                "entries_root": str(row["entries_root"]),
+                "entry_count": int(row["entry_count"]),
+                "total_amount": int(row["total_amount"]),
+                "generated_at": float(row["generated_at"]),
+                "imported_at": float(row["imported_at"]),
+                "signer_address": str(row["signer_address"]),
+                "signer_node_id": str(row["signer_node_id"]),
+                "signer_signature_scheme": str(row["signer_signature_scheme"]),
+                "signer_signature_provider": str(row["signer_signature_provider"]),
+            }
+            for row in rows
+        ]
 
     def list_migration_sources(self) -> list[dict[str, object]]:
         with self._connect() as connection:
@@ -331,6 +547,9 @@ class SQLiteChainStore:
                        source.source_network,
                        source.amount,
                        source.snapshot_ref,
+                       source.snapshot_hash,
+                       source.source_address,
+                       source.source_address_format,
                        source.added_at,
                        claim.destination_address,
                        claim.tx_id,
@@ -350,6 +569,9 @@ class SQLiteChainStore:
                     "source_network": str(row["source_network"]),
                     "amount": int(row["amount"]),
                     "snapshot_ref": str(row["snapshot_ref"]),
+                    "snapshot_hash": str(row["snapshot_hash"]),
+                    "source_address": str(row["source_address"]),
+                    "source_address_format": str(row["source_address_format"]),
                     "added_at": float(row["added_at"]),
                     "claimed": row["tx_id"] is not None,
                     "destination_address": None if row["destination_address"] is None else str(row["destination_address"]),
@@ -358,6 +580,54 @@ class SQLiteChainStore:
                 }
             )
         return items
+
+    def export_migration_sources(
+        self,
+        *,
+        source_network: str,
+        snapshot_ref: str = "",
+        include_claimed: bool = False,
+    ) -> list[dict[str, object]]:
+        query = """
+            SELECT source.classical_address,
+                   source.provider_id,
+                   source.source_network,
+                   source.amount,
+                   source.snapshot_ref,
+                   source.snapshot_hash,
+                   source.source_address,
+                   source.source_address_format,
+                   source.added_at,
+                   claim.tx_id
+            FROM migration_sources AS source
+            LEFT JOIN migration_claims AS claim
+                ON claim.classical_address = source.classical_address
+            WHERE source.source_network = ?
+        """
+        parameters: list[object] = [source_network]
+        if snapshot_ref:
+            query += " AND source.snapshot_ref = ?"
+            parameters.append(snapshot_ref)
+        if not include_claimed:
+            query += " AND claim.tx_id IS NULL"
+        query += " ORDER BY source.snapshot_ref ASC, source.classical_address ASC"
+        with self._connect() as connection:
+            rows = connection.execute(query, tuple(parameters)).fetchall()
+        return [
+            {
+                "classical_address": str(row["classical_address"]),
+                "provider_id": str(row["provider_id"]),
+                "source_network": str(row["source_network"]),
+                "amount": int(row["amount"]),
+                "snapshot_ref": str(row["snapshot_ref"]),
+                "snapshot_hash": str(row["snapshot_hash"]),
+                "source_address": str(row["source_address"]),
+                "source_address_format": str(row["source_address_format"]),
+                "added_at": float(row["added_at"]),
+                "claimed": row["tx_id"] is not None,
+            }
+            for row in rows
+        ]
 
     def migration_claim(self, classical_address: str) -> dict[str, object] | None:
         with self._connect() as connection:

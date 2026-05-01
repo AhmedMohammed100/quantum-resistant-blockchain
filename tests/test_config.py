@@ -38,7 +38,10 @@ class NodeConfigTests(unittest.TestCase):
             "QR_CHAIN_MIGRATION_CLAIM_END_HEIGHT": "50",
             "QR_CHAIN_MIGRATION_DUAL_CONTROL_START_HEIGHT": "12",
             "QR_CHAIN_MIGRATION_DUAL_CONTROL_END_HEIGHT": "40",
+            "QR_CHAIN_MIGRATION_REQUIRE_SNAPSHOT_SIGNATURES": "true",
             "QR_CHAIN_MIGRATION_ALLOWED_CLASSICAL_PROVIDERS": "ecdsa_secp256k1_migration_v1,rsa_pkcs1v15_sha256_migration_v1",
+            "QR_CHAIN_MIGRATION_TRUSTED_SNAPSHOT_SIGNERS": "signer-a,signer-b",
+            "QR_CHAIN_MIGRATION_TRUSTED_SNAPSHOT_NODES": "node-a,node-b",
             "QR_CHAIN_PREFERRED_SIGNATURE_PROVIDERS": "sphincsplus_v1,lms_nist_v1,xmss_nist_v1",
             "QR_CHAIN_ALLOWED_SIGNATURE_PROVIDERS": "xmss_nist_v1,sphincsplus_v1",
         }
@@ -73,10 +76,13 @@ class NodeConfigTests(unittest.TestCase):
         self.assertEqual(config.migration_claim_end_height, 50)
         self.assertEqual(config.migration_dual_control_start_height, 12)
         self.assertEqual(config.migration_dual_control_end_height, 40)
+        self.assertTrue(config.migration_require_snapshot_signatures)
         self.assertEqual(
             config.migration_allowed_classical_providers,
             ("ecdsa_secp256k1_migration_v1", "rsa_pkcs1v15_sha256_migration_v1"),
         )
+        self.assertEqual(config.migration_trusted_snapshot_signers, ("signer-a", "signer-b"))
+        self.assertEqual(config.migration_trusted_snapshot_nodes, ("node-a", "node-b"))
         self.assertEqual(
             config.preferred_signature_providers,
             ("sphincsplus_v1", "lms_nist_v1", "xmss_nist_v1"),
