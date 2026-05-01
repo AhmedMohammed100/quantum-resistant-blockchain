@@ -87,6 +87,23 @@ class SQLiteChainStore:
                     expires_at REAL NOT NULL,
                     status TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS migration_sources (
+                    classical_address TEXT PRIMARY KEY,
+                    provider_id TEXT NOT NULL,
+                    source_network TEXT NOT NULL,
+                    amount INTEGER NOT NULL,
+                    snapshot_ref TEXT NOT NULL,
+                    added_at REAL NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS migration_claims (
+                    classical_address TEXT PRIMARY KEY,
+                    provider_id TEXT NOT NULL,
+                    source_network TEXT NOT NULL,
+                    destination_address TEXT NOT NULL,
+                    amount INTEGER NOT NULL,
+                    tx_id TEXT NOT NULL,
+                    claimed_at REAL NOT NULL
+                );
                 """
             )
             columns = {
@@ -206,6 +223,16 @@ class SQLiteChainStore:
             self._apply_block_to_utxos(utxos, block)
         return utxos
 
+    def claimed_classical_addresses_for_head(self, block_hash: str | None) -> set[str]:
+        if block_hash is None:
+            return set()
+        claims: set[str] = set()
+        for block in self.path_to_root(block_hash):
+            for transaction in block.transactions:
+                if transaction.kind == "migration_claim":
+                    claims.add(str(transaction.metadata.get("classical_address", "")))
+        return claims
+
     def pending_transactions(self) -> list[Transaction]:
         with self._connect() as connection:
             rows = connection.execute(
@@ -246,6 +273,113 @@ class SQLiteChainStore:
                 f"DELETE FROM pending_transactions WHERE tx_id IN ({placeholders})",
                 transaction_ids,
             )
+
+    def add_migration_source(
+        self,
+        *,
+        classical_address: str,
+        provider_id: str,
+        source_network: str,
+        amount: int,
+        snapshot_ref: str,
+        added_at: float,
+    ) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO migration_sources (
+                    classical_address, provider_id, source_network, amount, snapshot_ref, added_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(classical_address) DO UPDATE SET
+                    provider_id = excluded.provider_id,
+                    source_network = excluded.source_network,
+                    amount = excluded.amount,
+                    snapshot_ref = excluded.snapshot_ref,
+                    added_at = excluded.added_at
+                """,
+                (classical_address, provider_id, source_network, amount, snapshot_ref, added_at),
+            )
+
+    def migration_source(self, classical_address: str) -> dict[str, object] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT classical_address, provider_id, source_network, amount, snapshot_ref, added_at
+                FROM migration_sources
+                WHERE classical_address = ?
+                """,
+                (classical_address,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "classical_address": str(row["classical_address"]),
+            "provider_id": str(row["provider_id"]),
+            "source_network": str(row["source_network"]),
+            "amount": int(row["amount"]),
+            "snapshot_ref": str(row["snapshot_ref"]),
+            "added_at": float(row["added_at"]),
+        }
+
+    def list_migration_sources(self) -> list[dict[str, object]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT source.classical_address,
+                       source.provider_id,
+                       source.source_network,
+                       source.amount,
+                       source.snapshot_ref,
+                       source.added_at,
+                       claim.destination_address,
+                       claim.tx_id,
+                       claim.claimed_at
+                FROM migration_sources AS source
+                LEFT JOIN migration_claims AS claim
+                    ON claim.classical_address = source.classical_address
+                ORDER BY source.classical_address ASC
+                """
+            ).fetchall()
+        items: list[dict[str, object]] = []
+        for row in rows:
+            items.append(
+                {
+                    "classical_address": str(row["classical_address"]),
+                    "provider_id": str(row["provider_id"]),
+                    "source_network": str(row["source_network"]),
+                    "amount": int(row["amount"]),
+                    "snapshot_ref": str(row["snapshot_ref"]),
+                    "added_at": float(row["added_at"]),
+                    "claimed": row["tx_id"] is not None,
+                    "destination_address": None if row["destination_address"] is None else str(row["destination_address"]),
+                    "claim_tx_id": None if row["tx_id"] is None else str(row["tx_id"]),
+                    "claimed_at": None if row["claimed_at"] is None else float(row["claimed_at"]),
+                }
+            )
+        return items
+
+    def migration_claim(self, classical_address: str) -> dict[str, object] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT classical_address, provider_id, source_network, destination_address, amount, tx_id, claimed_at
+                FROM migration_claims
+                WHERE classical_address = ?
+                """,
+                (classical_address,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "classical_address": str(row["classical_address"]),
+            "provider_id": str(row["provider_id"]),
+            "source_network": str(row["source_network"]),
+            "destination_address": str(row["destination_address"]),
+            "amount": int(row["amount"]),
+            "tx_id": str(row["tx_id"]),
+            "claimed_at": float(row["claimed_at"]),
+        }
 
     def list_utxos(self, addresses: list[str] | None = None) -> list[tuple[str, int, TxOutput]]:
         with self._connect() as connection:
@@ -339,6 +473,28 @@ class SQLiteChainStore:
                     f"DELETE FROM pending_transactions WHERE tx_id IN ({placeholders})",
                     included_ids,
                 )
+            connection.execute("DELETE FROM migration_claims")
+            for block in canonical_blocks:
+                for transaction in block.transactions:
+                    if transaction.kind != "migration_claim":
+                        continue
+                    connection.execute(
+                        """
+                        INSERT OR REPLACE INTO migration_claims (
+                            classical_address, provider_id, source_network, destination_address, amount, tx_id, claimed_at
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            str(transaction.metadata.get("classical_address", "")),
+                            str(transaction.metadata.get("classical_provider_id", "")),
+                            str(transaction.metadata.get("source_network", "")),
+                            transaction.outputs[0].recipient if transaction.outputs else "",
+                            sum(output.amount for output in transaction.outputs),
+                            transaction.tx_id,
+                            transaction.timestamp,
+                        ),
+                    )
             connection.execute(
                 """
                 INSERT INTO chain_state (key, value)
@@ -561,15 +717,43 @@ class SQLiteChainStore:
                 (now,),
             )
 
+    def peer_identity_count(self, *, status: str | None = None) -> int:
+        with self._connect() as connection:
+            if status is None:
+                row = connection.execute("SELECT COUNT(*) AS count FROM peer_identities").fetchone()
+            else:
+                row = connection.execute(
+                    "SELECT COUNT(*) AS count FROM peer_identities WHERE status = ?",
+                    (status,),
+                ).fetchone()
+        return int(row["count"])
+
+    def peer_session_counts(self) -> dict[str, int]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT status, COUNT(*) AS count
+                FROM peer_sessions
+                GROUP BY status
+                """
+            ).fetchall()
+        return {str(row["status"]): int(row["count"]) for row in rows}
+
     def summary(self) -> dict[str, object]:
         latest = self.latest_block()
         with self._connect() as connection:
             pending = connection.execute("SELECT COUNT(*) AS count FROM pending_transactions").fetchone()
+            pending_bytes = connection.execute("SELECT COALESCE(SUM(size_bytes), 0) AS total FROM pending_transactions").fetchone()
             utxos = connection.execute("SELECT COUNT(*) AS count FROM utxos").fetchone()
+            migration_sources = connection.execute("SELECT COUNT(*) AS count FROM migration_sources").fetchone()
+            migration_claims = connection.execute("SELECT COUNT(*) AS count FROM migration_claims").fetchone()
         return {
             "height": self.block_count(),
             "pending_transactions": int(pending["count"]),
+            "pending_transaction_bytes": int(pending_bytes["total"]),
             "utxo_count": int(utxos["count"]),
+            "migration_source_count": int(migration_sources["count"]),
+            "migration_claim_count": int(migration_claims["count"]),
             "latest_block_hash": None if latest is None else str(latest["block_hash"]),
             "canonical_work": 0 if latest is None else int(latest["cumulative_work"]),
         }

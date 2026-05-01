@@ -37,7 +37,8 @@ class SignatureProviderRegistryTests(unittest.TestCase):
         self.assertIn("lms_nist_v1", providers)
         self.assertIn("sphincsplus_v1", providers)
         self.assertEqual(providers["xmss_nist_v1"].status, "adapter_ready")
-        self.assertEqual(providers["sphincsplus_v1"].implementation, "external_backend_boundary")
+        self.assertEqual(providers["lms_nist_v1"].implementation, "external_module_adapter")
+        self.assertEqual(providers["sphincsplus_v1"].implementation, "external_module_adapter")
 
     def test_resolves_verifier_by_scheme_id(self) -> None:
         verifier = get_signature_verifier("xmss_merkle_lamport_v1")
@@ -45,8 +46,65 @@ class SignatureProviderRegistryTests(unittest.TestCase):
 
     def test_planned_provider_boundary_raises_cleanly(self) -> None:
         provider = get_signature_provider("sphincsplus_v1")
-        with self.assertRaisesRegex(ValueError, "migration boundary"):
-            provider.generate_keypair()
+        with patch.dict(
+            os.environ,
+            {
+                "QR_CHAIN_SPHINCSPLUS_BACKEND_MODULE": "missing_sphincs_backend",
+            },
+            clear=False,
+        ):
+            with self.assertRaisesRegex(ValueError, "missing_sphincs_backend"):
+                provider.generate_keypair()
+
+    def test_lms_provider_reports_precise_dependency_error(self) -> None:
+        provider = get_signature_provider("lms_nist_v1")
+        with patch.dict(
+            os.environ,
+            {
+                "QR_CHAIN_LMS_BACKEND_MODULE": "missing_lms_backend",
+            },
+            clear=False,
+        ):
+            with self.assertRaisesRegex(ValueError, "missing_lms_backend"):
+                provider.generate_keypair()
+
+    def test_sphincsplus_provider_reports_precise_dependency_error(self) -> None:
+        provider = get_signature_provider("sphincsplus_v1")
+        with patch.dict(
+            os.environ,
+            {
+                "QR_CHAIN_SPHINCSPLUS_BACKEND_MODULE": "missing_sphincs_backend",
+            },
+            clear=False,
+        ):
+            with self.assertRaisesRegex(ValueError, "missing_sphincs_backend"):
+                provider.generate_keypair()
+
+    def test_lists_backend_status_for_missing_lms_provider(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "QR_CHAIN_LMS_BACKEND_MODULE": "missing_lms_backend",
+            },
+            clear=False,
+        ):
+            providers = {item["provider_id"]: item for item in list_signature_provider_statuses()}
+
+        self.assertFalse(providers["lms_nist_v1"]["available"])
+        self.assertIn("missing_lms_backend", providers["lms_nist_v1"]["error"])
+
+    def test_lists_backend_status_for_missing_sphincsplus_provider(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "QR_CHAIN_SPHINCSPLUS_BACKEND_MODULE": "missing_sphincs_backend",
+            },
+            clear=False,
+        ):
+            providers = {item["provider_id"]: item for item in list_signature_provider_statuses()}
+
+        self.assertFalse(providers["sphincsplus_v1"]["available"])
+        self.assertIn("missing_sphincs_backend", providers["sphincsplus_v1"]["error"])
 
     def test_xmss_external_provider_scaffold_uses_reference_backend(self) -> None:
         provider = get_signature_provider("xmss_nist_v1")
@@ -335,7 +393,6 @@ class SignatureProviderRegistryTests(unittest.TestCase):
 
         self.assertFalse(providers["xmss_nist_v1"]["available"])
         self.assertIn("missing_xmss_backend", providers["xmss_nist_v1"]["error"])
-        self.assertFalse(providers["sphincsplus_v1"]["available"])
 
     def test_lists_backend_status_for_missing_oqs_library_target(self) -> None:
         with patch.dict(

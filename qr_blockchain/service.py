@@ -11,6 +11,12 @@ from .auth import NodeIdentityManager, request_claims_digest, verify_signed_enve
 from .config import NodeConfig
 from .crypto import get_signature_provider, get_signature_verifier, list_signature_provider_statuses
 from .custody import WalletCustodyConfig
+from .migration import (
+    classical_claim_message_bytes,
+    destination_acceptance_message_bytes,
+    get_classical_claim_verifier,
+    list_classical_claim_verifier_statuses,
+)
 from .models import Block, Transaction, TxInput, TxOutput
 from .network import fetch_json, normalize_peer_url, with_path
 from .protocol import build_peer_frame, parse_peer_frame
@@ -22,6 +28,14 @@ class NodeService:
     def __init__(self, config: NodeConfig):
         self.config = config
         self.store = SQLiteChainStore(config.db_path)
+        self.wallet_state_store = SQLiteWalletStateStore(
+            config.wallet_state_db_path,
+            custody_config=WalletCustodyConfig(
+                mode=config.wallet_custody_mode,
+                scope=config.wallet_custody_scope,
+            ),
+            reservation_ttl_seconds=config.wallet_reservation_ttl_seconds,
+        )
         self.identity = NodeIdentityManager(config, config.default_signature_provider, config.wallet_state_db_path)
         for peer in config.peers:
             self.store.add_peer(normalize_peer_url(peer))
@@ -65,7 +79,11 @@ class NodeService:
 
     def submit_transaction(self, transaction: Transaction) -> None:
         self._enforce_mempool_policy(transaction)
-        self._validate_transaction_against_view(transaction, self.store.all_utxos())
+        self._validate_transaction_against_view(
+            transaction,
+            self.store.all_utxos(),
+            effective_height=self.store.block_count(),
+        )
         self._check_pending_double_spends(transaction)
         try:
             self.store.save_pending_transaction(transaction)
@@ -131,7 +149,7 @@ class NodeService:
             if any(transaction.chain_id != self.config.chain_id for transaction in block.transactions):
                 raise ValueError("Genesis block contains a transaction for a different chain.")
             for transaction in block.transactions:
-                self._validate_transaction_against_view(transaction, {})
+                self._validate_transaction_against_view(transaction, {}, effective_height=0)
             return
 
         parent_row = self.store.block_row(block.previous_hash)
@@ -145,14 +163,29 @@ class NodeService:
             raise ValueError("First block transaction must be the reward transaction.")
 
         utxo_view = self.store.utxos_for_head(block.previous_hash)
+        claimed_view = self.store.claimed_classical_addresses_for_head(block.previous_hash)
         spent_in_block: set[tuple[str, int]] = set()
+        claimed_in_block: set[str] = set()
         fee_total = 0
 
         for index, transaction in enumerate(block.transactions):
-            self._validate_transaction_against_view(transaction, utxo_view)
+            self._validate_transaction_against_view(
+                transaction,
+                utxo_view,
+                effective_height=block.index,
+                claimed_classical_addresses=claimed_view | claimed_in_block,
+            )
             if index == 0:
                 continue
             fee_total += transaction.fee
+            if transaction.kind == "migration_claim":
+                classical_address = str(transaction.metadata.get("classical_address", ""))
+                if classical_address in claimed_in_block:
+                    raise ValueError("Block contains a duplicate migration claim.")
+                claimed_in_block.add(classical_address)
+                for output_index, output in enumerate(transaction.outputs):
+                    utxo_view[(transaction.tx_id, output_index)] = output
+                continue
             for tx_input in transaction.inputs:
                 key = (tx_input.prev_tx_id, tx_input.output_index)
                 if key in spent_in_block:
@@ -389,15 +422,231 @@ class NodeService:
         summary["best_head_hash"] = self.store.best_head_hash()
         return summary
 
+    def migration_policy(self, height: int | None = None) -> dict[str, object]:
+        effective_height = self.store.block_count() if height is None else height
+        dual_control_required = self._migration_dual_control_required(effective_height)
+        claims_open = self._height_in_window(
+            effective_height,
+            self.config.migration_claim_start_height,
+            self.config.migration_claim_end_height,
+        )
+        return {
+            "effective_height": effective_height,
+            "claims_open": claims_open,
+            "claim_start_height": self.config.migration_claim_start_height,
+            "claim_end_height": self.config.migration_claim_end_height,
+            "dual_control_required": dual_control_required,
+            "dual_control_start_height": self.config.migration_dual_control_start_height,
+            "dual_control_end_height": self.config.migration_dual_control_end_height,
+            "allowed_classical_providers": list(self.config.migration_allowed_classical_providers),
+        }
+
     def signature_provider_statuses(self) -> dict[str, object]:
         providers = list_signature_provider_statuses()
         return {
             "default_signature_provider": self.config.default_signature_provider,
+            "provider_policy": self.signature_provider_policy(),
             "wallet_custody": self.identity.custody_status(),
             "wallet_reservation_status": self.identity.reservation_status_counts(),
             "peer_protocol_version": self.config.peer_protocol_version,
             "providers": providers,
+            "migration_providers": list_classical_claim_verifier_statuses(),
         }
+
+    def signature_provider_policy(self) -> dict[str, object]:
+        provider_statuses = {item["provider_id"]: item for item in list_signature_provider_statuses()}
+        allowed = list(self.config.allowed_signature_providers)
+        preferred = list(self.config.preferred_signature_providers)
+        candidates = preferred or list(provider_statuses.keys())
+        if allowed:
+            candidates = [provider_id for provider_id in candidates if provider_id in allowed]
+        recommended = next(
+            (
+                provider_id
+                for provider_id in candidates
+                if provider_statuses.get(provider_id, {}).get("available", False)
+            ),
+            None,
+        )
+        recommended_stateless = next(
+            (
+                provider_id
+                for provider_id in candidates
+                if provider_statuses.get(provider_id, {}).get("available", False)
+                and not provider_statuses.get(provider_id, {}).get("supports_stateful_signing", True)
+            ),
+            recommended,
+        )
+        return {
+            "allowed_signature_providers": allowed,
+            "preferred_signature_providers": preferred,
+            "recommended_signature_provider": recommended,
+            "recommended_stateless_provider": recommended_stateless,
+        }
+
+    def wallet_key_statuses(
+        self,
+        *,
+        label: str | None = None,
+        provider_id: str | None = None,
+    ) -> dict[str, object]:
+        statuses = self.wallet_state_store.wallet_key_statuses(label=label, provider_id=provider_id)
+        return {
+            "wallet_keys": statuses,
+            "reservation_status": self.wallet_state_store.reservation_status_counts(),
+            "wallet_custody": self.wallet_state_store.custody_status(),
+        }
+
+    def recover_wallet_key(
+        self,
+        label: str,
+        address: str,
+        provider_id: str,
+        *,
+        note: str = "operator acknowledged interrupted signer reservation",
+    ) -> dict[str, object]:
+        return self.wallet_state_store.recover_wallet_key(
+            label,
+            address,
+            provider_id,
+            note=note,
+        )
+
+    def operational_status(self) -> dict[str, object]:
+        chain = self.chain_summary()
+        provider_statuses = list_signature_provider_statuses()
+        migration_provider_statuses = list_classical_claim_verifier_statuses()
+        reservation_counts = self.wallet_state_store.reservation_status_counts()
+        peer_session_counts = self.store.peer_session_counts()
+        default_provider_unavailable = [
+            item["provider_id"]
+            for item in provider_statuses
+            if item["provider_id"] == self.config.default_signature_provider and not item.get("available", False)
+        ]
+        requires_recovery = int(reservation_counts.get("requires_recovery", 0))
+        health = "ok"
+        reasons: list[str] = []
+        if default_provider_unavailable:
+            health = "degraded"
+            reasons.append("the configured default PQ provider is not available")
+        if requires_recovery:
+            health = "degraded"
+            reasons.append("one or more wallet keys require signer recovery")
+        return {
+            "status": health,
+            "reasons": reasons,
+            "chain": chain,
+            "wallet_custody": self.wallet_state_store.custody_status(),
+            "wallet_reservation_status": reservation_counts,
+            "providers": {
+                "default_signature_provider": self.config.default_signature_provider,
+                "policy": self.signature_provider_policy(),
+                "unavailable_provider_ids": [
+                    item["provider_id"] for item in provider_statuses if not item.get("available", False)
+                ],
+                "migration_provider_ids": [item["provider_id"] for item in migration_provider_statuses],
+            },
+            "migration_policy": self.migration_policy(chain["height"]),
+            "peers": {
+                "configured": len(self.config.peers),
+                "known": len(self.list_peers()),
+                "admitted": self.store.peer_identity_count(status="admitted"),
+                "sessions": peer_session_counts,
+            },
+        }
+
+    def metrics_snapshot(self) -> dict[str, object]:
+        chain = self.chain_summary()
+        peer_session_counts = self.store.peer_session_counts()
+        provider_statuses = list_signature_provider_statuses()
+        active_provider_statuses = [item for item in provider_statuses if item.get("status") != "planned"]
+        available_provider_count = sum(1 for item in active_provider_statuses if item.get("available", False))
+        return {
+            "chain_height": int(chain["height"]),
+            "canonical_work": int(chain["canonical_work"]),
+            "pending_transactions": int(chain["pending_transactions"]),
+            "pending_transaction_bytes": int(chain.get("pending_transaction_bytes", 0)),
+            "utxo_count": int(chain["utxo_count"]),
+            "migration_source_count": int(chain.get("migration_source_count", 0)),
+            "migration_claim_count": int(chain.get("migration_claim_count", 0)),
+            "peer_count": len(self.list_peers()),
+            "admitted_peer_count": self.store.peer_identity_count(status="admitted"),
+            "active_peer_sessions": int(peer_session_counts.get("active", 0)),
+            "expired_peer_sessions": int(peer_session_counts.get("expired", 0)),
+            "wallet_key_count": len(self.wallet_state_store.wallet_key_statuses()),
+            "wallet_reservation_status": self.wallet_state_store.reservation_status_counts(),
+            "available_provider_count": available_provider_count,
+            "configured_provider_count": len(active_provider_statuses),
+            "migration_provider_count": len(list_classical_claim_verifier_statuses()),
+        }
+
+    def seed_migration_source(
+        self,
+        *,
+        classical_address: str,
+        provider_id: str,
+        source_network: str,
+        amount: int,
+        snapshot_ref: str = "",
+    ) -> dict[str, object]:
+        if not classical_address:
+            raise ValueError("classical_address is required.")
+        if amount <= 0:
+            raise ValueError("migration source amount must be positive.")
+        get_classical_claim_verifier(provider_id)
+        self.store.add_migration_source(
+            classical_address=classical_address,
+            provider_id=provider_id,
+            source_network=source_network,
+            amount=amount,
+            snapshot_ref=snapshot_ref,
+            added_at=time.time(),
+        )
+        source = self.store.migration_source(classical_address)
+        if source is None:
+            raise ValueError("Failed to store migration source.")
+        return source
+
+    def list_migration_sources(self) -> list[dict[str, object]]:
+        items = self.store.list_migration_sources()
+        effective_height = self.store.block_count()
+        policy = self.migration_policy(effective_height)
+        for item in items:
+            item["claims_open"] = policy["claims_open"]
+            item["dual_control_required"] = policy["dual_control_required"]
+            item["claimable"] = policy["claims_open"] and not item["claimed"]
+        return items
+
+    def build_migration_claim_draft(
+        self,
+        *,
+        destination_address: str,
+        classical_address: str,
+        classical_provider_id: str,
+        source_network: str,
+        snapshot_ref: str = "",
+        classical_public_key: object | None = None,
+        timestamp: float | None = None,
+    ) -> Transaction:
+        source = self.store.migration_source(classical_address)
+        if source is None:
+            raise ValueError("Migration source address is unknown.")
+        return Transaction(
+            inputs=[],
+            outputs=[TxOutput(recipient=destination_address, amount=int(source["amount"]))],
+            kind="migration_claim",
+            chain_id=self.config.chain_id,
+            signature_scheme=classical_provider_id,
+            timestamp=round(time.time(), 6) if timestamp is None else timestamp,
+            fee=0,
+            metadata={
+                "classical_address": classical_address,
+                "classical_provider_id": classical_provider_id,
+                "source_network": source_network,
+                "snapshot_ref": snapshot_ref or str(source.get("snapshot_ref", "")),
+                "classical_public_key": {} if classical_public_key is None else classical_public_key,
+            },
+        )
 
     def select_inputs(self, addresses: list[str], target_amount: int) -> tuple[list[tuple[str, int, TxOutput]], int]:
         selected: list[tuple[str, int, TxOutput]] = []
@@ -413,6 +662,9 @@ class NodeService:
         self,
         transaction: Transaction,
         utxo_view: dict[tuple[str, int], TxOutput],
+        *,
+        effective_height: int | None = None,
+        claimed_classical_addresses: set[str] | None = None,
     ) -> None:
         if not transaction.tx_id:
             transaction.finalize()
@@ -421,12 +673,22 @@ class NodeService:
             raise ValueError("Transaction hash mismatch.")
         if transaction.chain_id != self.config.chain_id:
             raise ValueError("Transaction belongs to a different chain.")
+        if transaction.kind not in {"transfer", "migration_claim"}:
+            raise ValueError("Unsupported transaction kind.")
         if not transaction.outputs:
             raise ValueError("Transaction must include at least one output.")
         if any(output.amount <= 0 for output in transaction.outputs):
             raise ValueError("All outputs must be positive.")
         if transaction.fee < 0:
             raise ValueError("Transaction fee cannot be negative.")
+
+        if transaction.kind == "migration_claim":
+            self._validate_migration_claim(
+                transaction,
+                effective_height=self.store.block_count() if effective_height is None else effective_height,
+                claimed_classical_addresses=claimed_classical_addresses,
+            )
+            return
 
         provider = get_signature_verifier(transaction.signature_scheme)
         if not transaction.inputs:
@@ -456,6 +718,16 @@ class NodeService:
             raise ValueError("Transaction spends more than its inputs provide.")
 
     def _check_pending_double_spends(self, candidate: Transaction) -> None:
+        if candidate.kind == "migration_claim":
+            classical_address = str(candidate.metadata.get("classical_address", ""))
+            if not classical_address:
+                raise ValueError("Migration claim metadata is missing classical_address.")
+            for pending in self.store.pending_transactions():
+                if pending.kind != "migration_claim":
+                    continue
+                if str(pending.metadata.get("classical_address", "")) == classical_address:
+                    raise ValueError("Migration claim conflicts with an existing pending classical address claim.")
+            return
         candidate_inputs = {(item.prev_tx_id, item.output_index) for item in candidate.inputs}
         if not candidate_inputs:
             return
@@ -482,6 +754,13 @@ class NodeService:
             raise ValueError("Transaction fee is below the minimum relay policy.")
         if transaction.timestamp > time.time() + self.config.auth_time_skew_seconds:
             raise ValueError("Transaction timestamp is too far in the future.")
+        if transaction.kind == "migration_claim":
+            if transaction.inputs:
+                raise ValueError("Migration claim transactions cannot include UTXO inputs.")
+            if transaction.fee != 0:
+                raise ValueError("Migration claim transactions cannot charge a fee.")
+            if len(transaction.outputs) != 1:
+                raise ValueError("Migration claim transactions must create exactly one PQ output.")
 
     def _select_best_chain(self, candidate_head_hash: str) -> None:
         current_best = self.store.best_head_hash()
@@ -649,6 +928,96 @@ class NodeService:
         )
         return payload
 
+    def _validate_migration_claim(
+        self,
+        transaction: Transaction,
+        *,
+        effective_height: int,
+        claimed_classical_addresses: set[str] | None = None,
+    ) -> None:
+        classical_address = str(transaction.metadata.get("classical_address", ""))
+        provider_id = str(transaction.metadata.get("classical_provider_id", ""))
+        source_network = str(transaction.metadata.get("source_network", ""))
+        public_key = transaction.metadata.get("classical_public_key", {})
+        proof = transaction.metadata.get("classical_signature", {})
+        snapshot_ref = str(transaction.metadata.get("snapshot_ref", ""))
+
+        if not classical_address or not provider_id or not source_network:
+            raise ValueError("Migration claim metadata is incomplete.")
+        if provider_id not in self.config.migration_allowed_classical_providers:
+            raise ValueError("Migration claim provider is not allowed by node policy.")
+        if not self._height_in_window(
+            effective_height,
+            self.config.migration_claim_start_height,
+            self.config.migration_claim_end_height,
+        ):
+            raise ValueError("Migration claim is outside the configured claim window.")
+        source = self.store.migration_source(classical_address)
+        if source is None:
+            raise ValueError("Migration claim source address is unknown.")
+        if source["provider_id"] != provider_id:
+            raise ValueError("Migration claim provider does not match the seeded source.")
+        if source["source_network"] != source_network:
+            raise ValueError("Migration claim source network does not match the seeded source.")
+        if snapshot_ref and source["snapshot_ref"] and snapshot_ref != source["snapshot_ref"]:
+            raise ValueError("Migration claim snapshot reference does not match the seeded source.")
+        if classical_address in (claimed_classical_addresses or set()):
+            raise ValueError("Migration source has already been claimed on this branch.")
+        if claimed_classical_addresses is None and self.store.migration_claim(classical_address) is not None:
+            raise ValueError("Migration source has already been claimed on the canonical chain.")
+        if len(transaction.outputs) != 1:
+            raise ValueError("Migration claim transactions must create exactly one PQ output.")
+        if transaction.outputs[0].amount != int(source["amount"]):
+            raise ValueError("Migration claim amount does not match the seeded source balance.")
+
+        verifier = get_classical_claim_verifier(provider_id)
+        claim_message = classical_claim_message_bytes(transaction.migration_claim_payload())
+        if verifier.address_from_public_key(public_key) != classical_address:
+            raise ValueError("Migration claim public key does not derive the seeded classical address.")
+        if not verifier.verify_claim(claim_message, proof, public_key):
+            raise ValueError("Migration claim proof verification failed.")
+        if self._migration_dual_control_required(effective_height):
+            self._validate_destination_attestation(transaction)
+
+    def _validate_destination_attestation(self, transaction: Transaction) -> None:
+        attestation = transaction.metadata.get("destination_attestation", {})
+        if not isinstance(attestation, dict):
+            raise ValueError("Migration claim destination attestation is missing.")
+        signature_scheme = str(attestation.get("signature_scheme", ""))
+        public_key = attestation.get("public_key", {})
+        signature = attestation.get("signature", {})
+        if not signature_scheme:
+            raise ValueError("Migration claim destination attestation is missing signature_scheme.")
+        if not transaction.outputs:
+            raise ValueError("Migration claim destination attestation requires an output.")
+        provider = get_signature_verifier(signature_scheme)
+        destination_address = transaction.outputs[0].recipient
+        if provider.address_from_public_key(public_key) != destination_address:
+            raise ValueError("Migration claim destination attestation does not match the PQ destination address.")
+        message = destination_acceptance_message_bytes(transaction.migration_claim_payload())
+        if not provider.verify(message, signature, public_key):
+            raise ValueError("Migration claim destination attestation verification failed.")
+
+    @staticmethod
+    def _height_in_window(height: int, start_height: int, end_height: int) -> bool:
+        if height < start_height:
+            return False
+        if end_height > 0 and height > end_height:
+            return False
+        return True
+
+    def _migration_dual_control_required(self, effective_height: int) -> bool:
+        if (
+            self.config.migration_dual_control_start_height == 0
+            and self.config.migration_dual_control_end_height == 0
+        ):
+            return False
+        return self._height_in_window(
+            effective_height,
+            self.config.migration_dual_control_start_height,
+            self.config.migration_dual_control_end_height,
+        )
+
 
 class Wallet:
     def __init__(
@@ -784,3 +1153,88 @@ class Wallet:
                 raise
         transaction.finalize()
         return transaction
+
+    def create_migration_claim(
+        self,
+        service: NodeService,
+        *,
+        classical_address: str,
+        classical_provider_id: str,
+        classical_public_key: object,
+        classical_signature: object,
+        source_network: str,
+        snapshot_ref: str = "",
+        destination_address: str | None = None,
+        timestamp: float | None = None,
+    ) -> Transaction:
+        source = service.store.migration_source(classical_address)
+        if source is None:
+            raise ValueError("Migration source address is unknown.")
+        if source["provider_id"] != classical_provider_id:
+            raise ValueError("Migration source provider does not match the requested claim provider.")
+        if source["source_network"] != source_network:
+            raise ValueError("Migration source network does not match the requested claim network.")
+        target_address = destination_address or self.create_address()
+        if target_address not in self._keys:
+            raise ValueError("Destination address is not controlled by this wallet.")
+        transaction = service.build_migration_claim_draft(
+            destination_address=target_address,
+            classical_address=classical_address,
+            classical_provider_id=classical_provider_id,
+            source_network=source_network,
+            snapshot_ref=snapshot_ref or str(source.get("snapshot_ref", "")),
+            classical_public_key=classical_public_key,
+            timestamp=timestamp,
+        )
+        transaction.metadata["classical_signature"] = classical_signature
+        if service._migration_dual_control_required(service.store.block_count()):
+            transaction.metadata["destination_attestation"] = self._build_destination_attestation(
+                service,
+                target_address,
+                transaction,
+            )
+        transaction.finalize()
+        return transaction
+
+    def _build_destination_attestation(
+        self,
+        service: NodeService,
+        address: str,
+        transaction: Transaction,
+    ) -> dict[str, object]:
+        keypair, reservation, reservation_id = self._reserve_key_usage(address)
+        message = destination_acceptance_message_bytes(transaction.migration_claim_payload())
+        try:
+            if reservation is not None:
+                public_key, signature = self._provider.sign_with_reservation(keypair, message, reservation)
+                if self._state_store is not None and reservation_id is not None:
+                    self._state_store.complete_wallet_key_reservation(
+                        self.label,
+                        address,
+                        self.signature_provider,
+                        reservation_id,
+                        self._provider.serialize_keypair(keypair),
+                        owner_id=self._owner_id,
+                    )
+                else:
+                    self._persist_key(address)
+            else:
+                public_key, signature = self._provider.sign(keypair, message)
+                self._persist_key(address)
+        except Exception as error:
+            if self._state_store is not None and reservation_id is not None:
+                self._state_store.fail_wallet_key_reservation(
+                    self.label,
+                    address,
+                    self.signature_provider,
+                    reservation_id,
+                    owner_id=self._owner_id,
+                    error_message=str(error),
+                )
+            raise
+        return {
+            "address": address,
+            "signature_scheme": self._provider.metadata.scheme_id,
+            "public_key": public_key,
+            "signature": signature,
+        }

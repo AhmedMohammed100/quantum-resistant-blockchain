@@ -31,6 +31,22 @@ class NodeConfig:
     peer_session_ttl_seconds: int = 900
     peer_protocol_version: str = "qr-peer-v1"
     max_peer_blocks_per_request: int = 128
+    migration_claim_start_height: int = 1
+    migration_claim_end_height: int = 0
+    migration_dual_control_start_height: int = 0
+    migration_dual_control_end_height: int = 0
+    migration_allowed_classical_providers: tuple[str, ...] = (
+        "ecdsa_secp256k1_migration_v1",
+        "rsa_pkcs1v15_sha256_migration_v1",
+        "classical_claim_demo_v1",
+    )
+    preferred_signature_providers: tuple[str, ...] = (
+        "sphincsplus_v1",
+        "lms_nist_v1",
+        "xmss_nist_v1",
+        "xmss_merkle_lamport_v1",
+    )
+    allowed_signature_providers: tuple[str, ...] = ()
 
     @staticmethod
     def from_env() -> "NodeConfig":
@@ -39,6 +55,9 @@ class NodeConfig:
             "QR_CHAIN_DEFAULT_SIGNATURE_PROVIDER",
             os.getenv("QR_CHAIN_DEFAULT_SIGNATURE_SCHEME", "xmss_merkle_lamport_v1"),
         )
+        allowed_providers_env = os.getenv("QR_CHAIN_ALLOWED_SIGNATURE_PROVIDERS", "").strip()
+        preferred_providers_env = os.getenv("QR_CHAIN_PREFERRED_SIGNATURE_PROVIDERS", "").strip()
+        migration_providers_env = os.getenv("QR_CHAIN_MIGRATION_ALLOWED_CLASSICAL_PROVIDERS", "").strip()
         return NodeConfig(
             db_path=Path(os.getenv("QR_CHAIN_DB_PATH", "data/chain.db")),
             difficulty=int(os.getenv("QR_CHAIN_DIFFICULTY", "3")),
@@ -64,4 +83,34 @@ class NodeConfig:
             peer_session_ttl_seconds=int(os.getenv("QR_CHAIN_PEER_SESSION_TTL_SECONDS", "900")),
             peer_protocol_version=os.getenv("QR_CHAIN_PEER_PROTOCOL_VERSION", "qr-peer-v1"),
             max_peer_blocks_per_request=int(os.getenv("QR_CHAIN_MAX_PEER_BLOCKS_PER_REQUEST", "128")),
+            migration_claim_start_height=int(os.getenv("QR_CHAIN_MIGRATION_CLAIM_START_HEIGHT", "1")),
+            migration_claim_end_height=int(os.getenv("QR_CHAIN_MIGRATION_CLAIM_END_HEIGHT", "0")),
+            migration_dual_control_start_height=int(os.getenv("QR_CHAIN_MIGRATION_DUAL_CONTROL_START_HEIGHT", "0")),
+            migration_dual_control_end_height=int(os.getenv("QR_CHAIN_MIGRATION_DUAL_CONTROL_END_HEIGHT", "0")),
+            migration_allowed_classical_providers=tuple(
+                item.strip()
+                for item in migration_providers_env.split(",")
+                if item.strip()
+            )
+            or (
+                "ecdsa_secp256k1_migration_v1",
+                "rsa_pkcs1v15_sha256_migration_v1",
+                "classical_claim_demo_v1",
+            ),
+            preferred_signature_providers=tuple(
+                item.strip()
+                for item in preferred_providers_env.split(",")
+                if item.strip()
+            )
+            or (
+                "sphincsplus_v1",
+                "lms_nist_v1",
+                "xmss_nist_v1",
+                "xmss_merkle_lamport_v1",
+            ),
+            allowed_signature_providers=tuple(
+                item.strip()
+                for item in allowed_providers_env.split(",")
+                if item.strip()
+            ),
         )

@@ -41,14 +41,17 @@ class TxInput:
 class Transaction:
     inputs: list[TxInput]
     outputs: list[TxOutput]
+    kind: str = "transfer"
     chain_id: str = "qr-chain-devnet"
     signature_scheme: str = "hash_lamport_v1"
     timestamp: float = field(default_factory=lambda: round(time.time(), 6))
     fee: int = 0
+    metadata: dict[str, object] = field(default_factory=dict)
     tx_id: str = ""
 
     def signing_payload(self) -> bytes:
         payload = {
+            "kind": self.kind,
             "inputs": [
                 {"prev_tx_id": tx_input.prev_tx_id, "output_index": tx_input.output_index}
                 for tx_input in self.inputs
@@ -58,30 +61,50 @@ class Transaction:
             "signature_scheme": self.signature_scheme,
             "timestamp": self.timestamp,
             "fee": self.fee,
+            "metadata": self.metadata,
+        }
+        return canonical_json(payload).encode("utf-8")
+
+    def migration_claim_payload(self) -> bytes:
+        payload = {
+            "kind": self.kind,
+            "chain_id": self.chain_id,
+            "timestamp": self.timestamp,
+            "outputs": [asdict(output) for output in self.outputs],
+            "metadata": {
+                "classical_address": str(self.metadata.get("classical_address", "")),
+                "classical_provider_id": str(self.metadata.get("classical_provider_id", "")),
+                "source_network": str(self.metadata.get("source_network", "")),
+                "snapshot_ref": str(self.metadata.get("snapshot_ref", "")),
+            },
         }
         return canonical_json(payload).encode("utf-8")
 
     def serialize(self) -> str:
         return canonical_json(
             {
+                "kind": self.kind,
                 "inputs": [asdict(tx_input) for tx_input in self.inputs],
                 "outputs": [asdict(output) for output in self.outputs],
                 "chain_id": self.chain_id,
                 "signature_scheme": self.signature_scheme,
                 "timestamp": self.timestamp,
                 "fee": self.fee,
+                "metadata": self.metadata,
             }
         )
 
     def serialize_with_id(self) -> str:
         return canonical_json(
             {
+                "kind": self.kind,
                 "inputs": [asdict(tx_input) for tx_input in self.inputs],
                 "outputs": [asdict(output) for output in self.outputs],
                 "chain_id": self.chain_id,
                 "signature_scheme": self.signature_scheme,
                 "timestamp": self.timestamp,
                 "fee": self.fee,
+                "metadata": self.metadata,
                 "tx_id": self.tx_id,
             }
         )
@@ -94,10 +117,12 @@ class Transaction:
         transaction = Transaction(
             inputs=[TxInput.from_dict(item) for item in data.get("inputs", [])],
             outputs=[TxOutput.from_dict(item) for item in data.get("outputs", [])],
+            kind=str(data.get("kind", "transfer")),
             chain_id=str(data.get("chain_id", "qr-chain-devnet")),
             signature_scheme=str(data.get("signature_scheme", "hash_lamport_v1")),
             timestamp=float(data.get("timestamp", round(time.time(), 6))),
             fee=int(data.get("fee", 0)),
+            metadata=dict(data.get("metadata", {})),
             tx_id=str(data.get("tx_id", "")),
         )
         if not transaction.tx_id:

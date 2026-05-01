@@ -34,6 +34,13 @@ class NodeConfigTests(unittest.TestCase):
             "QR_CHAIN_PEER_SESSION_TTL_SECONDS": "1800",
             "QR_CHAIN_PEER_PROTOCOL_VERSION": "qr-peer-v2",
             "QR_CHAIN_MAX_PEER_BLOCKS_PER_REQUEST": "33",
+            "QR_CHAIN_MIGRATION_CLAIM_START_HEIGHT": "10",
+            "QR_CHAIN_MIGRATION_CLAIM_END_HEIGHT": "50",
+            "QR_CHAIN_MIGRATION_DUAL_CONTROL_START_HEIGHT": "12",
+            "QR_CHAIN_MIGRATION_DUAL_CONTROL_END_HEIGHT": "40",
+            "QR_CHAIN_MIGRATION_ALLOWED_CLASSICAL_PROVIDERS": "ecdsa_secp256k1_migration_v1,rsa_pkcs1v15_sha256_migration_v1",
+            "QR_CHAIN_PREFERRED_SIGNATURE_PROVIDERS": "sphincsplus_v1,lms_nist_v1,xmss_nist_v1",
+            "QR_CHAIN_ALLOWED_SIGNATURE_PROVIDERS": "xmss_nist_v1,sphincsplus_v1",
         }
         with patch.dict(os.environ, env, clear=False):
             config = NodeConfig.from_env()
@@ -62,6 +69,22 @@ class NodeConfigTests(unittest.TestCase):
         self.assertEqual(config.peer_session_ttl_seconds, 1800)
         self.assertEqual(config.peer_protocol_version, "qr-peer-v2")
         self.assertEqual(config.max_peer_blocks_per_request, 33)
+        self.assertEqual(config.migration_claim_start_height, 10)
+        self.assertEqual(config.migration_claim_end_height, 50)
+        self.assertEqual(config.migration_dual_control_start_height, 12)
+        self.assertEqual(config.migration_dual_control_end_height, 40)
+        self.assertEqual(
+            config.migration_allowed_classical_providers,
+            ("ecdsa_secp256k1_migration_v1", "rsa_pkcs1v15_sha256_migration_v1"),
+        )
+        self.assertEqual(
+            config.preferred_signature_providers,
+            ("sphincsplus_v1", "lms_nist_v1", "xmss_nist_v1"),
+        )
+        self.assertEqual(
+            config.allowed_signature_providers,
+            ("xmss_nist_v1", "sphincsplus_v1"),
+        )
 
 
 if __name__ == "__main__":

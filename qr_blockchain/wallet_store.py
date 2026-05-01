@@ -361,6 +361,7 @@ class SQLiteWalletStateStore:
             connection.close()
 
     def has_pending_reservation(self, label: str, address: str, provider_id: str) -> bool:
+        self.refresh_reservation_states()
         with self._connect() as connection:
             row = connection.execute(
                 """
@@ -374,6 +375,7 @@ class SQLiteWalletStateStore:
         return row is not None
 
     def reservation_status_counts(self) -> dict[str, int]:
+        self.refresh_reservation_states()
         with self._connect() as connection:
             rows = connection.execute(
                 """
@@ -383,6 +385,133 @@ class SQLiteWalletStateStore:
                 """
             ).fetchall()
         return {str(row["status"]): int(row["count"]) for row in rows}
+
+    def refresh_reservation_states(self, *, now: float | None = None) -> None:
+        timestamp = time.time() if now is None else now
+        with self._connect() as connection:
+            self._expire_completed_reservations(connection, timestamp)
+            connection.commit()
+
+    def wallet_key_statuses(
+        self,
+        *,
+        label: str | None = None,
+        provider_id: str | None = None,
+    ) -> list[dict[str, object]]:
+        self.refresh_reservation_states()
+        clauses: list[str] = []
+        params: list[object] = []
+        if label is not None:
+            clauses.append("label = ?")
+            params.append(label)
+        if provider_id is not None:
+            clauses.append("provider_id = ?")
+            params.append(provider_id)
+
+        where_clause = ""
+        if clauses:
+            where_clause = "WHERE " + " AND ".join(clauses)
+
+        with self._connect() as connection:
+            key_rows = connection.execute(
+                f"""
+                SELECT label, address, provider_id, state_version, custody_backend
+                FROM wallet_keys
+                {where_clause}
+                ORDER BY label ASC, address ASC
+                """,
+                params,
+            ).fetchall()
+            statuses: list[dict[str, object]] = []
+            for row in key_rows:
+                reservation = connection.execute(
+                    """
+                    SELECT reservation_id, owner_id, state_advanced, status, created_at, expires_at, completed_at, last_error
+                    FROM wallet_signing_reservations
+                    WHERE label = ? AND address = ? AND provider_id = ?
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    """,
+                    (row["label"], row["address"], row["provider_id"]),
+                ).fetchone()
+                status = {
+                    "label": str(row["label"]),
+                    "address": str(row["address"]),
+                    "provider_id": str(row["provider_id"]),
+                    "state_version": int(row["state_version"]),
+                    "custody_backend": str(row["custody_backend"] or "unknown"),
+                    "reservation": None,
+                    "requires_recovery": False,
+                }
+                if reservation is not None:
+                    reservation_status = str(reservation["status"])
+                    status["reservation"] = {
+                        "reservation_id": str(reservation["reservation_id"]),
+                        "owner_id": str(reservation["owner_id"]),
+                        "state_advanced": bool(int(reservation["state_advanced"])),
+                        "status": reservation_status,
+                        "created_at": float(reservation["created_at"]),
+                        "expires_at": float(reservation["expires_at"]),
+                        "completed_at": None if reservation["completed_at"] is None else float(reservation["completed_at"]),
+                        "last_error": None if reservation["last_error"] is None else str(reservation["last_error"]),
+                    }
+                    status["requires_recovery"] = reservation_status == "requires_recovery"
+                statuses.append(status)
+        return statuses
+
+    def recover_wallet_key(
+        self,
+        label: str,
+        address: str,
+        provider_id: str,
+        *,
+        note: str = "operator acknowledged interrupted signer reservation",
+        now: float | None = None,
+    ) -> dict[str, object]:
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            timestamp = time.time() if now is None else now
+            self._expire_completed_reservations(connection, timestamp)
+            row = connection.execute(
+                """
+                SELECT reservation_id, status, state_advanced, owner_id, created_at, expires_at, completed_at, last_error
+                FROM wallet_signing_reservations
+                WHERE label = ? AND address = ? AND provider_id = ?
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (label, address, provider_id),
+            ).fetchone()
+            if row is None:
+                raise ValueError("Wallet key has no reservation history to recover.")
+            if str(row["status"]) != "requires_recovery":
+                raise ValueError("Wallet key does not currently require recovery.")
+            connection.execute(
+                """
+                UPDATE wallet_signing_reservations
+                SET status = 'recovered', completed_at = ?, last_error = ?
+                WHERE reservation_id = ?
+                """,
+                (timestamp, note[:512], str(row["reservation_id"])),
+            )
+            connection.commit()
+            return {
+                "label": label,
+                "address": address,
+                "provider_id": provider_id,
+                "reservation_id": str(row["reservation_id"]),
+                "previous_status": "requires_recovery",
+                "status": "recovered",
+                "state_advanced": bool(int(row["state_advanced"])),
+                "recovered_at": timestamp,
+                "note": note[:512],
+            }
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
 
     @staticmethod
     def _encode_state_bytes(key_state: object) -> bytes:

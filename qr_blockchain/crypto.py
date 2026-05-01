@@ -420,7 +420,7 @@ class ExternalModuleSignatureProvider(SignatureProvider):
             if missing_module == module_path:
                 raise ValueError(
                     f"Provider {self.metadata.provider_id} requires the optional backend module "
-                    f"'{module_path}'. Install a compatible XMSS backend package or set "
+                    f"'{module_path}'. Install a compatible backend package or set "
                     f"{self.module_env_var} to a module that implements "
                     "'generate_keypair', 'derive_address', 'sign', 'verify', and 'address_from_public_key'."
                 ) from error
@@ -583,16 +583,20 @@ register_signature_provider(
     )
 )
 register_signature_provider(
-    UnavailableExternalProvider(
+    ExternalModuleSignatureProvider(
         provider_id="lms_nist_v1",
         algorithm_family="lms",
-        notes="Reserved provider slot for a real audited LMS/HSS implementation.",
+        module_env_var="QR_CHAIN_LMS_BACKEND_MODULE",
+        default_module_path="qr_chain_lms_backend",
+        notes="Adapter boundary for a real audited LMS/HSS backend loaded from an optional external module.",
     )
 )
 register_signature_provider(
-    UnavailableExternalProvider(
+    ExternalModuleSignatureProvider(
         provider_id="sphincsplus_v1",
         algorithm_family="sphincs+",
-        notes="Reserved provider slot for a real audited SPHINCS+ implementation.",
+        module_env_var="QR_CHAIN_SPHINCSPLUS_BACKEND_MODULE",
+        default_module_path="qr_chain_sphincsplus_backend",
+        notes="Adapter boundary for a real audited SPHINCS+ backend loaded from an optional external module.",
     )
 )

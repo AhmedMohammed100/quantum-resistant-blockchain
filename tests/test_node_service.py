@@ -12,6 +12,13 @@ from unittest.mock import patch
 
 from qr_blockchain import NodeConfig, NodeService, Wallet
 from qr_blockchain.crypto import XMSSMerkleLamportKeyPair, get_signature_suite
+from qr_blockchain.migration import (
+    build_demo_classical_claim_address,
+    build_demo_classical_claim_proof,
+    build_demo_classical_claim_public_key,
+    classical_claim_message_bytes,
+)
+from qr_blockchain.models import Transaction, TxOutput
 from qr_blockchain.protocol import build_peer_frame
 
 
@@ -322,6 +329,232 @@ class NodeServiceTests(unittest.TestCase):
         self.assertEqual(imported, 1)
         self.assertEqual(target.balance_for_address(bob_address), 14)
         self.assertIn(peer_url, target.list_peers())
+
+    def test_migration_claim_moves_seeded_classical_balance_to_pq_address(self) -> None:
+        service, _ = self.make_service()
+        pq_wallet = Wallet("PQWallet")
+        miner = Wallet("Miner")
+
+        service.create_genesis_block({miner.create_address(): 10})
+        classical_public_key = build_demo_classical_claim_public_key("legacy-user-1")
+        classical_address = service.seed_migration_source(
+            classical_address=build_demo_classical_claim_address(classical_public_key),
+            provider_id="classical_claim_demo_v1",
+            source_network="legacy-rsa-ledger",
+            amount=25,
+            snapshot_ref="snapshot-001",
+        )["classical_address"]
+        pq_address = pq_wallet.create_address()
+        transaction = Transaction(
+            inputs=[],
+            outputs=[TxOutput(recipient=pq_address, amount=25)],
+            kind="migration_claim",
+            chain_id=service.config.chain_id,
+            signature_scheme="classical_claim_demo_v1",
+            metadata={
+                "classical_address": classical_address,
+                "classical_provider_id": "classical_claim_demo_v1",
+                "source_network": "legacy-rsa-ledger",
+                "snapshot_ref": "snapshot-001",
+                "classical_public_key": classical_public_key,
+            },
+        )
+        transaction.metadata["classical_signature"] = build_demo_classical_claim_proof(
+            classical_public_key,
+            classical_claim_message_bytes(transaction.migration_claim_payload()),
+        )
+        transaction.finalize()
+
+        service.submit_transaction(transaction)
+        service.mine_pending_transactions(miner.create_address())
+
+        self.assertEqual(service.balance_for_address(pq_address), 25)
+        claim = service.store.migration_claim(classical_address)
+        self.assertIsNotNone(claim)
+        self.assertEqual(claim["destination_address"], pq_address)
+
+    def test_rejects_duplicate_pending_migration_claim(self) -> None:
+        service, _ = self.make_service()
+        pq_wallet = Wallet("PQWallet")
+        miner = Wallet("Miner")
+
+        service.create_genesis_block({miner.create_address(): 10})
+        classical_public_key = build_demo_classical_claim_public_key("legacy-user-2")
+        classical_address = build_demo_classical_claim_address(classical_public_key)
+        service.seed_migration_source(
+            classical_address=classical_address,
+            provider_id="classical_claim_demo_v1",
+            source_network="legacy-ecc-ledger",
+            amount=15,
+            snapshot_ref="snapshot-002",
+        )
+
+        def build_claim() -> Transaction:
+            tx = Transaction(
+                inputs=[],
+                outputs=[TxOutput(recipient=pq_wallet.create_address(), amount=15)],
+                kind="migration_claim",
+                chain_id=service.config.chain_id,
+                signature_scheme="classical_claim_demo_v1",
+                metadata={
+                    "classical_address": classical_address,
+                    "classical_provider_id": "classical_claim_demo_v1",
+                    "source_network": "legacy-ecc-ledger",
+                    "snapshot_ref": "snapshot-002",
+                    "classical_public_key": classical_public_key,
+                },
+            )
+            tx.metadata["classical_signature"] = build_demo_classical_claim_proof(
+                classical_public_key,
+                classical_claim_message_bytes(tx.migration_claim_payload()),
+            )
+            tx.finalize()
+            return tx
+
+        service.submit_transaction(build_claim())
+        with self.assertRaisesRegex(ValueError, "pending classical address claim"):
+            service.submit_transaction(build_claim())
+
+    def test_wallet_helper_builds_dual_control_migration_claim(self) -> None:
+        wallet_db = self.wallet_state_db_path("dual_control_wallet_state.db")
+        service = NodeService(
+            NodeConfig(
+                **{
+                    **self.make_config(wallet_db.parent / "chain.db").__dict__,
+                    "wallet_state_db_path": wallet_db,
+                    "migration_dual_control_start_height": 1,
+                    "migration_dual_control_end_height": 0,
+                }
+            )
+        )
+        self.addCleanup(lambda: shutil.rmtree(wallet_db.parent, ignore_errors=True))
+        pq_wallet = Wallet("PQWallet", state_db_path=wallet_db)
+        miner = Wallet("Miner")
+
+        service.create_genesis_block({miner.create_address(): 10})
+        classical_public_key = build_demo_classical_claim_public_key("legacy-user-3")
+        classical_address = build_demo_classical_claim_address(classical_public_key)
+        service.seed_migration_source(
+            classical_address=classical_address,
+            provider_id="classical_claim_demo_v1",
+            source_network="legacy-demo-ledger",
+            amount=12,
+            snapshot_ref="snapshot-003",
+        )
+        preview = service.build_migration_claim_draft(
+            destination_address=pq_wallet.create_address(),
+            classical_address=classical_address,
+            classical_provider_id="classical_claim_demo_v1",
+            source_network="legacy-demo-ledger",
+            snapshot_ref="snapshot-003",
+            classical_public_key=classical_public_key,
+        )
+        classical_signature = build_demo_classical_claim_proof(
+            classical_public_key,
+            classical_claim_message_bytes(preview.migration_claim_payload()),
+        )
+        claim = pq_wallet.create_migration_claim(
+            service,
+            classical_address=classical_address,
+            classical_provider_id="classical_claim_demo_v1",
+            classical_public_key=classical_public_key,
+            classical_signature=classical_signature,
+            source_network="legacy-demo-ledger",
+            snapshot_ref="snapshot-003",
+            destination_address=preview.outputs[0].recipient,
+            timestamp=preview.timestamp,
+        )
+
+        self.assertIn("destination_attestation", claim.metadata)
+        service.submit_transaction(claim)
+        service.mine_pending_transactions(miner.create_address())
+        self.assertEqual(service.balance_for_address(preview.outputs[0].recipient), 12)
+
+    def test_rejects_migration_claim_outside_claim_window(self) -> None:
+        wallet_db = self.wallet_state_db_path("claim_window_wallet_state.db")
+        service = NodeService(
+            NodeConfig(
+                **{
+                    **self.make_config(wallet_db.parent / "chain.db").__dict__,
+                    "wallet_state_db_path": wallet_db,
+                    "migration_claim_start_height": 5,
+                    "migration_dual_control_start_height": 0,
+                    "migration_dual_control_end_height": 0,
+                }
+            )
+        )
+        self.addCleanup(lambda: shutil.rmtree(wallet_db.parent, ignore_errors=True))
+        pq_wallet = Wallet("PQWallet", state_db_path=wallet_db)
+        miner = Wallet("Miner")
+
+        service.create_genesis_block({miner.create_address(): 10})
+        classical_public_key = build_demo_classical_claim_public_key("legacy-user-4")
+        classical_address = build_demo_classical_claim_address(classical_public_key)
+        service.seed_migration_source(
+            classical_address=classical_address,
+            provider_id="classical_claim_demo_v1",
+            source_network="legacy-demo-ledger",
+            amount=9,
+            snapshot_ref="snapshot-004",
+        )
+        preview = service.build_migration_claim_draft(
+            destination_address=pq_wallet.create_address(),
+            classical_address=classical_address,
+            classical_provider_id="classical_claim_demo_v1",
+            source_network="legacy-demo-ledger",
+            snapshot_ref="snapshot-004",
+            classical_public_key=classical_public_key,
+        )
+        classical_signature = build_demo_classical_claim_proof(
+            classical_public_key,
+            classical_claim_message_bytes(preview.migration_claim_payload()),
+        )
+        claim = pq_wallet.create_migration_claim(
+            service,
+            classical_address=classical_address,
+            classical_provider_id="classical_claim_demo_v1",
+            classical_public_key=classical_public_key,
+            classical_signature=classical_signature,
+            source_network="legacy-demo-ledger",
+            snapshot_ref="snapshot-004",
+            destination_address=preview.outputs[0].recipient,
+            timestamp=preview.timestamp,
+        )
+
+        with self.assertRaisesRegex(ValueError, "outside the configured claim window"):
+            service.submit_transaction(claim)
+
+    def test_signature_provider_policy_prefers_available_stateless_provider(self) -> None:
+        service, _ = self.make_service()
+
+        with patch(
+            "qr_blockchain.service.list_signature_provider_statuses",
+            return_value=[
+                {
+                    "provider_id": "xmss_nist_v1",
+                    "available": True,
+                    "supports_stateful_signing": True,
+                    "status": "adapter_ready",
+                },
+                {
+                    "provider_id": "sphincsplus_v1",
+                    "available": True,
+                    "supports_stateful_signing": False,
+                    "status": "adapter_ready",
+                },
+            ],
+        ):
+            service.config = NodeConfig(
+                **{
+                    **service.config.__dict__,
+                    "preferred_signature_providers": ("sphincsplus_v1", "xmss_nist_v1"),
+                    "allowed_signature_providers": ("xmss_nist_v1", "sphincsplus_v1"),
+                }
+            )
+            policy = service.signature_provider_policy()
+
+        self.assertEqual(policy["recommended_signature_provider"], "sphincsplus_v1")
+        self.assertEqual(policy["recommended_stateless_provider"], "sphincsplus_v1")
 
     def test_rejects_peer_frame_with_wrong_protocol_version(self) -> None:
         source = self.make_additional_service("source")
@@ -666,6 +899,160 @@ class NodeServiceTests(unittest.TestCase):
         self.assertIn("xmss_merkle_lamport_v1", providers)
         self.assertIn("xmss_nist_v1", providers)
         self.assertIn("module_path", providers["xmss_nist_v1"])
+
+    def test_wallet_recovery_status_and_manual_recovery_flow(self) -> None:
+        wallet_db = self.wallet_state_db_path("recovery_wallet_state.db")
+        service = NodeService(
+            NodeConfig(
+                **{
+                    **self.make_config(wallet_db.parent / "chain.db").__dict__,
+                    "wallet_state_db_path": wallet_db,
+                }
+            )
+        )
+        self.addCleanup(lambda: shutil.rmtree(wallet_db.parent, ignore_errors=True))
+        fake_oqs = self.build_fake_oqs_module()
+
+        with patch.dict(
+            os.environ,
+            {
+                "QR_CHAIN_XMSS_BACKEND_IMPLEMENTATION": "module",
+                "QR_CHAIN_XMSS_LIBRARY_MODULE": "qr_chain_xmss_backend.oqs_backend",
+                "QR_CHAIN_XMSS_OQS_MECHANISM": "XMSS-SHA2_10_256",
+            },
+            clear=False,
+        ):
+            with patch.dict(sys.modules, {"oqs": fake_oqs}, clear=False):
+                alice = Wallet(
+                    "Alice",
+                    signature_provider="xmss_nist_v1",
+                    state_db_path=wallet_db,
+                    reservation_ttl_seconds=1,
+                )
+                funding = alice.create_address()
+
+                def reserve_fn(current_state: object) -> tuple[object, object]:
+                    keypair = alice._provider.deserialize_keypair(current_state)
+                    reservation = alice._provider.reserve_signing_material(keypair)
+                    return alice._provider.serialize_keypair(keypair), reservation
+
+                alice._state_store.reserve_wallet_key_state(
+                    alice.label,
+                    funding,
+                    alice.signature_provider,
+                    reserve_fn,
+                    owner_id=alice._owner_id,
+                    now=0.0,
+                )
+
+                with self.assertRaisesRegex(ValueError, "requires operator recovery"):
+                    alice._state_store.reserve_wallet_key_state(
+                        alice.label,
+                        funding,
+                        alice.signature_provider,
+                        reserve_fn,
+                        owner_id=alice._owner_id,
+                        now=2.0,
+                    )
+
+                status_before = service.wallet_key_statuses(label="Alice", provider_id="xmss_nist_v1")
+                self.assertEqual(status_before["reservation_status"]["requires_recovery"], 1)
+                self.assertTrue(status_before["wallet_keys"][0]["requires_recovery"])
+
+                recovered = service.recover_wallet_key(
+                    "Alice",
+                    funding,
+                    "xmss_nist_v1",
+                    note="cleared after crash inspection",
+                )
+                self.assertEqual(recovered["status"], "recovered")
+
+                status_after = service.wallet_key_statuses(label="Alice", provider_id="xmss_nist_v1")
+                self.assertEqual(status_after["reservation_status"]["recovered"], 1)
+                self.assertFalse(status_after["wallet_keys"][0]["requires_recovery"])
+
+                _, _, reservation_id = alice._state_store.reserve_wallet_key_state(
+                    alice.label,
+                    funding,
+                    alice.signature_provider,
+                    reserve_fn,
+                    owner_id=alice._owner_id,
+                    now=3.0,
+                )
+                self.assertTrue(reservation_id)
+
+    def test_operational_status_reports_degraded_recovery_condition(self) -> None:
+        wallet_db = self.wallet_state_db_path("health_recovery_wallet_state.db")
+        service = NodeService(
+            NodeConfig(
+                **{
+                    **self.make_config(wallet_db.parent / "chain.db").__dict__,
+                    "wallet_state_db_path": wallet_db,
+                }
+            )
+        )
+        self.addCleanup(lambda: shutil.rmtree(wallet_db.parent, ignore_errors=True))
+        fake_oqs = self.build_fake_oqs_module()
+
+        with patch.dict(
+            os.environ,
+            {
+                "QR_CHAIN_XMSS_BACKEND_IMPLEMENTATION": "module",
+                "QR_CHAIN_XMSS_LIBRARY_MODULE": "qr_chain_xmss_backend.oqs_backend",
+                "QR_CHAIN_XMSS_OQS_MECHANISM": "XMSS-SHA2_10_256",
+            },
+            clear=False,
+        ):
+            with patch.dict(sys.modules, {"oqs": fake_oqs}, clear=False):
+                alice = Wallet(
+                    "Alice",
+                    signature_provider="xmss_nist_v1",
+                    state_db_path=wallet_db,
+                    reservation_ttl_seconds=1,
+                )
+                funding = alice.create_address()
+
+                def reserve_fn(current_state: object) -> tuple[object, object]:
+                    keypair = alice._provider.deserialize_keypair(current_state)
+                    reservation = alice._provider.reserve_signing_material(keypair)
+                    return alice._provider.serialize_keypair(keypair), reservation
+
+                alice._state_store.reserve_wallet_key_state(
+                    alice.label,
+                    funding,
+                    alice.signature_provider,
+                    reserve_fn,
+                    owner_id=alice._owner_id,
+                    now=0.0,
+                )
+                with self.assertRaises(ValueError):
+                    alice._state_store.reserve_wallet_key_state(
+                        alice.label,
+                        funding,
+                        alice.signature_provider,
+                        reserve_fn,
+                        owner_id=alice._owner_id,
+                        now=2.0,
+                    )
+
+                status = service.operational_status()
+                self.assertEqual(status["status"], "degraded")
+                self.assertIn("wallet keys require signer recovery", " ".join(status["reasons"]))
+
+    def test_metrics_snapshot_reports_operational_counters(self) -> None:
+        service, _ = self.make_service()
+        alice = Wallet("Alice")
+        miner = Wallet("Miner")
+        funding = alice.create_address()
+        service.create_genesis_block({funding: 25})
+        service.mine_pending_transactions(miner.create_address())
+
+        metrics = service.metrics_snapshot()
+
+        self.assertEqual(metrics["chain_height"], 2)
+        self.assertGreaterEqual(metrics["utxo_count"], 1)
+        self.assertIn("wallet_reservation_status", metrics)
+        self.assertIn("available_provider_count", metrics)
 
 
 if __name__ == "__main__":

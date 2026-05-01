@@ -18,13 +18,36 @@ class NodeRequestHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
         if path == "/health":
-            self._respond(HTTPStatus.OK, {"status": "ok"})
+            payload = self.service.operational_status()
+            status = HTTPStatus.OK if payload["status"] == "ok" else HTTPStatus.SERVICE_UNAVAILABLE
+            self._respond(status, payload)
+            return
+        if path == "/status":
+            self._respond(HTTPStatus.OK, self.service.operational_status())
+            return
+        if path == "/metrics":
+            self._respond(HTTPStatus.OK, self.service.metrics_snapshot())
             return
         if path == "/chain/summary":
             self._respond(HTTPStatus.OK, self.service.chain_summary())
             return
         if path == "/crypto/providers":
             self._respond(HTTPStatus.OK, self.service.signature_provider_statuses())
+            return
+        if path == "/migration/policy":
+            self._respond(HTTPStatus.OK, self.service.migration_policy())
+            return
+        if path == "/migration/sources":
+            self._respond(HTTPStatus.OK, {"sources": self.service.list_migration_sources()})
+            return
+        if path == "/wallets/status":
+            query = parse_qs(parsed.query)
+            label = query.get("label", [None])[0]
+            provider_id = query.get("provider_id", [None])[0]
+            self._respond(
+                HTTPStatus.OK,
+                self.service.wallet_key_statuses(label=label, provider_id=provider_id),
+            )
             return
         if path == "/peers":
             self._respond(HTTPStatus.OK, {"peers": self.service.list_peers()})
@@ -115,6 +138,54 @@ class NodeRequestHandler(BaseHTTPRequestHandler):
                     self._respond(HTTPStatus.OK, {"results": self.service.sync_with_peers()})
             except ValueError as error:
                 self._respond(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+            return
+
+        if path == "/migration/sources":
+            classical_address = str(payload.get("classical_address", ""))
+            provider_id = str(payload.get("provider_id", ""))
+            source_network = str(payload.get("source_network", ""))
+            amount = int(payload.get("amount", 0))
+            if not classical_address or not provider_id or not source_network:
+                self._respond(
+                    HTTPStatus.BAD_REQUEST,
+                    {"error": "classical_address, provider_id, and source_network are required"},
+                )
+                return
+            try:
+                source = self.service.seed_migration_source(
+                    classical_address=classical_address,
+                    provider_id=provider_id,
+                    source_network=source_network,
+                    amount=amount,
+                    snapshot_ref=str(payload.get("snapshot_ref", "")),
+                )
+            except ValueError as error:
+                self._respond(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+                return
+            self._respond(HTTPStatus.CREATED, source)
+            return
+
+        if path == "/wallets/recovery":
+            label = str(payload.get("label", ""))
+            address = str(payload.get("address", ""))
+            provider_id = str(payload.get("provider_id", ""))
+            if not label or not address or not provider_id:
+                self._respond(
+                    HTTPStatus.BAD_REQUEST,
+                    {"error": "label, address, and provider_id are required"},
+                )
+                return
+            try:
+                response = self.service.recover_wallet_key(
+                    label,
+                    address,
+                    provider_id,
+                    note=str(payload.get("note", "operator acknowledged interrupted signer reservation")),
+                )
+            except ValueError as error:
+                self._respond(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+                return
+            self._respond(HTTPStatus.OK, response)
             return
 
         if path == "/peer/handshake":

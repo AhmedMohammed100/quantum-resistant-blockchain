@@ -99,6 +99,58 @@ Phase 13 now adds adversarial and invariant testing:
 - supply conservation is checked across mined chains as a regression guard
 - signer reservation status counts are now exposed in node diagnostics for operational visibility
 
+Phase 14 now adds signer recovery tooling:
+
+- the wallet-state store now promotes stale interrupted reservations during status reads, not only during the next signing attempt
+- nodes can now list wallet-key reservation state and identify which addresses require operator recovery
+- interrupted ambiguous reservations can now be explicitly acknowledged and cleared through the service layer and HTTP API
+
+Phase 15 now adds operational health and metrics:
+
+- `GET /health` now returns live node health instead of a fixed ok stub
+- degraded health is reported when active PQ providers are unavailable or a wallet key is blocked in recovery-required state
+- `GET /status` and `GET /metrics` now expose chain, peer-session, custody, reservation, and provider counters for operators
+
+Phase 16 now expands the PQ backend surface:
+
+- `lms_nist_v1` is now a real external adapter boundary instead of a placeholder
+- `sphincsplus_v1` is now a real external adapter boundary instead of a placeholder
+- both providers now have OQS-backed module targets so the node can grow beyond XMSS without redesigning the crypto registry
+
+Phase 17 now starts classical-to-PQ migration:
+
+- the chain now supports seeded migration snapshot sources keyed by classical addresses
+- a new `migration_claim` transaction type can move a seeded classical balance onto a PQ address
+- migration proofs are now verified through a separate classical-claim verifier registry
+- a demo verifier exercises the flow today, while real `ecdsa_secp256k1` and `rsa_pkcs1v15_sha256` migration verifier boundaries are now defined for future production backends
+
+Phase 18 now adds real classical migration verifiers:
+
+- `ecdsa_secp256k1_migration_v1` now uses a real pure-Python secp256k1 verifier for ownership proofs
+- `rsa_pkcs1v15_sha256_migration_v1` now uses a real pure-Python RSA PKCS#1 v1.5 SHA-256 verifier for ownership proofs
+
+Phase 19 now adds migration policy controls:
+
+- migration claims can now be gated by a start height and optional end height
+- dual-control periods can now require both the classical ownership proof and a PQ destination acceptance proof
+- migration providers can now be allow-listed by node policy
+
+Phase 20 now adds wallet migration helpers:
+
+- the service can now build deterministic migration-claim drafts for external classical signing
+- wallets can now assemble final migration claims safely, including optional PQ destination attestations when policy requires them
+
+Phase 21 now hardens provider selection policy:
+
+- the node now exposes preferred and allowed PQ provider policy
+- provider diagnostics now recommend a default provider and a stateless-preferred provider when available
+
+Phase 22 now adds migration load and chaos coverage:
+
+- bulk migration claims are exercised across mined blocks
+- migration claims are exercised through authenticated node sync
+- canonical migration claims are tested across reorgs
+
 ## Quantum-resistant direction
 
 The chain now supports a provider registry with both active and reserved backends:
@@ -106,8 +158,8 @@ The chain now supports a provider registry with both active and reserved backend
 - `hash_lamport_v1`: the original raw Lamport path kept for compatibility
 - `xmss_merkle_lamport_v1`: an XMSS-style Merkle-tree wrapper around one-time Lamport leaves
 - `xmss_nist_v1`: external adapter skeleton for a future audited XMSS backend module
-- `lms_nist_v1`: reserved provider slot for a future audited LMS/HSS backend
-- `sphincsplus_v1`: reserved provider slot for a future audited SPHINCS+ backend
+- `lms_nist_v1`: external adapter boundary for LMS/HSS integration
+- `sphincsplus_v1`: external adapter boundary for SPHINCS+ integration
 
 The XMSS-style backend is still the default software provider for new wallets. It remains an in-repo reference implementation rather than a standards-audited production library, but the app is now structured so a real external provider can be registered without changing transaction, node, or API contracts.
 
@@ -167,7 +219,17 @@ The wallet-state store now also keeps a reservation ledger for in-flight signatu
 - expired reservations where state had already advanced and the leaf/use was safely burned
 - ambiguous interrupted reservations that require operator recovery before the key can sign again
 
+The node can now also surface and clear that recovery-required state through a supported operator path, instead of requiring direct SQLite inspection.
+
 The peer transport is still HTTP-based, but it is now stricter than before: peer endpoints speak a versioned `qr-peer-v1` framed protocol rather than relying on unstructured JSON payloads alone.
+
+The classical migration path is also now taking shape: instead of requiring users to manually abandon an old network, the node can seed balances from a legacy snapshot and let users prove classical ownership before minting the corresponding balance onto a PQ address on this chain.
+
+That migration layer now includes:
+
+- a real `ecdsa_secp256k1` verifier path for legacy ECC ownership proofs
+- a real `rsa_pkcs1v15_sha256` verifier path for legacy RSA ownership proofs
+- optional dual-control windows where the destination PQ wallet must also explicitly accept the migration claim
 
 This means the repo is now production-shaped rather than fully production-ready.
 
@@ -176,6 +238,7 @@ This means the repo is now production-shaped rather than fully production-ready.
 - `qr_blockchain/config.py`: environment-driven node configuration, chain identity, peers, and default signature provider selection
 - `qr_blockchain/crypto.py`: formal signature-provider interface, provider registry, and current software PQ backends
 - `qr_blockchain/custody.py`: wallet custody backends, including Windows DPAPI protection for stored signer state
+- `qr_blockchain/migration.py`: classical-claim verifier registry and migration-proof helpers
 - `qr_blockchain/models.py`: transaction and block models
 - `qr_blockchain/storage.py`: SQLite persistence for blocks, pending transactions, and UTXOs
 - `qr_blockchain/network.py`: simple peer URL normalization and JSON fetch helpers
@@ -222,6 +285,13 @@ $env:QR_CHAIN_AUTH_TIME_SKEW_SECONDS = "300"
 $env:QR_CHAIN_PEER_SESSION_TTL_SECONDS = "900"
 $env:QR_CHAIN_PEER_PROTOCOL_VERSION = "qr-peer-v1"
 $env:QR_CHAIN_MAX_PEER_BLOCKS_PER_REQUEST = "128"
+$env:QR_CHAIN_MIGRATION_CLAIM_START_HEIGHT = "1"
+$env:QR_CHAIN_MIGRATION_CLAIM_END_HEIGHT = "0"
+$env:QR_CHAIN_MIGRATION_DUAL_CONTROL_START_HEIGHT = "0"
+$env:QR_CHAIN_MIGRATION_DUAL_CONTROL_END_HEIGHT = "0"
+$env:QR_CHAIN_MIGRATION_ALLOWED_CLASSICAL_PROVIDERS = "ecdsa_secp256k1_migration_v1,rsa_pkcs1v15_sha256_migration_v1,classical_claim_demo_v1"
+$env:QR_CHAIN_PREFERRED_SIGNATURE_PROVIDERS = "sphincsplus_v1,lms_nist_v1,xmss_nist_v1,xmss_merkle_lamport_v1"
+$env:QR_CHAIN_ALLOWED_SIGNATURE_PROVIDERS = ""
 python main.py
 ```
 
@@ -254,11 +324,28 @@ Peer framing:
 - `QR_CHAIN_PEER_PROTOCOL_VERSION` selects the framed peer RPC version expected by this node
 - `QR_CHAIN_MAX_PEER_BLOCKS_PER_REQUEST` limits how many blocks a peer can request or receive in one framed block response
 
+Migration policy:
+
+- `QR_CHAIN_MIGRATION_CLAIM_START_HEIGHT` sets the first block height where migration claims are accepted
+- `QR_CHAIN_MIGRATION_CLAIM_END_HEIGHT` optionally closes the claim window after a given height; `0` means no configured end
+- `QR_CHAIN_MIGRATION_DUAL_CONTROL_START_HEIGHT` and `QR_CHAIN_MIGRATION_DUAL_CONTROL_END_HEIGHT` define an optional range where the destination PQ wallet must also sign an acceptance proof
+- `QR_CHAIN_MIGRATION_ALLOWED_CLASSICAL_PROVIDERS` allow-lists which classical proof systems this node will accept for migration
+
+Provider policy:
+
+- `QR_CHAIN_PREFERRED_SIGNATURE_PROVIDERS` orders the node’s preferred PQ providers
+- `QR_CHAIN_ALLOWED_SIGNATURE_PROVIDERS` optionally restricts which PQ providers the node should recommend or use operationally
+
 ## API endpoints
 
 - `GET /health`
+- `GET /status`
+- `GET /metrics`
 - `GET /chain/summary`
 - `GET /crypto/providers`
+- `GET /migration/policy`
+- `GET /migration/sources`
+- `GET /wallets/status`
 - `GET /blocks?start_height=0`
 - `GET /blocks/{height}`
 - `GET /peers`
@@ -270,6 +357,8 @@ Peer framing:
 - `POST /transactions`
 - `POST /mine`
 - `POST /sync`
+- `POST /migration/sources`
+- `POST /wallets/recovery`
 - `POST /peer/handshake`
 - `POST /peer/summary`
 - `POST /peer/blocks`
@@ -292,6 +381,30 @@ Example sync request:
 Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8080/sync -ContentType "application/json" -Body '{"peer_url":"http://127.0.0.1:8081"}'
 ```
 
+Example wallet recovery status:
+
+```powershell
+Invoke-RestMethod -Method Get -Uri "http://127.0.0.1:8080/wallets/status?label=Alice&provider_id=xmss_nist_v1"
+```
+
+Example recovery acknowledgement:
+
+```powershell
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8080/wallets/recovery -ContentType "application/json" -Body '{"label":"Alice","address":"alice-address","provider_id":"xmss_nist_v1","note":"cleared after operator review"}'
+```
+
+Example seeding of a classical migration source:
+
+```powershell
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8080/migration/sources -ContentType "application/json" -Body '{"classical_address":"legacy-address","provider_id":"ecdsa_secp256k1_migration_v1","source_network":"legacy-ecc-ledger","amount":120,"snapshot_ref":"snapshot-2026-04"}'
+```
+
+Example migration policy query:
+
+```powershell
+Invoke-RestMethod -Method Get -Uri http://127.0.0.1:8080/migration/policy
+```
+
 ## Run tests
 
 ```powershell
@@ -300,7 +413,8 @@ python -m unittest discover -s tests -v
 
 ## What should follow next
 
-- real audited XMSS/LMS/SPHINCS+ provider implementations behind the registry
-- stronger multi-process and distributed coordination for stateful signer usage across multiple node processes
-- secure key management and hardware-backed secrets
-- observability, metrics, and operational hardening
+- production-grade address-format compatibility for specific legacy ecosystems and live snapshot tooling
+- production-quality LMS and SPHINCS+ runtime integration and chain-level provider rollout policy
+- stronger distributed signer coordination for multi-node or remote signer deployments
+- secure key management with hardware-backed custody or isolated signer processes
+- transport upgrades beyond HTTP JSON plus load, soak, and chaos testing
