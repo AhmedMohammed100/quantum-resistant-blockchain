@@ -35,6 +35,19 @@ class ClassicalClaimVerifier(ABC):
     def address_from_public_key(self, public_key: object) -> str:
         raise NotImplementedError
 
+    def verify_source_address_ownership(
+        self,
+        public_key: object,
+        *,
+        source_address: str,
+        source_address_format: str,
+        source_network: str,
+    ) -> bool:
+        try:
+            return self.address_from_public_key(public_key) == source_address
+        except ValueError:
+            return False
+
     def backend_status(self) -> dict[str, object]:
         return {
             "provider_id": self.metadata.provider_id,
@@ -159,6 +172,32 @@ class ExternalModuleClassicalClaimVerifier(ClassicalClaimVerifier):
     def address_from_public_key(self, public_key: object) -> str:
         return str(self._backend_function("address_from_public_key")(public_key))
 
+    def verify_source_address_ownership(
+        self,
+        public_key: object,
+        *,
+        source_address: str,
+        source_address_format: str,
+        source_network: str,
+    ) -> bool:
+        try:
+            function = self._backend_function("verify_source_address_ownership")
+        except ValueError:
+            return super().verify_source_address_ownership(
+                public_key,
+                source_address=source_address,
+                source_address_format=source_address_format,
+                source_network=source_network,
+            )
+        return bool(
+            function(
+                public_key,
+                source_address=source_address,
+                source_address_format=source_address_format,
+                source_network=source_network,
+            )
+        )
+
     def backend_status(self) -> dict[str, object]:
         status = super().backend_status()
         status["module_path"] = self._module_path()
@@ -175,6 +214,9 @@ class ExternalModuleClassicalClaimVerifier(ClassicalClaimVerifier):
                         f"Backend module '{self._module_path()}' is missing required callable '{name}'."
                     )
             status["available"] = True
+            status["supports_source_address_ownership"] = callable(
+                getattr(backend, "verify_source_address_ownership", None)
+            )
         except ValueError as error:
             status["available"] = False
             status["error"] = str(error)

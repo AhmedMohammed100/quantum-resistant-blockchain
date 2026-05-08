@@ -1177,6 +1177,15 @@ class NodeService:
             raise ValueError("Migration claim public key does not derive the seeded classical address.")
         if not verifier.verify_claim(claim_message, proof, public_key):
             raise ValueError("Migration claim proof verification failed.")
+        seeded_source_address = str(source.get("source_address", classical_address))
+        seeded_source_address_format = str(source.get("source_address_format", ""))
+        if not verifier.verify_source_address_ownership(
+            public_key,
+            source_address=seeded_source_address,
+            source_address_format=seeded_source_address_format,
+            source_network=source_network,
+        ):
+            raise ValueError("Migration claim public key does not prove ownership of the seeded source address.")
         if self._migration_dual_control_required(effective_height):
             self._validate_destination_attestation(transaction)
 

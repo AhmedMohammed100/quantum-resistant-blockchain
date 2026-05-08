@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -20,6 +21,26 @@ from qr_blockchain.migration import (
 )
 from qr_blockchain.models import Transaction, TxOutput
 from qr_blockchain.protocol import build_peer_frame
+import qr_chain_classical_migration_backend_secp256k1 as secp_backend
+
+
+def _secp256k1_sign(message: bytes, private_key: int, nonce: int = 7) -> bytes:
+    z = int.from_bytes(hashlib.sha256(message).digest(), "big")
+    point = secp_backend._point_mul(nonce, secp_backend._G)
+    assert point is not None
+    r = point[0] % secp_backend._N
+    s = (secp_backend._mod_inv(nonce, secp_backend._N) * (z + r * private_key)) % secp_backend._N
+    if s > secp_backend._N // 2:
+        s = secp_backend._N - s
+
+    def _der_integer(value: int) -> bytes:
+        encoded = value.to_bytes((value.bit_length() + 7) // 8 or 1, "big")
+        if encoded[0] & 0x80:
+            encoded = b"\x00" + encoded
+        return b"\x02" + bytes([len(encoded)]) + encoded
+
+    body = _der_integer(r) + _der_integer(s)
+    return b"\x30" + bytes([len(body)]) + body
 
 
 class NodeServiceTests(unittest.TestCase):
@@ -372,6 +393,56 @@ class NodeServiceTests(unittest.TestCase):
         claim = service.store.migration_claim(classical_address)
         self.assertIsNotNone(claim)
         self.assertEqual(claim["destination_address"], pq_address)
+
+    def test_migration_claim_proves_bitcoin_source_address_from_secp256k1_key(self) -> None:
+        service, _ = self.make_service()
+        pq_wallet = Wallet("PQWallet")
+        miner = Wallet("Miner")
+
+        service.create_genesis_block({miner.create_address(): 10})
+        private_key = 1
+        public_point = secp_backend._point_mul(private_key, secp_backend._G)
+        assert public_point is not None
+        public_key_bytes = b"\x04" + public_point[0].to_bytes(32, "big") + public_point[1].to_bytes(32, "big")
+        classical_public_key = {"public_key_hex": public_key_bytes.hex()}
+        classical_address = service.seed_migration_source(
+            classical_address=secp_backend.address_from_public_key(classical_public_key),
+            provider_id="ecdsa_secp256k1_migration_v1",
+            source_network="legacy-btc-mainnet",
+            source_address=secp_backend.derive_bitcoin_p2pkh_addresses(classical_public_key)[0],
+            source_address_format="bitcoin_base58",
+            amount=21,
+            snapshot_ref="snapshot-btc-001",
+        )["classical_address"]
+        pq_address = pq_wallet.create_address()
+        transaction = Transaction(
+            inputs=[],
+            outputs=[TxOutput(recipient=pq_address, amount=21)],
+            kind="migration_claim",
+            chain_id=service.config.chain_id,
+            signature_scheme="ecdsa_secp256k1_migration_v1",
+            metadata={
+                "classical_address": classical_address,
+                "classical_provider_id": "ecdsa_secp256k1_migration_v1",
+                "source_network": "legacy-btc-mainnet",
+                "snapshot_ref": "snapshot-btc-001",
+                "source_address": secp_backend.derive_bitcoin_p2pkh_addresses(classical_public_key)[0],
+                "source_address_format": "bitcoin_base58",
+                "classical_public_key": classical_public_key,
+            },
+        )
+        transaction.metadata["classical_signature"] = {
+            "signature_hex": _secp256k1_sign(
+                classical_claim_message_bytes(transaction.migration_claim_payload()),
+                private_key,
+            ).hex()
+        }
+        transaction.finalize()
+
+        service.submit_transaction(transaction)
+        service.mine_pending_transactions(miner.create_address())
+
+        self.assertEqual(service.balance_for_address(pq_address), 21)
 
     def test_rejects_duplicate_pending_migration_claim(self) -> None:
         service, _ = self.make_service()

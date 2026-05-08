@@ -182,6 +182,12 @@ Phase 27 now adds an operator CLI:
 - `qr-chain` can now list migration network profiles and export, sign, validate, or import snapshot artifacts
 - the same workflow is also available through `python -m qr_blockchain`
 
+Phase 28 now adds real external-address proof linkage:
+
+- secp256k1 migration claims can now prove ownership of Bitcoin-style and Ethereum-style source addresses derived from the claimant public key
+- the node no longer treats those external source addresses as snapshot metadata only; they are now verified during the claim path
+- canonical claim addresses remain chain-internal, but migration claims can now cryptographically bind them to supported external address formats
+
 ## Quantum-resistant direction
 
 The chain now supports a provider registry with both active and reserved backends:
@@ -270,6 +276,8 @@ That path is now stronger in four practical ways:
 - snapshot imports can be gated by trusted signer policy
 - nodes can export a fresh snapshot artifact from current migration state
 - operators can run the snapshot workflow from a CLI without hand-building JSON requests
+
+For secp256k1-based migration sources, it is now also stronger at claim time: supported Bitcoin and Ethereum source addresses are derived from the submitted public key and checked as part of migration validation, rather than being trusted solely because they appeared in the imported snapshot.
 
 This means the repo is now production-shaped rather than fully production-ready.
 
@@ -500,7 +508,7 @@ qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db mig
 
 ## What should follow next
 
-- stronger proof-of-ownership linkage between specific external address formats and canonical verifier claim addresses for real Bitcoin/Ethereum migration flows
+- broader external-address linkage coverage beyond the current secp256k1 Bitcoin/Ethereum path, especially more legacy Bitcoin script variants and additional chain families
 - production-quality LMS and SPHINCS+ runtime integration and chain-level provider rollout policy
 - stronger distributed signer coordination for multi-node or remote signer deployments
 - secure key management with hardware-backed custody or isolated signer processes

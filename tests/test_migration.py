@@ -149,6 +149,39 @@ class ClassicalMigrationVerifierTests(unittest.TestCase):
             verifier.verify_claim(message, {"signature_hex": signature.hex()}, public_key)
         )
         self.assertTrue(verifier.address_from_public_key(public_key).startswith("secp256k1-p2pkh:"))
+        self.assertTrue(
+            verifier.verify_source_address_ownership(
+                public_key,
+                source_address=secp_backend.derive_bitcoin_p2pkh_addresses(public_key)[0],
+                source_address_format="bitcoin_base58",
+                source_network="legacy-btc-mainnet",
+            )
+        )
+        self.assertTrue(
+            verifier.verify_source_address_ownership(
+                public_key,
+                source_address=secp_backend.derive_ethereum_eoa_address(public_key),
+                source_address_format="ethereum_eoa",
+                source_network="legacy-eth-mainnet",
+            )
+        )
+
+    def test_real_secp256k1_verifier_rejects_mismatched_external_source_address(self) -> None:
+        verifier = get_classical_claim_verifier("ecdsa_secp256k1_migration_v1")
+        private_key = 1
+        public_point = secp_backend._point_mul(private_key, secp_backend._G)
+        assert public_point is not None
+        public_key_bytes = b"\x04" + public_point[0].to_bytes(32, "big") + public_point[1].to_bytes(32, "big")
+        public_key = {"public_key_hex": public_key_bytes.hex()}
+
+        self.assertFalse(
+            verifier.verify_source_address_ownership(
+                public_key,
+                source_address="1BoatSLRHtKNngkdXEeobR76b53LETtpyT",
+                source_address_format="bitcoin_base58",
+                source_network="legacy-btc-mainnet",
+            )
+        )
 
     def test_real_rsa_verifier_accepts_valid_claim(self) -> None:
         verifier = get_classical_claim_verifier("rsa_pkcs1v15_sha256_migration_v1")
