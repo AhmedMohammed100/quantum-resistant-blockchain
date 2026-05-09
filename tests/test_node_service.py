@@ -394,6 +394,74 @@ class NodeServiceTests(unittest.TestCase):
         self.assertIsNotNone(claim)
         self.assertEqual(claim["destination_address"], pq_address)
 
+    def test_migration_claim_preflight_exposes_signing_payloads(self) -> None:
+        service, _ = self.make_service()
+        pq_wallet = Wallet("PQWallet")
+        service.create_genesis_block({"bootstrap": 1})
+        classical_public_key = build_demo_classical_claim_public_key("legacy-user-preflight")
+        classical_address = service.seed_migration_source(
+            classical_address=build_demo_classical_claim_address(classical_public_key),
+            provider_id="classical_claim_demo_v1",
+            source_network="legacy-demo-ledger",
+            amount=12,
+            snapshot_ref="snapshot-preflight",
+        )["classical_address"]
+
+        report = service.preflight_migration_claim(
+            destination_address=pq_wallet.create_address(),
+            classical_address=classical_address,
+            classical_provider_id="classical_claim_demo_v1",
+            source_network="legacy-demo-ledger",
+            snapshot_ref="snapshot-preflight",
+            classical_public_key=classical_public_key,
+        )
+
+        self.assertTrue(report["ready"])
+        self.assertTrue(report["classical_claim_message_hex"])
+        self.assertEqual(report["draft_transaction"]["kind"], "migration_claim")
+
+    def test_signed_migration_claim_receipt_after_mining(self) -> None:
+        service, _ = self.make_service()
+        pq_wallet = Wallet("PQWallet")
+        miner = Wallet("Miner")
+
+        service.create_genesis_block({miner.create_address(): 10})
+        classical_public_key = build_demo_classical_claim_public_key("legacy-user-receipt")
+        classical_address = service.seed_migration_source(
+            classical_address=build_demo_classical_claim_address(classical_public_key),
+            provider_id="classical_claim_demo_v1",
+            source_network="legacy-demo-ledger",
+            amount=13,
+            snapshot_ref="snapshot-receipt",
+        )["classical_address"]
+        transaction = Transaction(
+            inputs=[],
+            outputs=[TxOutput(recipient=pq_wallet.create_address(), amount=13)],
+            kind="migration_claim",
+            chain_id=service.config.chain_id,
+            signature_scheme="classical_claim_demo_v1",
+            metadata={
+                "classical_address": classical_address,
+                "classical_provider_id": "classical_claim_demo_v1",
+                "source_network": "legacy-demo-ledger",
+                "snapshot_ref": "snapshot-receipt",
+                "classical_public_key": classical_public_key,
+            },
+        )
+        transaction.metadata["classical_signature"] = build_demo_classical_claim_proof(
+            classical_public_key,
+            classical_claim_message_bytes(transaction.migration_claim_payload()),
+        )
+        transaction.finalize()
+
+        service.submit_transaction(transaction)
+        service.mine_pending_transactions(miner.create_address())
+        receipt = service.migration_claim_receipt(classical_address)
+
+        self.assertEqual(receipt["claims"]["tx_id"], transaction.tx_id)
+        self.assertEqual(receipt["claims"]["amount"], 13)
+        self.assertEqual(receipt["envelope"]["purpose"], "migration_claim_receipt_v1")
+
     def test_migration_claim_proves_bitcoin_source_address_from_secp256k1_key(self) -> None:
         service, _ = self.make_service()
         pq_wallet = Wallet("PQWallet")
@@ -443,6 +511,74 @@ class NodeServiceTests(unittest.TestCase):
         service.mine_pending_transactions(miner.create_address())
 
         self.assertEqual(service.balance_for_address(pq_address), 21)
+
+    def test_quarantined_snapshot_blocks_migration_claim(self) -> None:
+        service, _ = self.make_service()
+        pq_wallet = Wallet("PQWallet")
+        miner = Wallet("Miner")
+
+        service.create_genesis_block({miner.create_address(): 10})
+        classical_public_key = build_demo_classical_claim_public_key("legacy-user-quarantine")
+        classical_address = build_demo_classical_claim_address(classical_public_key)
+        service.seed_migration_source(
+            classical_address=classical_address,
+            provider_id="classical_claim_demo_v1",
+            source_network="legacy-demo-ledger",
+            amount=9,
+            snapshot_ref="snapshot-quarantine-001",
+        )
+        service.set_migration_snapshot_status(
+            "snapshot-quarantine-001",
+            status="quarantined",
+            reason="operator review",
+        )
+        transaction = Transaction(
+            inputs=[],
+            outputs=[TxOutput(recipient=pq_wallet.create_address(), amount=9)],
+            kind="migration_claim",
+            chain_id=service.config.chain_id,
+            signature_scheme="classical_claim_demo_v1",
+            metadata={
+                "classical_address": classical_address,
+                "classical_provider_id": "classical_claim_demo_v1",
+                "source_network": "legacy-demo-ledger",
+                "snapshot_ref": "snapshot-quarantine-001",
+                "source_address": classical_address,
+                "source_address_format": "demo_claim_address",
+                "classical_public_key": classical_public_key,
+            },
+        )
+        transaction.metadata["classical_signature"] = build_demo_classical_claim_proof(
+            classical_public_key,
+            classical_claim_message_bytes(transaction.migration_claim_payload()),
+        )
+        transaction.finalize()
+
+        with self.assertRaisesRegex(ValueError, "source is blocked"):
+            service.submit_transaction(transaction)
+
+    def test_migration_audit_report_flags_active_source_on_quarantined_snapshot(self) -> None:
+        service, _ = self.make_service()
+        classical_public_key = build_demo_classical_claim_public_key("legacy-user-audit")
+        classical_address = build_demo_classical_claim_address(classical_public_key)
+        service.seed_migration_source(
+            classical_address=classical_address,
+            provider_id="classical_claim_demo_v1",
+            source_network="legacy-demo-ledger",
+            amount=4,
+            snapshot_ref="snapshot-audit-001",
+        )
+        service.set_migration_snapshot_status(
+            "snapshot-audit-001",
+            status="quarantined",
+            reason="audit test",
+            cascade_sources=False,
+        )
+
+        report = service.migration_audit_report(source_network="legacy-demo-ledger")
+
+        self.assertEqual(report["summary_by_snapshot_status"]["quarantined"], 1)
+        self.assertTrue(any(item["kind"] == "active_source_on_blocked_snapshot" for item in report["anomalies"]))
 
     def test_rejects_duplicate_pending_migration_claim(self) -> None:
         service, _ = self.make_service()

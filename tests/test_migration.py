@@ -165,6 +165,14 @@ class ClassicalMigrationVerifierTests(unittest.TestCase):
                 source_network="legacy-eth-mainnet",
             )
         )
+        self.assertTrue(
+            verifier.verify_source_address_ownership(
+                public_key,
+                source_address=secp_backend.derive_bitcoin_p2sh_p2wpkh_address(public_key),
+                source_address_format="bitcoin_p2sh_p2wpkh",
+                source_network="legacy-btc-mainnet",
+            )
+        )
 
     def test_real_secp256k1_verifier_rejects_mismatched_external_source_address(self) -> None:
         verifier = get_classical_claim_verifier("ecdsa_secp256k1_migration_v1")

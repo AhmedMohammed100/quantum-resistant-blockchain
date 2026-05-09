@@ -268,6 +268,15 @@ def derive_bitcoin_p2wpkh_address(public_key: object) -> str:
     return _bech32_encode("bc", [0] + _convert_bits(witness_program, 8, 5))
 
 
+def derive_bitcoin_p2sh_p2wpkh_address(public_key: object) -> str:
+    public_key_bytes = _parse_public_key(public_key)
+    point = _decode_point(public_key_bytes)
+    witness_program = _hash160_bytes(_compressed_public_key(point))
+    redeem_script = b"\x00\x14" + witness_program
+    script_hash = _hash160_bytes(redeem_script)
+    return _base58check_encode(b"\x05" + script_hash)
+
+
 def derive_ethereum_eoa_address(public_key: object) -> str:
     public_key_bytes = _parse_public_key(public_key)
     point = _decode_point(public_key_bytes)
@@ -343,6 +352,8 @@ def verify_source_address_ownership(
         return source_address in derive_bitcoin_p2pkh_addresses(public_key)
     if source_address_format == "bitcoin_bech32":
         return derive_bitcoin_p2wpkh_address(public_key).lower() == source_address.lower()
+    if source_address_format == "bitcoin_p2sh_p2wpkh":
+        return derive_bitcoin_p2sh_p2wpkh_address(public_key) == source_address
     if source_address_format == "ethereum_eoa":
         return derive_ethereum_eoa_address(public_key).lower() == source_address.lower()
     return False
@@ -360,6 +371,7 @@ def backend_info() -> dict[str, object]:
             "secp256k1_claim_address",
             "bitcoin_base58",
             "bitcoin_bech32",
+            "bitcoin_p2sh_p2wpkh",
             "ethereum_eoa",
         ],
     }

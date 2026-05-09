@@ -28,6 +28,17 @@ class LegacyNetworkValidationTests(unittest.TestCase):
 
         self.assertEqual(validated["source_address_format"], "ethereum_eoa")
 
+    def test_accepts_nested_bitcoin_segwit_source_address(self) -> None:
+        validated = validate_legacy_source_binding(
+            source_network="legacy-btc-mainnet",
+            provider_id="ecdsa_secp256k1_migration_v1",
+            classical_address="secp256k1-p2pkh:" + ("2c" * 20),
+            source_address="3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy",
+            source_address_format="bitcoin_p2sh_p2wpkh",
+        )
+
+        self.assertEqual(validated["source_address_format"], "bitcoin_p2sh_p2wpkh")
+
     def test_rejects_provider_network_mismatch(self) -> None:
         with self.assertRaisesRegex(ValueError, "does not allow migration provider"):
             validate_legacy_source_binding(

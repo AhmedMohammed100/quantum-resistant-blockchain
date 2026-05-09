@@ -181,6 +181,34 @@ class MigrationSnapshotTests(unittest.TestCase):
         self.assertEqual(exported["bundle"]["entries"][0]["classical_address"], addr_a)
         self.assertIn("envelope", exported)
 
+    def test_reconciles_snapshot_before_import(self) -> None:
+        service = self.make_service()
+        existing = self.demo_address("existing")
+        incoming = self.demo_address("incoming")
+        service.seed_migration_source(
+            classical_address=existing,
+            provider_id="classical_claim_demo_v1",
+            source_network="legacy-demo-ledger",
+            amount=4,
+            snapshot_ref="reconcile-snapshot",
+        )
+        snapshot = {
+            "source_network": "legacy-demo-ledger",
+            "snapshot_ref": "reconcile-snapshot",
+            "generated_at": 107.0,
+            "entries": [
+                {"classical_address": existing, "provider_id": "classical_claim_demo_v1", "amount": 9},
+                {"classical_address": incoming, "provider_id": "classical_claim_demo_v1", "amount": 3},
+            ],
+        }
+
+        report = service.reconcile_migration_snapshot(snapshot)
+
+        self.assertEqual(report["summary"]["would_add"], 1)
+        self.assertEqual(report["summary"]["changed"], 1)
+        self.assertEqual(report["would_add"][0]["classical_address"], incoming)
+        self.assertEqual(report["changed"][0]["differences"]["amount"]["existing"], 4)
+
     def test_rejects_untrusted_snapshot_signer_when_policy_requires_allowlist(self) -> None:
         service = self.make_service()
         addr_a = self.demo_address("trusted-a")

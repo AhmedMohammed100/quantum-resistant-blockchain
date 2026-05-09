@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 from pathlib import Path
 import sqlite3
@@ -32,6 +33,7 @@ from .snapshot import (
     snapshot_manifest_claims,
     validate_snapshot_bundle,
 )
+from .source_ingestion import normalize_source_export_to_snapshot
 from .storage import SQLiteChainStore
 from .wallet_store import SQLiteWalletStateStore
 
@@ -461,6 +463,13 @@ class NodeService:
             "profiles": list_legacy_network_profiles(),
         }
 
+    @staticmethod
+    def _validate_migration_status(status: str) -> str:
+        normalized = status.strip().lower()
+        if normalized not in {"active", "quarantined", "revoked"}:
+            raise ValueError("Migration status must be one of: active, quarantined, revoked.")
+        return normalized
+
     def signature_provider_statuses(self) -> dict[str, object]:
         providers = list_signature_provider_statuses()
         return {
@@ -570,6 +579,8 @@ class NodeService:
             "migration_snapshots": {
                 "count": len(self.store.list_migration_snapshots()),
                 "signature_required": self.config.migration_require_snapshot_signatures,
+                "quarantined": sum(1 for item in self.store.list_migration_snapshots() if item["status"] == "quarantined"),
+                "revoked": sum(1 for item in self.store.list_migration_snapshots() if item["status"] == "revoked"),
             },
             "peers": {
                 "configured": len(self.config.peers),
@@ -648,6 +659,13 @@ class NodeService:
             source_address=source_address,
             source_address_format=source_address_format,
         )
+        reviewed_at = time.time()
+        self.store.ensure_migration_snapshot_stub(
+            snapshot_ref=snapshot_ref,
+            source_network=source_network,
+            imported_at=reviewed_at,
+            reviewed_at=reviewed_at,
+        )
         self.store.add_migration_source(
             classical_address=classical_address,
             provider_id=provider_id,
@@ -656,7 +674,8 @@ class NodeService:
             snapshot_ref=snapshot_ref,
             source_address=str(binding["source_address"]),
             source_address_format=str(binding["source_address_format"]),
-            added_at=time.time(),
+            reviewed_at=reviewed_at,
+            added_at=reviewed_at,
         )
         source = self.store.migration_source(classical_address)
         if source is None:
@@ -731,8 +750,58 @@ class NodeService:
         snapshots = self.store.list_migration_snapshots()
         return next(item for item in snapshots if item["snapshot_ref"] == bundle.snapshot_ref)
 
+    def normalize_source_export_snapshot(self, payload: dict[str, object], *, sign: bool = False) -> dict[str, object]:
+        bundle = normalize_source_export_to_snapshot(payload)
+        result: dict[str, object] = {
+            "bundle": bundle.to_dict(),
+            "source_count": len(bundle.entries),
+            "source_network_profile": describe_legacy_network(bundle.source_network),
+        }
+        if sign:
+            result["envelope"] = self.identity.sign_claims(
+                "migration_snapshot_manifest_v1",
+                snapshot_manifest_claims(bundle),
+            )
+        return result
+
     def list_migration_snapshots(self) -> list[dict[str, object]]:
         return self.store.list_migration_snapshots()
+
+    def set_migration_snapshot_status(
+        self,
+        snapshot_ref: str,
+        *,
+        status: str,
+        reason: str,
+        cascade_sources: bool = True,
+    ) -> dict[str, object]:
+        normalized = self._validate_migration_status(status)
+        if normalized != "active" and not reason.strip():
+            raise ValueError("A reason is required when quarantining or revoking a migration snapshot.")
+        return self.store.set_migration_snapshot_status(
+            snapshot_ref,
+            status=normalized,
+            reason=reason.strip(),
+            reviewed_at=time.time(),
+            cascade_sources=cascade_sources,
+        )
+
+    def set_migration_source_status(
+        self,
+        classical_address: str,
+        *,
+        status: str,
+        reason: str,
+    ) -> dict[str, object]:
+        normalized = self._validate_migration_status(status)
+        if normalized != "active" and not reason.strip():
+            raise ValueError("A reason is required when quarantining or revoking a migration source.")
+        return self.store.set_migration_source_status(
+            classical_address,
+            status=normalized,
+            reason=reason.strip(),
+            reviewed_at=time.time(),
+        )
 
     def sign_migration_snapshot(self, payload: dict[str, object]) -> dict[str, object]:
         bundle = validate_snapshot_bundle(MigrationSnapshotBundle.from_dict(payload))
@@ -757,6 +826,7 @@ class NodeService:
         source_network: str,
         snapshot_ref: str = "",
         include_claimed: bool = False,
+        include_inactive: bool = False,
         sign: bool = False,
         generated_at: float | None = None,
     ) -> dict[str, object]:
@@ -765,6 +835,8 @@ class NodeService:
             snapshot_ref=snapshot_ref,
             include_claimed=include_claimed,
         )
+        if not include_inactive:
+            exported_sources = [item for item in exported_sources if item.get("status") == "active"]
         if not exported_sources:
             raise ValueError("No migration sources matched the requested export filter.")
         resolved_generated_at = round(time.time(), 6) if generated_at is None else generated_at
@@ -781,6 +853,9 @@ class NodeService:
                         amount=int(item["amount"]),
                         source_address=str(item["source_address"]),
                         source_address_format=str(item["source_address_format"]),
+                        status=str(item.get("status", "active")),
+                        status_reason=str(item.get("status_reason", "")),
+                        reviewed_at=float(item.get("reviewed_at", 0.0)),
                     )
                     for item in exported_sources
                 ),
@@ -799,6 +874,285 @@ class NodeService:
             )
         return payload
 
+    def reconcile_migration_snapshot(self, payload: dict[str, object]) -> dict[str, object]:
+        bundle, envelope = parse_snapshot_import_payload(payload)
+        incoming_by_address = {entry.classical_address: entry for entry in bundle.entries}
+        existing_sources = {
+            str(item["classical_address"]): item
+            for item in self.store.list_migration_sources()
+            if item["source_network"] == bundle.source_network
+        }
+        existing_snapshots = {
+            str(item["snapshot_ref"]): item
+            for item in self.store.list_migration_snapshots()
+            if item["source_network"] == bundle.source_network
+        }
+
+        would_add: list[dict[str, object]] = []
+        unchanged: list[dict[str, object]] = []
+        changed: list[dict[str, object]] = []
+        review_conflicts: list[dict[str, object]] = []
+
+        for entry in bundle.normalized_entries():
+            existing = existing_sources.get(entry.classical_address)
+            if existing is None:
+                would_add.append(
+                    {
+                        "classical_address": entry.classical_address,
+                        "provider_id": entry.provider_id,
+                        "amount": entry.amount,
+                    }
+                )
+                continue
+
+            differences: dict[str, dict[str, object]] = {}
+            comparisons = {
+                "provider_id": entry.provider_id,
+                "amount": entry.amount,
+                "source_address": entry.source_address or entry.classical_address,
+                "source_address_format": entry.source_address_format,
+                "status": entry.status,
+            }
+            for key, incoming_value in comparisons.items():
+                if existing.get(key) != incoming_value:
+                    differences[key] = {
+                        "existing": existing.get(key),
+                        "incoming": incoming_value,
+                    }
+            if differences:
+                changed.append(
+                    {
+                        "classical_address": entry.classical_address,
+                        "differences": differences,
+                    }
+                )
+            else:
+                unchanged.append({"classical_address": entry.classical_address})
+            if existing.get("status") != "active" and entry.status == "active":
+                review_conflicts.append(
+                    {
+                        "classical_address": entry.classical_address,
+                        "existing_status": existing.get("status"),
+                        "incoming_status": entry.status,
+                    }
+                )
+
+        local_missing_from_incoming = [
+            {
+                "classical_address": address,
+                "snapshot_ref": item["snapshot_ref"],
+                "status": item["status"],
+                "claimed": item["claimed"],
+            }
+            for address, item in sorted(existing_sources.items())
+            if item["snapshot_ref"] == bundle.snapshot_ref and address not in incoming_by_address
+        ]
+        existing_snapshot = existing_snapshots.get(bundle.snapshot_ref)
+        manifest_matches = (
+            existing_snapshot is not None
+            and existing_snapshot.get("manifest_hash") == bundle.finalized().manifest_hash
+            and existing_snapshot.get("entries_root") == bundle.finalized().entries_root()
+        )
+
+        return {
+            "source_network": bundle.source_network,
+            "snapshot_ref": bundle.snapshot_ref,
+            "incoming_entry_count": len(bundle.entries),
+            "has_signed_envelope": envelope is not None,
+            "existing_snapshot": existing_snapshot or {},
+            "manifest_matches": manifest_matches,
+            "would_add": would_add,
+            "unchanged": unchanged,
+            "changed": changed,
+            "review_conflicts": review_conflicts,
+            "local_missing_from_incoming": local_missing_from_incoming,
+            "summary": {
+                "would_add": len(would_add),
+                "unchanged": len(unchanged),
+                "changed": len(changed),
+                "review_conflicts": len(review_conflicts),
+                "local_missing_from_incoming": len(local_missing_from_incoming),
+            },
+        }
+
+    def preflight_migration_claim(
+        self,
+        *,
+        destination_address: str,
+        classical_address: str,
+        classical_provider_id: str,
+        source_network: str,
+        snapshot_ref: str = "",
+        classical_public_key: object | None = None,
+    ) -> dict[str, object]:
+        draft = self.build_migration_claim_draft(
+            destination_address=destination_address,
+            classical_address=classical_address,
+            classical_provider_id=classical_provider_id,
+            source_network=source_network,
+            snapshot_ref=snapshot_ref,
+            classical_public_key=classical_public_key,
+        )
+        source = self.store.migration_source(classical_address)
+        if source is None:
+            raise ValueError("Migration source address is unknown.")
+
+        checks: list[dict[str, object]] = []
+        policy = self.migration_policy()
+        checks.append({"name": "claims_open", "passed": bool(policy["claims_open"])})
+        checks.append({"name": "source_active", "passed": source.get("status") == "active"})
+        checks.append({"name": "not_claimed", "passed": self.store.migration_claim(classical_address) is None})
+        checks.append(
+            {
+                "name": "provider_allowed",
+                "passed": classical_provider_id in self.config.migration_allowed_classical_providers,
+            }
+        )
+        snapshot = next(
+            (item for item in self.store.list_migration_snapshots() if item["snapshot_ref"] == source["snapshot_ref"]),
+            None,
+        )
+        checks.append({"name": "snapshot_active", "passed": snapshot is None or snapshot["status"] == "active"})
+        if classical_public_key is not None:
+            verifier = get_classical_claim_verifier(classical_provider_id)
+            checks.append(
+                {
+                    "name": "classical_public_key_derives_address",
+                    "passed": verifier.address_from_public_key(classical_public_key) == classical_address,
+                }
+            )
+            checks.append(
+                {
+                    "name": "classical_public_key_derives_source_address",
+                    "passed": verifier.verify_source_address_ownership(
+                        classical_public_key,
+                        source_address=str(source.get("source_address", classical_address)),
+                        source_address_format=str(source.get("source_address_format", "")),
+                        source_network=source_network,
+                    ),
+                }
+            )
+
+        return {
+            "ready": all(bool(item["passed"]) for item in checks),
+            "checks": checks,
+            "source": source,
+            "policy": policy,
+            "draft_transaction": json.loads(draft.serialize_with_id()),
+            "classical_claim_message_hex": classical_claim_message_bytes(draft.migration_claim_payload()).hex(),
+            "destination_acceptance_message_hex": destination_acceptance_message_bytes(
+                draft.migration_claim_payload()
+            ).hex(),
+        }
+
+    def migration_claim_receipt(self, classical_address: str, *, sign: bool = True) -> dict[str, object]:
+        claim = self.store.migration_claim(classical_address)
+        if claim is None:
+            raise ValueError("Migration claim is unknown.")
+        source = self.store.migration_source(classical_address) or {}
+        claims = {
+            "classical_address": claim["classical_address"],
+            "provider_id": claim["provider_id"],
+            "source_network": claim["source_network"],
+            "source_address": source.get("source_address", claim["classical_address"]),
+            "source_address_format": source.get("source_address_format", ""),
+            "destination_address": claim["destination_address"],
+            "amount": claim["amount"],
+            "tx_id": claim["tx_id"],
+            "claimed_at": claim["claimed_at"],
+        }
+        receipt = {
+            "receipt_version": 1,
+            "claims": claims,
+        }
+        if sign:
+            receipt["envelope"] = self.identity.sign_claims("migration_claim_receipt_v1", claims)
+        return receipt
+
+    def migration_audit_report(
+        self,
+        *,
+        source_network: str | None = None,
+    ) -> dict[str, object]:
+        snapshots = self.store.list_migration_snapshots()
+        sources = self.store.list_migration_sources()
+        if source_network:
+            snapshots = [item for item in snapshots if item["source_network"] == source_network]
+            sources = [item for item in sources if item["source_network"] == source_network]
+        snapshot_map = {item["snapshot_ref"]: item for item in snapshots}
+        summary_by_network: dict[str, dict[str, int]] = {}
+        summary_by_provider: dict[str, dict[str, int]] = {}
+        summary_by_source_status: dict[str, int] = {}
+        summary_by_snapshot_status: dict[str, int] = {}
+        anomalies: list[dict[str, object]] = []
+
+        for snapshot in snapshots:
+            summary_by_snapshot_status[snapshot["status"]] = summary_by_snapshot_status.get(snapshot["status"], 0) + 1
+
+        for source in sources:
+            network_summary = summary_by_network.setdefault(
+                str(source["source_network"]),
+                {"total": 0, "active": 0, "claimed": 0, "blocked": 0},
+            )
+            provider_summary = summary_by_provider.setdefault(
+                str(source["provider_id"]),
+                {"total": 0, "active": 0, "claimed": 0, "blocked": 0},
+            )
+            source_status = str(source["status"])
+            blocked = source_status != "active"
+            claimed = bool(source["claimed"])
+            network_summary["total"] += 1
+            provider_summary["total"] += 1
+            if source_status == "active":
+                network_summary["active"] += 1
+                provider_summary["active"] += 1
+            if claimed:
+                network_summary["claimed"] += 1
+                provider_summary["claimed"] += 1
+            if blocked:
+                network_summary["blocked"] += 1
+                provider_summary["blocked"] += 1
+            summary_by_source_status[source_status] = summary_by_source_status.get(source_status, 0) + 1
+
+            snapshot = snapshot_map.get(str(source["snapshot_ref"]))
+            if snapshot is None and str(source["snapshot_ref"]):
+                anomalies.append(
+                    {
+                        "kind": "missing_snapshot_record",
+                        "classical_address": source["classical_address"],
+                        "snapshot_ref": source["snapshot_ref"],
+                    }
+                )
+            elif snapshot is not None and snapshot["status"] != "active" and source_status == "active":
+                anomalies.append(
+                    {
+                        "kind": "active_source_on_blocked_snapshot",
+                        "classical_address": source["classical_address"],
+                        "snapshot_ref": source["snapshot_ref"],
+                        "snapshot_status": snapshot["status"],
+                    }
+                )
+            if claimed and blocked:
+                anomalies.append(
+                    {
+                        "kind": "claimed_blocked_source",
+                        "classical_address": source["classical_address"],
+                        "source_status": source_status,
+                    }
+                )
+
+        return {
+            "generated_at": round(time.time(), 6),
+            "source_network": source_network or "",
+            "snapshot_count": len(snapshots),
+            "source_count": len(sources),
+            "summary_by_network": summary_by_network,
+            "summary_by_provider": summary_by_provider,
+            "summary_by_source_status": summary_by_source_status,
+            "summary_by_snapshot_status": summary_by_snapshot_status,
+            "anomalies": anomalies,
+        }
+
     def list_migration_sources(self) -> list[dict[str, object]]:
         items = self.store.list_migration_sources()
         effective_height = self.store.block_count()
@@ -806,7 +1160,7 @@ class NodeService:
         for item in items:
             item["claims_open"] = policy["claims_open"]
             item["dual_control_required"] = policy["dual_control_required"]
-            item["claimable"] = policy["claims_open"] and not item["claimed"]
+            item["claimable"] = policy["claims_open"] and not item["claimed"] and item["status"] == "active"
             item["source_network_profile"] = describe_legacy_network(str(item["source_network"]))
         return items
 
@@ -1152,6 +1506,11 @@ class NodeService:
         source = self.store.migration_source(classical_address)
         if source is None:
             raise ValueError("Migration claim source address is unknown.")
+        if str(source.get("status", "active")) != "active":
+            raise ValueError("Migration claim source is blocked by migration review policy.")
+        snapshot = next((item for item in self.store.list_migration_snapshots() if item["snapshot_ref"] == source["snapshot_ref"]), None)
+        if snapshot is not None and snapshot["status"] != "active":
+            raise ValueError("Migration claim snapshot is blocked by migration review policy.")
         if source["provider_id"] != provider_id:
             raise ValueError("Migration claim provider does not match the seeded source.")
         if source["source_network"] != source_network:

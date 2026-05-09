@@ -17,15 +17,25 @@ class MigrationSnapshotEntry:
     amount: int
     source_address: str = ""
     source_address_format: str = ""
+    status: str = "active"
+    status_reason: str = ""
+    reviewed_at: float = 0.0
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        payload = {
             "classical_address": self.classical_address,
             "provider_id": self.provider_id,
             "amount": self.amount,
             "source_address": self.source_address or self.classical_address,
             "source_address_format": self.source_address_format,
         }
+        if self.status != "active" or self.status_reason or self.reviewed_at:
+            payload["status"] = self.status
+            if self.status_reason:
+                payload["status_reason"] = self.status_reason
+            if self.reviewed_at:
+                payload["reviewed_at"] = self.reviewed_at
+        return payload
 
     @staticmethod
     def from_dict(data: dict[str, object]) -> "MigrationSnapshotEntry":
@@ -35,6 +45,9 @@ class MigrationSnapshotEntry:
             amount=int(data["amount"]),
             source_address=str(data.get("source_address", data.get("classical_address", ""))),
             source_address_format=str(data.get("source_address_format", "")),
+            status=str(data.get("status", "active")),
+            status_reason=str(data.get("status_reason", "")),
+            reviewed_at=float(data.get("reviewed_at", 0.0)),
         )
 
 
@@ -149,6 +162,10 @@ def validate_snapshot_bundle(bundle: MigrationSnapshotBundle) -> MigrationSnapsh
             raise ValueError("Migration snapshot entry is missing provider_id.")
         if entry.amount <= 0:
             raise ValueError("Migration snapshot entry amount must be positive.")
+        if entry.status not in {"active", "quarantined", "revoked"}:
+            raise ValueError("Migration snapshot entry status is invalid.")
+        if entry.status != "active" and not entry.status_reason.strip():
+            raise ValueError("Migration snapshot entry status_reason is required for blocked entries.")
         if entry.classical_address in seen_addresses:
             raise ValueError("Migration snapshot contains duplicate classical addresses.")
         seen_addresses.add(entry.classical_address)

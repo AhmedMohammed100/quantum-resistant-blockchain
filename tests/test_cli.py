@@ -68,6 +68,229 @@ class OperatorCliTests(unittest.TestCase):
         self.assertTrue(payload["has_envelope"])
         self.assertEqual(payload["bundle"]["snapshot_ref"], "cli-snapshot")
 
+    def test_cli_emits_migration_report(self) -> None:
+        self.service.seed_migration_source(
+            classical_address=self.demo_address("report-user"),
+            provider_id="classical_claim_demo_v1",
+            source_network="legacy-demo-ledger",
+            amount=5,
+            snapshot_ref="report-snapshot",
+        )
+        buffer = io.StringIO()
+
+        with redirect_stdout(buffer):
+            exit_code = main(
+                [
+                    "--db-path",
+                    str(self.db_path),
+                    "--wallet-state-db-path",
+                    str(self.wallet_state_db_path),
+                    "migration-report",
+                    "--source-network",
+                    "legacy-demo-ledger",
+                ]
+            )
+
+        self.assertEqual(exit_code, 0)
+        payload = json.loads(buffer.getvalue())
+        self.assertEqual(payload["source_count"], 1)
+
+    def test_cli_reconciles_snapshot_artifact(self) -> None:
+        existing = self.demo_address("reconcile-existing")
+        incoming = self.demo_address("reconcile-incoming")
+        self.service.seed_migration_source(
+            classical_address=existing,
+            provider_id="classical_claim_demo_v1",
+            source_network="legacy-demo-ledger",
+            amount=4,
+            snapshot_ref="cli-reconcile",
+        )
+        snapshot_path = self.root / "incoming-snapshot.json"
+        snapshot_path.write_text(
+            json.dumps(
+                {
+                    "source_network": "legacy-demo-ledger",
+                    "snapshot_ref": "cli-reconcile",
+                    "generated_at": 200.0,
+                    "entries": [
+                        {
+                            "classical_address": existing,
+                            "provider_id": "classical_claim_demo_v1",
+                            "amount": 4,
+                            "source_address": existing,
+                            "source_address_format": "demo_claim_address",
+                        },
+                        {"classical_address": incoming, "provider_id": "classical_claim_demo_v1", "amount": 5},
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        buffer = io.StringIO()
+
+        with redirect_stdout(buffer):
+            exit_code = main(
+                [
+                    "--db-path",
+                    str(self.db_path),
+                    "--wallet-state-db-path",
+                    str(self.wallet_state_db_path),
+                    "migration-snapshot-reconcile",
+                    "--input",
+                    str(snapshot_path),
+                ]
+            )
+
+        self.assertEqual(exit_code, 0)
+        payload = json.loads(buffer.getvalue())
+        self.assertEqual(payload["summary"]["would_add"], 1)
+        self.assertEqual(payload["summary"]["unchanged"], 1)
+
+    def test_cli_normalizes_source_export(self) -> None:
+        source_export_path = self.root / "source-export.json"
+        source_export_path.write_text(
+            json.dumps(
+                {
+                    "source_network": "legacy-demo-ledger",
+                    "snapshot_ref": "source-export-cli",
+                    "generated_at": 300.0,
+                    "provider_id": "classical_claim_demo_v1",
+                    "source_address_format": "demo_claim_address",
+                    "records": [
+                        {
+                            "classical_address": self.demo_address("source-export-user"),
+                            "amount": 10,
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        buffer = io.StringIO()
+
+        with redirect_stdout(buffer):
+            exit_code = main(
+                [
+                    "--db-path",
+                    str(self.db_path),
+                    "--wallet-state-db-path",
+                    str(self.wallet_state_db_path),
+                    "migration-source-export-normalize",
+                    "--input",
+                    str(source_export_path),
+                ]
+            )
+
+        self.assertEqual(exit_code, 0)
+        payload = json.loads(buffer.getvalue())
+        self.assertEqual(payload["bundle"]["snapshot_ref"], "source-export-cli")
+        self.assertEqual(payload["bundle"]["entry_count"], 1)
+
+    def test_cli_preflights_migration_claim(self) -> None:
+        self.service.create_genesis_block({"bootstrap": 1})
+        classical_address = self.demo_address("preflight-cli")
+        self.service.seed_migration_source(
+            classical_address=classical_address,
+            provider_id="classical_claim_demo_v1",
+            source_network="legacy-demo-ledger",
+            amount=6,
+            snapshot_ref="cli-preflight",
+        )
+        buffer = io.StringIO()
+
+        with redirect_stdout(buffer):
+            exit_code = main(
+                [
+                    "--db-path",
+                    str(self.db_path),
+                    "--wallet-state-db-path",
+                    str(self.wallet_state_db_path),
+                    "migration-claim-preflight",
+                    "--destination-address",
+                    "pq-test-destination",
+                    "--classical-address",
+                    classical_address,
+                    "--classical-provider-id",
+                    "classical_claim_demo_v1",
+                    "--source-network",
+                    "legacy-demo-ledger",
+                    "--snapshot-ref",
+                    "cli-preflight",
+                ]
+            )
+
+        self.assertEqual(exit_code, 0)
+        payload = json.loads(buffer.getvalue())
+        self.assertTrue(payload["ready"])
+        self.assertTrue(payload["classical_claim_message_hex"])
+
+    def test_cli_can_quarantine_snapshot(self) -> None:
+        self.service.seed_migration_source(
+            classical_address=self.demo_address("quarantine-user"),
+            provider_id="classical_claim_demo_v1",
+            source_network="legacy-demo-ledger",
+            amount=6,
+            snapshot_ref="quarantine-snapshot",
+        )
+        buffer = io.StringIO()
+
+        with redirect_stdout(buffer):
+            exit_code = main(
+                [
+                    "--db-path",
+                    str(self.db_path),
+                    "--wallet-state-db-path",
+                    str(self.wallet_state_db_path),
+                    "migration-snapshot-status",
+                    "--snapshot-ref",
+                    "quarantine-snapshot",
+                    "--status",
+                    "quarantined",
+                    "--reason",
+                    "cli-review",
+                ]
+            )
+
+        self.assertEqual(exit_code, 0)
+        payload = json.loads(buffer.getvalue())
+        self.assertEqual(payload["status"], "quarantined")
+
+    def test_cli_snapshot_export_can_include_inactive_sources(self) -> None:
+        seeded = self.service.seed_migration_source(
+            classical_address=self.demo_address("inactive-user"),
+            provider_id="classical_claim_demo_v1",
+            source_network="legacy-demo-ledger",
+            amount=8,
+            snapshot_ref="inactive-snapshot",
+        )
+        self.service.set_migration_source_status(
+            seeded["classical_address"],
+            status="quarantined",
+            reason="manual review",
+        )
+        buffer = io.StringIO()
+
+        with redirect_stdout(buffer):
+            exit_code = main(
+                [
+                    "--db-path",
+                    str(self.db_path),
+                    "--wallet-state-db-path",
+                    str(self.wallet_state_db_path),
+                    "migration-snapshot-export",
+                    "--source-network",
+                    "legacy-demo-ledger",
+                    "--snapshot-ref",
+                    "inactive-snapshot",
+                    "--include-inactive",
+                ]
+            )
+
+        self.assertEqual(exit_code, 0)
+        payload = json.loads(buffer.getvalue())
+        self.assertEqual(payload["bundle"]["entry_count"], 1)
+        self.assertEqual(payload["bundle"]["entries"][0]["status"], "quarantined")
+
 
 if __name__ == "__main__":
     unittest.main()

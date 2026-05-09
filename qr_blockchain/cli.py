@@ -14,6 +14,12 @@ def _read_json_file(path: Path) -> dict[str, object]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _read_json_value(value: str) -> object:
+    if not value:
+        return None
+    return json.loads(value)
+
+
 def _write_json_output(payload: dict[str, object], output_path: Path | None) -> None:
     serialized = json.dumps(payload, indent=2, sort_keys=True) + "\n"
     if output_path is None:
@@ -80,6 +86,7 @@ def build_parser() -> argparse.ArgumentParser:
     export_parser.add_argument("--source-network", required=True)
     export_parser.add_argument("--snapshot-ref", default="")
     export_parser.add_argument("--include-claimed", action="store_true")
+    export_parser.add_argument("--include-inactive", action="store_true")
     export_parser.add_argument("--sign", action="store_true")
     export_parser.add_argument("--output", default=None)
     export_parser.set_defaults(handler=cmd_migration_snapshot_export)
@@ -98,6 +105,56 @@ def build_parser() -> argparse.ArgumentParser:
     import_parser.add_argument("--input", required=True)
     import_parser.add_argument("--output", default=None)
     import_parser.set_defaults(handler=cmd_migration_snapshot_import)
+
+    normalize_parser = subparsers.add_parser(
+        "migration-source-export-normalize",
+        help="Normalize a source-chain export into a migration snapshot artifact",
+    )
+    normalize_parser.add_argument("--input", required=True)
+    normalize_parser.add_argument("--sign", action="store_true")
+    normalize_parser.add_argument("--output", default=None)
+    normalize_parser.set_defaults(handler=cmd_migration_source_export_normalize)
+
+    reconcile_parser = subparsers.add_parser("migration-snapshot-reconcile", help="Compare a snapshot artifact with local migration state")
+    reconcile_parser.add_argument("--input", required=True)
+    reconcile_parser.add_argument("--output", default=None)
+    reconcile_parser.set_defaults(handler=cmd_migration_snapshot_reconcile)
+
+    report_parser = subparsers.add_parser("migration-report", help="Emit a migration audit report")
+    report_parser.add_argument("--source-network", default=None)
+    report_parser.add_argument("--output", default=None)
+    report_parser.set_defaults(handler=cmd_migration_report)
+
+    preflight_parser = subparsers.add_parser("migration-claim-preflight", help="Build a claim signing preflight report")
+    preflight_parser.add_argument("--destination-address", required=True)
+    preflight_parser.add_argument("--classical-address", required=True)
+    preflight_parser.add_argument("--classical-provider-id", required=True)
+    preflight_parser.add_argument("--source-network", required=True)
+    preflight_parser.add_argument("--snapshot-ref", default="")
+    preflight_parser.add_argument("--classical-public-key-json", default="")
+    preflight_parser.add_argument("--output", default=None)
+    preflight_parser.set_defaults(handler=cmd_migration_claim_preflight)
+
+    receipt_parser = subparsers.add_parser("migration-claim-receipt", help="Emit a signed migration claim receipt")
+    receipt_parser.add_argument("--classical-address", required=True)
+    receipt_parser.add_argument("--unsigned", action="store_true")
+    receipt_parser.add_argument("--output", default=None)
+    receipt_parser.set_defaults(handler=cmd_migration_claim_receipt)
+
+    snapshot_status_parser = subparsers.add_parser("migration-snapshot-status", help="Set snapshot review status")
+    snapshot_status_parser.add_argument("--snapshot-ref", required=True)
+    snapshot_status_parser.add_argument("--status", required=True)
+    snapshot_status_parser.add_argument("--reason", default="")
+    snapshot_status_parser.add_argument("--no-cascade", action="store_true")
+    snapshot_status_parser.add_argument("--output", default=None)
+    snapshot_status_parser.set_defaults(handler=cmd_migration_snapshot_status)
+
+    source_status_parser = subparsers.add_parser("migration-source-status", help="Set source review status")
+    source_status_parser.add_argument("--classical-address", required=True)
+    source_status_parser.add_argument("--status", required=True)
+    source_status_parser.add_argument("--reason", default="")
+    source_status_parser.add_argument("--output", default=None)
+    source_status_parser.set_defaults(handler=cmd_migration_source_status)
     return parser
 
 
@@ -113,6 +170,7 @@ def cmd_migration_snapshot_export(args: argparse.Namespace) -> int:
         source_network=args.source_network,
         snapshot_ref=args.snapshot_ref,
         include_claimed=args.include_claimed,
+        include_inactive=args.include_inactive,
         sign=args.sign,
     )
     _write_json_output(payload, None if args.output is None else Path(args.output))
@@ -151,6 +209,73 @@ def cmd_migration_snapshot_import(args: argparse.Namespace) -> int:
     payload = _read_json_file(Path(args.input))
     imported = service.import_migration_snapshot(payload)
     _write_json_output(imported, None if args.output is None else Path(args.output))
+    return 0
+
+
+def cmd_migration_source_export_normalize(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    payload = _read_json_file(Path(args.input))
+    normalized = service.normalize_source_export_snapshot(payload, sign=args.sign)
+    _write_json_output(normalized, None if args.output is None else Path(args.output))
+    return 0
+
+
+def cmd_migration_snapshot_reconcile(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    payload = _read_json_file(Path(args.input))
+    report = service.reconcile_migration_snapshot(payload)
+    _write_json_output(report, None if args.output is None else Path(args.output))
+    return 0
+
+
+def cmd_migration_report(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    report = service.migration_audit_report(source_network=args.source_network)
+    _write_json_output(report, None if args.output is None else Path(args.output))
+    return 0
+
+
+def cmd_migration_claim_preflight(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    report = service.preflight_migration_claim(
+        destination_address=args.destination_address,
+        classical_address=args.classical_address,
+        classical_provider_id=args.classical_provider_id,
+        source_network=args.source_network,
+        snapshot_ref=args.snapshot_ref,
+        classical_public_key=_read_json_value(args.classical_public_key_json),
+    )
+    _write_json_output(report, None if args.output is None else Path(args.output))
+    return 0
+
+
+def cmd_migration_claim_receipt(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    receipt = service.migration_claim_receipt(args.classical_address, sign=not args.unsigned)
+    _write_json_output(receipt, None if args.output is None else Path(args.output))
+    return 0
+
+
+def cmd_migration_snapshot_status(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    snapshot = service.set_migration_snapshot_status(
+        args.snapshot_ref,
+        status=args.status,
+        reason=args.reason,
+        cascade_sources=not args.no_cascade,
+    )
+    _write_json_output(snapshot, None if args.output is None else Path(args.output))
+    return 0
+
+
+def cmd_migration_source_status(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    source = service.set_migration_source_status(
+        args.classical_address,
+        status=args.status,
+        reason=args.reason,
+    )
+    _write_json_output(source, None if args.output is None else Path(args.output))
     return 0
 
 

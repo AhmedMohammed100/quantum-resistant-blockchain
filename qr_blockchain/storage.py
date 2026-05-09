@@ -96,6 +96,9 @@ class SQLiteChainStore:
                     snapshot_hash TEXT NOT NULL DEFAULT '',
                     source_address TEXT NOT NULL DEFAULT '',
                     source_address_format TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'active',
+                    status_reason TEXT NOT NULL DEFAULT '',
+                    reviewed_at REAL NOT NULL DEFAULT 0,
                     added_at REAL NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS migration_snapshots (
@@ -110,7 +113,10 @@ class SQLiteChainStore:
                     signer_address TEXT NOT NULL DEFAULT '',
                     signer_node_id TEXT NOT NULL DEFAULT '',
                     signer_signature_scheme TEXT NOT NULL DEFAULT '',
-                    signer_signature_provider TEXT NOT NULL DEFAULT ''
+                    signer_signature_provider TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'active',
+                    status_reason TEXT NOT NULL DEFAULT '',
+                    reviewed_at REAL NOT NULL DEFAULT 0
                 );
                 CREATE TABLE IF NOT EXISTS migration_claims (
                     classical_address TEXT PRIMARY KEY,
@@ -143,6 +149,12 @@ class SQLiteChainStore:
                 connection.execute(
                     "ALTER TABLE migration_sources ADD COLUMN source_address_format TEXT NOT NULL DEFAULT ''"
                 )
+            if "status" not in migration_source_columns:
+                connection.execute("ALTER TABLE migration_sources ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
+            if "status_reason" not in migration_source_columns:
+                connection.execute("ALTER TABLE migration_sources ADD COLUMN status_reason TEXT NOT NULL DEFAULT ''")
+            if "reviewed_at" not in migration_source_columns:
+                connection.execute("ALTER TABLE migration_sources ADD COLUMN reviewed_at REAL NOT NULL DEFAULT 0")
             migration_snapshot_columns = {
                 str(row["name"])
                 for row in connection.execute("PRAGMA table_info(migration_snapshots)").fetchall()
@@ -159,6 +171,12 @@ class SQLiteChainStore:
                 connection.execute(
                     "ALTER TABLE migration_snapshots ADD COLUMN signer_signature_provider TEXT NOT NULL DEFAULT ''"
                 )
+            if "status" not in migration_snapshot_columns:
+                connection.execute("ALTER TABLE migration_snapshots ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
+            if "status_reason" not in migration_snapshot_columns:
+                connection.execute("ALTER TABLE migration_snapshots ADD COLUMN status_reason TEXT NOT NULL DEFAULT ''")
+            if "reviewed_at" not in migration_snapshot_columns:
+                connection.execute("ALTER TABLE migration_snapshots ADD COLUMN reviewed_at REAL NOT NULL DEFAULT 0")
 
     def latest_block(self) -> sqlite3.Row | None:
         best_hash = self.best_head_hash()
@@ -330,6 +348,9 @@ class SQLiteChainStore:
         snapshot_hash: str = "",
         source_address: str = "",
         source_address_format: str = "",
+        status: str = "active",
+        status_reason: str = "",
+        reviewed_at: float = 0.0,
         added_at: float,
     ) -> None:
         with self._connect() as connection:
@@ -337,9 +358,9 @@ class SQLiteChainStore:
                 """
                 INSERT INTO migration_sources (
                     classical_address, provider_id, source_network, amount, snapshot_ref, snapshot_hash,
-                    source_address, source_address_format, added_at
+                    source_address, source_address_format, status, status_reason, reviewed_at, added_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(classical_address) DO UPDATE SET
                     provider_id = excluded.provider_id,
                     source_network = excluded.source_network,
@@ -348,6 +369,9 @@ class SQLiteChainStore:
                     snapshot_hash = excluded.snapshot_hash,
                     source_address = excluded.source_address,
                     source_address_format = excluded.source_address_format,
+                    status = excluded.status,
+                    status_reason = excluded.status_reason,
+                    reviewed_at = excluded.reviewed_at,
                     added_at = excluded.added_at
                 """,
                 (
@@ -359,6 +383,9 @@ class SQLiteChainStore:
                     snapshot_hash,
                     source_address,
                     source_address_format,
+                    status,
+                    status_reason,
+                    reviewed_at,
                     added_at,
                 ),
             )
@@ -379,6 +406,9 @@ class SQLiteChainStore:
         signer_node_id: str = "",
         signer_signature_scheme: str = "",
         signer_signature_provider: str = "",
+        status: str = "active",
+        status_reason: str = "",
+        reviewed_at: float = 0.0,
     ) -> None:
         connection = self._connect()
         try:
@@ -386,7 +416,8 @@ class SQLiteChainStore:
             existing = connection.execute(
                 """
                 SELECT snapshot_ref, source_network, manifest_hash, entries_root, entry_count, total_amount, generated_at,
-                       signer_address, signer_node_id, signer_signature_scheme, signer_signature_provider
+                       signer_address, signer_node_id, signer_signature_scheme, signer_signature_provider,
+                       status, status_reason, reviewed_at
                 FROM migration_snapshots
                 WHERE snapshot_ref = ?
                 """,
@@ -404,6 +435,9 @@ class SQLiteChainStore:
                     or str(existing["signer_node_id"]) != signer_node_id
                     or str(existing["signer_signature_scheme"]) != signer_signature_scheme
                     or str(existing["signer_signature_provider"]) != signer_signature_provider
+                    or str(existing["status"]) != status
+                    or str(existing["status_reason"]) != status_reason
+                    or float(existing["reviewed_at"]) != reviewed_at
                 ):
                     raise ValueError("Migration snapshot_ref already exists with different contents.")
             else:
@@ -411,9 +445,10 @@ class SQLiteChainStore:
                     """
                     INSERT INTO migration_snapshots (
                         snapshot_ref, source_network, manifest_hash, entries_root, entry_count, total_amount, generated_at, imported_at,
-                        signer_address, signer_node_id, signer_signature_scheme, signer_signature_provider
+                        signer_address, signer_node_id, signer_signature_scheme, signer_signature_provider,
+                        status, status_reason, reviewed_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         snapshot_ref,
@@ -428,6 +463,9 @@ class SQLiteChainStore:
                         signer_node_id,
                         signer_signature_scheme,
                         signer_signature_provider,
+                        status,
+                        status_reason,
+                        reviewed_at,
                     ),
                 )
 
@@ -438,7 +476,7 @@ class SQLiteChainStore:
                 existing_source = connection.execute(
                     """
                     SELECT provider_id, source_network, amount, snapshot_ref, snapshot_hash,
-                           source_address, source_address_format
+                           source_address, source_address_format, status, status_reason, reviewed_at
                     FROM migration_sources
                     WHERE classical_address = ?
                     """,
@@ -453,6 +491,9 @@ class SQLiteChainStore:
                         or str(existing_source["snapshot_hash"]) != manifest_hash
                         or str(existing_source["source_address"]) != str(entry["source_address"])
                         or str(existing_source["source_address_format"]) != str(entry["source_address_format"])
+                        or str(existing_source["status"]) != str(entry.get("status", "active"))
+                        or str(existing_source["status_reason"]) != str(entry.get("status_reason", ""))
+                        or float(existing_source["reviewed_at"]) != float(entry.get("reviewed_at", 0.0))
                     ):
                         raise ValueError(
                             f"Migration source '{classical_address}' already exists with different contents."
@@ -462,9 +503,9 @@ class SQLiteChainStore:
                     """
                     INSERT INTO migration_sources (
                         classical_address, provider_id, source_network, amount, snapshot_ref, snapshot_hash,
-                        source_address, source_address_format, added_at
+                        source_address, source_address_format, status, status_reason, reviewed_at, added_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         classical_address,
@@ -475,6 +516,9 @@ class SQLiteChainStore:
                         manifest_hash,
                         str(entry["source_address"]),
                         str(entry["source_address_format"]),
+                        str(entry.get("status", "active")),
+                        str(entry.get("status_reason", "")),
+                        float(entry.get("reviewed_at", 0.0)),
                         imported_at,
                     ),
                 )
@@ -485,12 +529,51 @@ class SQLiteChainStore:
         finally:
             connection.close()
 
+    def ensure_migration_snapshot_stub(
+        self,
+        *,
+        snapshot_ref: str,
+        source_network: str,
+        imported_at: float,
+        status: str = "active",
+        status_reason: str = "",
+        reviewed_at: float = 0.0,
+    ) -> None:
+        if not snapshot_ref:
+            return
+        with self._connect() as connection:
+            existing = connection.execute(
+                "SELECT snapshot_ref FROM migration_snapshots WHERE snapshot_ref = ?",
+                (snapshot_ref,),
+            ).fetchone()
+            if existing is not None:
+                return
+            connection.execute(
+                """
+                INSERT INTO migration_snapshots (
+                    snapshot_ref, source_network, manifest_hash, entries_root, entry_count, total_amount, generated_at, imported_at,
+                    signer_address, signer_node_id, signer_signature_scheme, signer_signature_provider,
+                    status, status_reason, reviewed_at
+                )
+                VALUES (?, ?, '', '', 0, 0, ?, ?, '', '', '', '', ?, ?, ?)
+                """,
+                (
+                    snapshot_ref,
+                    source_network,
+                    imported_at,
+                    imported_at,
+                    status,
+                    status_reason,
+                    reviewed_at,
+                ),
+            )
+
     def migration_source(self, classical_address: str) -> dict[str, object] | None:
         with self._connect() as connection:
             row = connection.execute(
                 """
                 SELECT classical_address, provider_id, source_network, amount, snapshot_ref, snapshot_hash,
-                       source_address, source_address_format, added_at
+                       source_address, source_address_format, status, status_reason, reviewed_at, added_at
                 FROM migration_sources
                 WHERE classical_address = ?
                 """,
@@ -507,6 +590,9 @@ class SQLiteChainStore:
             "snapshot_hash": str(row["snapshot_hash"]),
             "source_address": str(row["source_address"]),
             "source_address_format": str(row["source_address_format"]),
+            "status": str(row["status"]),
+            "status_reason": str(row["status_reason"]),
+            "reviewed_at": float(row["reviewed_at"]),
             "added_at": float(row["added_at"]),
         }
 
@@ -515,7 +601,8 @@ class SQLiteChainStore:
             rows = connection.execute(
                 """
                 SELECT snapshot_ref, source_network, manifest_hash, entries_root, entry_count, total_amount, generated_at, imported_at,
-                       signer_address, signer_node_id, signer_signature_scheme, signer_signature_provider
+                       signer_address, signer_node_id, signer_signature_scheme, signer_signature_provider,
+                       status, status_reason, reviewed_at
                 FROM migration_snapshots
                 ORDER BY imported_at ASC, snapshot_ref ASC
                 """
@@ -534,6 +621,9 @@ class SQLiteChainStore:
                 "signer_node_id": str(row["signer_node_id"]),
                 "signer_signature_scheme": str(row["signer_signature_scheme"]),
                 "signer_signature_provider": str(row["signer_signature_provider"]),
+                "status": str(row["status"]),
+                "status_reason": str(row["status_reason"]),
+                "reviewed_at": float(row["reviewed_at"]),
             }
             for row in rows
         ]
@@ -550,6 +640,9 @@ class SQLiteChainStore:
                        source.snapshot_hash,
                        source.source_address,
                        source.source_address_format,
+                       source.status,
+                       source.status_reason,
+                       source.reviewed_at,
                        source.added_at,
                        claim.destination_address,
                        claim.tx_id,
@@ -572,6 +665,9 @@ class SQLiteChainStore:
                     "snapshot_hash": str(row["snapshot_hash"]),
                     "source_address": str(row["source_address"]),
                     "source_address_format": str(row["source_address_format"]),
+                    "status": str(row["status"]),
+                    "status_reason": str(row["status_reason"]),
+                    "reviewed_at": float(row["reviewed_at"]),
                     "added_at": float(row["added_at"]),
                     "claimed": row["tx_id"] is not None,
                     "destination_address": None if row["destination_address"] is None else str(row["destination_address"]),
@@ -597,6 +693,9 @@ class SQLiteChainStore:
                    source.snapshot_hash,
                    source.source_address,
                    source.source_address_format,
+                   source.status,
+                   source.status_reason,
+                   source.reviewed_at,
                    source.added_at,
                    claim.tx_id
             FROM migration_sources AS source
@@ -623,11 +722,72 @@ class SQLiteChainStore:
                 "snapshot_hash": str(row["snapshot_hash"]),
                 "source_address": str(row["source_address"]),
                 "source_address_format": str(row["source_address_format"]),
+                "status": str(row["status"]),
+                "status_reason": str(row["status_reason"]),
+                "reviewed_at": float(row["reviewed_at"]),
                 "added_at": float(row["added_at"]),
                 "claimed": row["tx_id"] is not None,
             }
             for row in rows
         ]
+
+    def set_migration_snapshot_status(
+        self,
+        snapshot_ref: str,
+        *,
+        status: str,
+        reason: str,
+        reviewed_at: float,
+        cascade_sources: bool = True,
+    ) -> dict[str, object]:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE migration_snapshots
+                SET status = ?, status_reason = ?, reviewed_at = ?
+                WHERE snapshot_ref = ?
+                """,
+                (status, reason, reviewed_at, snapshot_ref),
+            )
+            if connection.total_changes == 0:
+                raise ValueError("Migration snapshot is unknown.")
+            if cascade_sources:
+                connection.execute(
+                    """
+                    UPDATE migration_sources
+                    SET status = ?, status_reason = ?, reviewed_at = ?
+                    WHERE snapshot_ref = ?
+                    """,
+                    (status, reason, reviewed_at, snapshot_ref),
+                )
+        snapshot = next((item for item in self.list_migration_snapshots() if item["snapshot_ref"] == snapshot_ref), None)
+        if snapshot is None:
+            raise ValueError("Migration snapshot is unknown.")
+        return snapshot
+
+    def set_migration_source_status(
+        self,
+        classical_address: str,
+        *,
+        status: str,
+        reason: str,
+        reviewed_at: float,
+    ) -> dict[str, object]:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE migration_sources
+                SET status = ?, status_reason = ?, reviewed_at = ?
+                WHERE classical_address = ?
+                """,
+                (status, reason, reviewed_at, classical_address),
+            )
+            if connection.total_changes == 0:
+                raise ValueError("Migration source is unknown.")
+        source = self.migration_source(classical_address)
+        if source is None:
+            raise ValueError("Migration source is unknown.")
+        return source
 
     def migration_claim(self, classical_address: str) -> dict[str, object] | None:
         with self._connect() as connection:

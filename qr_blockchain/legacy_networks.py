@@ -35,7 +35,12 @@ NETWORK_PROFILES: dict[str, LegacyNetworkProfile] = {
         network_id="legacy-btc-mainnet",
         description="Bitcoin-style migration source profile with base58 or bech32 legacy addresses.",
         allowed_provider_ids=("ecdsa_secp256k1_migration_v1",),
-        accepted_address_formats=("bitcoin_base58", "bitcoin_bech32", "secp256k1_claim_address"),
+        accepted_address_formats=(
+            "bitcoin_base58",
+            "bitcoin_bech32",
+            "bitcoin_p2sh_p2wpkh",
+            "secp256k1_claim_address",
+        ),
     ),
     "legacy-eth-mainnet": LegacyNetworkProfile(
         network_id="legacy-eth-mainnet",
@@ -173,6 +178,11 @@ def validate_source_address_format(source_address: str, source_address_format: s
         _validate_bech32(source_address)
         if not source_address.lower().startswith("bc1"):
             raise ValueError("Bitcoin bech32 addresses must start with 'bc1'.")
+        return
+    if source_address_format == "bitcoin_p2sh_p2wpkh":
+        payload = _decode_base58check(source_address)
+        if payload[0] != 0x05:
+            raise ValueError("Nested Bitcoin SegWit addresses must use the mainnet P2SH version byte.")
         return
     if source_address_format == "ethereum_eoa":
         if not source_address.startswith("0x") or not _HEX_40.fullmatch(source_address[2:]):

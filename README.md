@@ -1,6 +1,6 @@
 # Quantum-Resistant Blockchain Node
 
-This repository is transitioning from an educational demo into a service-oriented node prototype that keeps the quantum-resistant goal central.
+This project builds a quantum-resistant blockchain node designed to help users and operators move value from classical cryptographic systems into post-quantum-secure addresses. It focuses on practical migration: verifying legacy ownership, importing auditable source-chain snapshots, protecting stateful PQ signing keys, and running authenticated nodes that can validate, sync, and reorganize chain state safely.
 
 Phase 1 adds:
 
@@ -188,6 +188,60 @@ Phase 28 now adds real external-address proof linkage:
 - the node no longer treats those external source addresses as snapshot metadata only; they are now verified during the claim path
 - canonical claim addresses remain chain-internal, but migration claims can now cryptographically bind them to supported external address formats
 
+Phase 29 now broadens external source-address proof coverage:
+
+- secp256k1 migration claims now support nested Bitcoin SegWit compatibility addresses (`P2SH-P2WPKH`) in addition to Bitcoin P2PKH, native SegWit, and Ethereum EOAs
+- the classical verifier registry can now expose whether a backend verifies the seeded external source address directly or only the canonical claim address
+- migration admission now requires the claimant public key to prove ownership of the seeded external source address whenever the backend supports it
+
+Phase 30 now adds migration review lifecycle controls:
+
+- migration snapshots and individual migration sources now carry review status, review timestamp, and operator reason fields
+- sources and snapshots can now be marked `active`, `quarantined`, or `revoked`
+- snapshot review actions can cascade to all contained sources so operators can freeze suspicious imports quickly
+
+Phase 31 now hardens migration admission against reviewed data:
+
+- migration claims are now blocked when either the seeded source or its originating snapshot is not `active`
+- claimability reporting now respects migration review state instead of only claim-window and claimed/unclaimed state
+- operator review status is now part of exported snapshot metadata so downstream systems can preserve quarantine decisions
+
+Phase 32 now adds migration audit and operator reporting:
+
+- nodes can now generate structured migration audit reports grouped by source network, provider, source status, and snapshot status
+- audit reports now flag anomalies such as missing snapshot records, active sources on blocked snapshots, and claimed blocked sources
+- new API and CLI controls let operators review, quarantine, revoke, and report on migration inventory without direct database inspection
+
+Phase 33 now adds snapshot reconciliation before import:
+
+- operators can now compare an incoming snapshot artifact against local migration state before committing it
+- reconciliation reports show entries that would be added, unchanged entries, changed entries, local entries missing from the incoming artifact, and review-status conflicts
+- this gives snapshot operators a dry-run style review step before importing or rejecting source-chain data
+
+Phase 34 now adds migration claim preflight:
+
+- wallets and operators can now ask the node for a claim readiness report before a user signs anything
+- preflight reports include claim-window status, source and snapshot review status, provider policy, claim status, and the exact classical/PQ message bytes to sign
+- this makes migration wallet UX safer because the node can explain why a claim is not ready before a user produces a legacy signature
+
+Phase 35 now adds signed migration claim receipts:
+
+- once a migration claim is mined, the node can produce a signed receipt for the classical source address, destination PQ address, amount, and transaction id
+- receipts are signed by the node identity and can be stored by wallets, operators, or support systems as portable migration evidence
+
+Phase 36 now rounds out migration operator controls:
+
+- snapshot exports can intentionally include inactive sources while preserving quarantine/revocation metadata
+- API and CLI surfaces now cover reconciliation, claim preflight, signed claim receipts, review status updates, and audit reports
+- the migration pipeline now has review points before import, before signing, before claim admission, and after claim settlement
+
+Phase 37 now adds source-chain export ingestion:
+
+- operators can normalize source-chain or indexer export records into deterministic migration snapshot bundles
+- entries can derive canonical migration claim addresses from classical public keys when the export provides them
+- exported source addresses are validated against the configured legacy network profile before entering the snapshot pipeline
+- normalized source exports can be signed, reconciled, imported, and audited through the same snapshot workflow
+
 ## Quantum-resistant direction
 
 The chain now supports a provider registry with both active and reserved backends:
@@ -257,6 +311,36 @@ The wallet-state store now also keeps a reservation ledger for in-flight signatu
 - ambiguous interrupted reservations that require operator recovery before the key can sign again
 
 The node can now also surface and clear that recovery-required state through a supported operator path, instead of requiring direct SQLite inspection.
+
+## Migration operations
+
+The migration layer now supports review-aware operator workflows in addition to snapshot import and claim submission.
+
+HTTP endpoints:
+
+- `POST /migration/snapshots/export`
+- `POST /migration/source-exports/normalize`
+- `POST /migration/snapshots/sign`
+- `POST /migration/snapshots/import`
+- `POST /migration/snapshots/reconcile`
+- `POST /migration/snapshots/status`
+- `POST /migration/sources/status`
+- `POST /migration/claims/preflight`
+- `GET /migration/claims/receipt`
+- `GET /migration/report`
+
+CLI commands:
+
+- `python -m qr_blockchain migration-snapshot-export --source-network <network> [--snapshot-ref <ref>] [--include-claimed] [--include-inactive] [--sign]`
+- `python -m qr_blockchain migration-source-export-normalize --input source-export.json [--sign]`
+- `python -m qr_blockchain migration-snapshot-sign --input snapshot.json`
+- `python -m qr_blockchain migration-snapshot-import --input snapshot.json`
+- `python -m qr_blockchain migration-snapshot-reconcile --input snapshot.json`
+- `python -m qr_blockchain migration-snapshot-status --snapshot-ref <ref> --status active|quarantined|revoked [--reason "..."] [--no-cascade]`
+- `python -m qr_blockchain migration-source-status --classical-address <address> --status active|quarantined|revoked [--reason "..."]`
+- `python -m qr_blockchain migration-claim-preflight --destination-address <pq-address> --classical-address <classical-address> --classical-provider-id <provider> --source-network <network> [--snapshot-ref <ref>]`
+- `python -m qr_blockchain migration-claim-receipt --classical-address <classical-address>`
+- `python -m qr_blockchain migration-report [--source-network <network>]`
 
 The peer transport is still HTTP-based, but it is now stricter than before: peer endpoints speak a versioned `qr-peer-v1` framed protocol rather than relying on unstructured JSON payloads alone.
 
@@ -402,6 +486,8 @@ Provider policy:
 - `GET /crypto/providers`
 - `GET /migration/policy`
 - `GET /migration/networks`
+- `GET /migration/report`
+- `GET /migration/claims/receipt`
 - `GET /migration/snapshots`
 - `GET /migration/sources`
 - `GET /wallets/status`
@@ -420,6 +506,10 @@ Provider policy:
 - `POST /migration/snapshots`
 - `POST /migration/snapshots/export`
 - `POST /migration/snapshots/sign`
+- `POST /migration/snapshots/reconcile`
+- `POST /migration/snapshots/status`
+- `POST /migration/sources/status`
+- `POST /migration/claims/preflight`
 - `POST /wallets/recovery`
 - `POST /peer/handshake`
 - `POST /peer/summary`
@@ -501,14 +591,19 @@ python -m unittest discover -s tests -v
 
 ```powershell
 qr-chain migration-networks
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-source-export-normalize --input source-export.json --sign --output snapshot.json
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-snapshot-export --source-network legacy-demo-ledger --snapshot-ref snapshot-2026-04 --sign --output snapshot.json
 qr-chain migration-snapshot-validate --input snapshot.json
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-snapshot-reconcile --input snapshot.json
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-snapshot-import --input snapshot.json
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-report --source-network legacy-demo-ledger
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-claim-preflight --destination-address pq-address --classical-address legacy-address --classical-provider-id classical_claim_demo_v1 --source-network legacy-demo-ledger
 ```
 
 ## What should follow next
 
-- broader external-address linkage coverage beyond the current secp256k1 Bitcoin/Ethereum path, especially more legacy Bitcoin script variants and additional chain families
+- real source-chain snapshot ingestion from Bitcoin/Ethereum archive or indexer data, with reproducible extraction scripts
+- broader legacy-chain family support beyond the current Bitcoin/Ethereum/RSA/demo migration profiles
 - production-quality LMS and SPHINCS+ runtime integration and chain-level provider rollout policy
 - stronger distributed signer coordination for multi-node or remote signer deployments
 - secure key management with hardware-backed custody or isolated signer processes

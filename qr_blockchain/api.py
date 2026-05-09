@@ -40,6 +40,22 @@ class NodeRequestHandler(BaseHTTPRequestHandler):
         if path == "/migration/networks":
             self._respond(HTTPStatus.OK, self.service.migration_network_profiles())
             return
+        if path == "/migration/report":
+            query = parse_qs(parsed.query)
+            source_network = query.get("source_network", [None])[0]
+            self._respond(HTTPStatus.OK, self.service.migration_audit_report(source_network=source_network))
+            return
+        if path == "/migration/claims/receipt":
+            query = parse_qs(parsed.query)
+            classical_address = query.get("classical_address", [""])[0]
+            sign = query.get("sign", ["true"])[0].lower() not in {"0", "false", "no"}
+            try:
+                receipt = self.service.migration_claim_receipt(classical_address, sign=sign)
+            except ValueError as error:
+                self._respond(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+                return
+            self._respond(HTTPStatus.OK, receipt)
+            return
         if path == "/migration/snapshots":
             self._respond(HTTPStatus.OK, {"snapshots": self.service.list_migration_snapshots()})
             return
@@ -179,12 +195,77 @@ class NodeRequestHandler(BaseHTTPRequestHandler):
                     source_network=str(payload.get("source_network", "")),
                     snapshot_ref=str(payload.get("snapshot_ref", "")),
                     include_claimed=bool(payload.get("include_claimed", False)),
+                    include_inactive=bool(payload.get("include_inactive", False)),
                     sign=bool(payload.get("sign", False)),
                 )
             except ValueError as error:
                 self._respond(HTTPStatus.BAD_REQUEST, {"error": str(error)})
                 return
             self._respond(HTTPStatus.OK, exported)
+            return
+
+        if path == "/migration/source-exports/normalize":
+            try:
+                normalized = self.service.normalize_source_export_snapshot(
+                    payload,
+                    sign=bool(payload.get("sign", False)),
+                )
+            except ValueError as error:
+                self._respond(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+                return
+            self._respond(HTTPStatus.OK, normalized)
+            return
+
+        if path == "/migration/snapshots/reconcile":
+            try:
+                report = self.service.reconcile_migration_snapshot(payload)
+            except ValueError as error:
+                self._respond(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+                return
+            self._respond(HTTPStatus.OK, report)
+            return
+
+        if path == "/migration/claims/preflight":
+            try:
+                report = self.service.preflight_migration_claim(
+                    destination_address=str(payload.get("destination_address", "")),
+                    classical_address=str(payload.get("classical_address", "")),
+                    classical_provider_id=str(payload.get("classical_provider_id", "")),
+                    source_network=str(payload.get("source_network", "")),
+                    snapshot_ref=str(payload.get("snapshot_ref", "")),
+                    classical_public_key=payload.get("classical_public_key"),
+                )
+            except ValueError as error:
+                self._respond(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+                return
+            self._respond(HTTPStatus.OK, report)
+            return
+
+        if path == "/migration/snapshots/status":
+            try:
+                snapshot = self.service.set_migration_snapshot_status(
+                    str(payload.get("snapshot_ref", "")),
+                    status=str(payload.get("status", "")),
+                    reason=str(payload.get("reason", "")),
+                    cascade_sources=bool(payload.get("cascade_sources", True)),
+                )
+            except ValueError as error:
+                self._respond(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+                return
+            self._respond(HTTPStatus.OK, snapshot)
+            return
+
+        if path == "/migration/sources/status":
+            try:
+                source = self.service.set_migration_source_status(
+                    str(payload.get("classical_address", "")),
+                    status=str(payload.get("status", "")),
+                    reason=str(payload.get("reason", "")),
+                )
+            except ValueError as error:
+                self._respond(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+                return
+            self._respond(HTTPStatus.OK, source)
             return
 
         if path == "/migration/snapshots":
