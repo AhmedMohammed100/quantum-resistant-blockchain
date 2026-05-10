@@ -297,6 +297,36 @@ Phase 47 now hardens source-ingestion policy gates:
 - changed local sources and review conflicts are blocked at plan time instead of relying on the lower-level snapshot conflict path
 - CLI and API controls now cover manifest validation, approval, import planning, and approved import execution
 
+Phase 48 now introduces native currency metadata:
+
+- the node now exposes a native currency name, symbol, decimal precision, and base unit
+- balances can be returned in both base units and formatted coin notation
+- currency parameters can be configured through environment variables
+
+Phase 49 now adds a monetary policy layer:
+
+- mining subsidy is now derived from a height-aware currency policy instead of a permanently fixed reward
+- the policy supports halving intervals and reports next-height subsidy and cumulative issued subsidy
+
+Phase 50 now hardens genesis and max-money checks:
+
+- genesis allocations can be capped by `QR_CHAIN_GENESIS_SUPPLY_CAP`
+- genesis allocation totals cannot exceed configured max money
+
+Phase 51 now adds canonical supply accounting:
+
+- the node reports genesis supply, issued subsidy, migration-minted supply, transaction fees, miner-paid fees, and unspent UTXO supply
+- supply accounting follows the canonical chain head, so reorgs are reflected in currency metrics
+
+Phase 52 now exposes currency operations:
+
+- HTTP endpoints now expose monetary policy, supply accounting, and formatted address balances
+- operator CLI commands now expose the same currency and supply reports
+
+Phase 53 now adds native-currency test coverage:
+
+- tests cover halving behavior, supply snapshots, genesis caps, formatted balances, config overrides, and CLI reporting
+
 ## Quantum-resistant direction
 
 The chain now supports a provider registry with both active and reserved backends:
@@ -524,6 +554,17 @@ Mempool policy:
 - `QR_CHAIN_MAX_TRANSACTION_SIZE_BYTES` caps serialized transaction size
 - `QR_CHAIN_MAX_TRANSACTION_INPUTS` and `QR_CHAIN_MAX_TRANSACTION_OUTPUTS` bound transaction fan-in and fan-out
 
+Native currency policy:
+
+- `QR_CHAIN_CURRENCY_NAME` sets the native currency display name
+- `QR_CHAIN_CURRENCY_SYMBOL` sets the ticker-style symbol
+- `QR_CHAIN_CURRENCY_DECIMALS` sets display precision for formatted balances
+- `QR_CHAIN_CURRENCY_BASE_UNIT` names the smallest accounting unit
+- `QR_CHAIN_MINING_REWARD` sets the initial block subsidy in base units
+- `QR_CHAIN_SUBSIDY_HALVING_INTERVAL` controls the height interval for subsidy halvings
+- `QR_CHAIN_GENESIS_SUPPLY_CAP` optionally caps genesis allocations; `0` means no separate genesis cap
+- `QR_CHAIN_MAX_MONEY` caps theoretical native supply
+
 Peer framing:
 
 - `QR_CHAIN_PEER_PROTOCOL_VERSION` selects the framed peer RPC version expected by this node
@@ -550,6 +591,8 @@ Provider policy:
 - `GET /status`
 - `GET /metrics`
 - `GET /chain/summary`
+- `GET /currency`
+- `GET /currency/supply`
 - `GET /crypto/providers`
 - `GET /migration/policy`
 - `GET /migration/networks`
@@ -658,6 +701,8 @@ python -m unittest discover -s tests -v
 
 ```powershell
 qr-chain migration-networks
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db currency
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db currency-supply
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-source-export-normalize --input source-export.json --sign --output snapshot.json
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-source-export-batch-normalize --input source-a.json --input source-b.json --output batch.json
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-source-ingestion-runbook --input snapshot.json --output runbook.json

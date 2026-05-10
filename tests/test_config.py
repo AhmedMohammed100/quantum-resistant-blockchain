@@ -13,6 +13,13 @@ class NodeConfigTests(unittest.TestCase):
             "QR_CHAIN_DB_PATH": "runtime/chain.db",
             "QR_CHAIN_DIFFICULTY": "5",
             "QR_CHAIN_MINING_REWARD": "42",
+            "QR_CHAIN_CURRENCY_NAME": "Test Quantum Coin",
+            "QR_CHAIN_CURRENCY_SYMBOL": "TQC",
+            "QR_CHAIN_CURRENCY_DECIMALS": "6",
+            "QR_CHAIN_CURRENCY_BASE_UNIT": "atom",
+            "QR_CHAIN_GENESIS_SUPPLY_CAP": "1000000",
+            "QR_CHAIN_SUBSIDY_HALVING_INTERVAL": "25",
+            "QR_CHAIN_MAX_MONEY": "21000000000000",
             "QR_CHAIN_HOST": "0.0.0.0",
             "QR_CHAIN_PORT": "9000",
             "QR_CHAIN_ID": "qr-chain-testnet",
@@ -51,6 +58,13 @@ class NodeConfigTests(unittest.TestCase):
         self.assertEqual(config.db_path.as_posix(), "runtime/chain.db")
         self.assertEqual(config.difficulty, 5)
         self.assertEqual(config.mining_reward, 42)
+        self.assertEqual(config.currency_name, "Test Quantum Coin")
+        self.assertEqual(config.currency_symbol, "TQC")
+        self.assertEqual(config.currency_decimals, 6)
+        self.assertEqual(config.currency_base_unit, "atom")
+        self.assertEqual(config.genesis_supply_cap, 1000000)
+        self.assertEqual(config.subsidy_halving_interval, 25)
+        self.assertEqual(config.max_money, 21000000000000)
         self.assertEqual(config.host, "0.0.0.0")
         self.assertEqual(config.port, 9000)
         self.assertEqual(config.chain_id, "qr-chain-testnet")

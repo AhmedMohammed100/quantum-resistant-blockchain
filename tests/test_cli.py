@@ -31,6 +31,37 @@ class OperatorCliTests(unittest.TestCase):
     def demo_address(self, seed: str) -> str:
         return build_demo_classical_claim_address(build_demo_classical_claim_public_key(seed))
 
+    def test_cli_reports_currency_policy_and_supply(self) -> None:
+        self.service.create_genesis_block({"treasury": 100})
+        currency_buffer = io.StringIO()
+        supply_buffer = io.StringIO()
+
+        with redirect_stdout(currency_buffer):
+            currency_exit = main(
+                [
+                    "--db-path",
+                    str(self.db_path),
+                    "--wallet-state-db-path",
+                    str(self.wallet_state_db_path),
+                    "currency",
+                ]
+            )
+        with redirect_stdout(supply_buffer):
+            supply_exit = main(
+                [
+                    "--db-path",
+                    str(self.db_path),
+                    "--wallet-state-db-path",
+                    str(self.wallet_state_db_path),
+                    "currency-supply",
+                ]
+            )
+
+        self.assertEqual(currency_exit, 0)
+        self.assertEqual(supply_exit, 0)
+        self.assertEqual(json.loads(currency_buffer.getvalue())["symbol"], "QRC")
+        self.assertEqual(json.loads(supply_buffer.getvalue())["genesis_supply"], 100)
+
     def test_cli_exports_and_validates_signed_snapshot(self) -> None:
         self.service.seed_migration_source(
             classical_address=self.demo_address("cli-user"),

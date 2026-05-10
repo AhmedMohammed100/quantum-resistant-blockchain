@@ -10,6 +10,13 @@ class NodeConfig:
     db_path: Path = Path("data/chain.db")
     difficulty: int = 3
     mining_reward: int = 30
+    currency_name: str = "Quantum Resistant Coin"
+    currency_symbol: str = "QRC"
+    currency_decimals: int = 8
+    currency_base_unit: str = "quark"
+    genesis_supply_cap: int = 0
+    subsidy_halving_interval: int = 210000
+    max_money: int = 21000000 * 100000000
     host: str = "127.0.0.1"
     port: int = 8080
     chain_id: str = "qr-chain-devnet"
@@ -67,6 +74,13 @@ class NodeConfig:
             db_path=Path(os.getenv("QR_CHAIN_DB_PATH", "data/chain.db")),
             difficulty=int(os.getenv("QR_CHAIN_DIFFICULTY", "3")),
             mining_reward=int(os.getenv("QR_CHAIN_MINING_REWARD", "30")),
+            currency_name=os.getenv("QR_CHAIN_CURRENCY_NAME", "Quantum Resistant Coin"),
+            currency_symbol=os.getenv("QR_CHAIN_CURRENCY_SYMBOL", "QRC"),
+            currency_decimals=int(os.getenv("QR_CHAIN_CURRENCY_DECIMALS", "8")),
+            currency_base_unit=os.getenv("QR_CHAIN_CURRENCY_BASE_UNIT", "quark"),
+            genesis_supply_cap=int(os.getenv("QR_CHAIN_GENESIS_SUPPLY_CAP", "0")),
+            subsidy_halving_interval=int(os.getenv("QR_CHAIN_SUBSIDY_HALVING_INTERVAL", "210000")),
+            max_money=int(os.getenv("QR_CHAIN_MAX_MONEY", str(21000000 * 100000000))),
             host=os.getenv("QR_CHAIN_HOST", "127.0.0.1"),
             port=int(os.getenv("QR_CHAIN_PORT", "8080")),
             chain_id=os.getenv("QR_CHAIN_ID", "qr-chain-devnet"),

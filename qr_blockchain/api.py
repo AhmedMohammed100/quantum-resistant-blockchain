@@ -31,6 +31,12 @@ class NodeRequestHandler(BaseHTTPRequestHandler):
         if path == "/chain/summary":
             self._respond(HTTPStatus.OK, self.service.chain_summary())
             return
+        if path == "/currency":
+            self._respond(HTTPStatus.OK, self.service.monetary_policy())
+            return
+        if path == "/currency/supply":
+            self._respond(HTTPStatus.OK, self.service.supply_snapshot())
+            return
         if path == "/crypto/providers":
             self._respond(HTTPStatus.OK, self.service.signature_provider_statuses())
             return
@@ -90,7 +96,7 @@ class NodeRequestHandler(BaseHTTPRequestHandler):
             return
         if path.startswith("/addresses/") and path.endswith("/balance"):
             address = path.split("/")[2]
-            self._respond(HTTPStatus.OK, {"address": address, "balance": self.service.balance_for_address(address)})
+            self._respond(HTTPStatus.OK, self.service.formatted_balance_for_address(address))
             return
         if path.startswith("/addresses/") and path.endswith("/utxos"):
             address = path.split("/")[2]

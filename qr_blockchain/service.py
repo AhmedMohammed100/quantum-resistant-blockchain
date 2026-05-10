@@ -10,6 +10,7 @@ import time
 
 from .auth import NodeIdentityManager, request_claims_digest, verify_signed_envelope
 from .config import NodeConfig
+from .currency import CurrencyPolicy, format_units
 from .crypto import get_signature_provider, get_signature_verifier, list_signature_provider_statuses
 from .custody import WalletCustodyConfig
 from .legacy_networks import (
@@ -61,6 +62,18 @@ class NodeService:
         for peer in config.peers:
             self.store.add_peer(normalize_peer_url(peer))
 
+    def currency_policy(self) -> CurrencyPolicy:
+        return CurrencyPolicy(
+            name=self.config.currency_name,
+            symbol=self.config.currency_symbol,
+            decimals=self.config.currency_decimals,
+            base_unit=self.config.currency_base_unit,
+            initial_subsidy=self.config.mining_reward,
+            subsidy_halving_interval=self.config.subsidy_halving_interval,
+            max_money=self.config.max_money,
+            genesis_supply_cap=self.config.genesis_supply_cap,
+        )
+
     def create_genesis_block(self, initial_allocations: dict[str, int]) -> Block:
         if self.store.best_head_hash() is not None:
             raise ValueError("Genesis block already exists.")
@@ -72,6 +85,11 @@ class NodeService:
         ]
         if not genesis_outputs:
             raise ValueError("Genesis block must contain at least one positive allocation.")
+        genesis_total = sum(output.amount for output in genesis_outputs)
+        if self.config.genesis_supply_cap > 0 and genesis_total > self.config.genesis_supply_cap:
+            raise ValueError("Genesis allocation exceeds configured genesis supply cap.")
+        if genesis_total > self.config.max_money:
+            raise ValueError("Genesis allocation exceeds configured max money.")
 
         genesis_transaction = Transaction(
             inputs=[],
@@ -117,7 +135,8 @@ class NodeService:
             raise ValueError("Create a genesis block before mining.")
 
         pending = self.store.pending_transactions()[: self.config.max_transactions_per_block]
-        reward = sum(transaction.fee for transaction in pending) + self.config.mining_reward
+        subsidy = self.currency_policy().subsidy_at_height(int(latest["height"]) + 1)
+        reward = sum(transaction.fee for transaction in pending) + subsidy
         reward_transaction = Transaction(
             inputs=[],
             outputs=[TxOutput(recipient=miner_address, amount=reward)],
@@ -217,7 +236,7 @@ class NodeService:
                 utxo_view[(transaction.tx_id, output_index)] = output
 
         reward_transaction = block.transactions[0]
-        expected_reward = self.config.mining_reward + fee_total
+        expected_reward = self.currency_policy().subsidy_at_height(block.index) + fee_total
         actual_reward = sum(output.amount for output in reward_transaction.outputs)
         if actual_reward != expected_reward:
             raise ValueError("Reward transaction amount is invalid.")
@@ -428,6 +447,20 @@ class NodeService:
     def balance_for_address(self, address: str) -> int:
         return sum(output.amount for _, _, output in self.store.list_utxos([address]))
 
+    def formatted_balance_for_address(self, address: str) -> dict[str, object]:
+        amount = self.balance_for_address(address)
+        return {
+            "address": address,
+            "amount": amount,
+            "formatted": format_units(
+                amount,
+                decimals=self.config.currency_decimals,
+                symbol=self.config.currency_symbol,
+            ),
+            "symbol": self.config.currency_symbol,
+            "base_unit": self.config.currency_base_unit,
+        }
+
     def balance_for_addresses(self, addresses: list[str]) -> int:
         return sum(output.amount for _, _, output in self.store.list_utxos(addresses))
 
@@ -441,7 +474,67 @@ class NodeService:
         summary["peer_count"] = len(self.list_peers())
         summary["advertised_url"] = normalize_peer_url(self.config.advertised_url)
         summary["best_head_hash"] = self.store.best_head_hash()
+        summary["currency"] = self.monetary_policy()
         return summary
+
+    def monetary_policy(self) -> dict[str, object]:
+        return self.currency_policy().describe(height=self.store.block_count())
+
+    def supply_snapshot(self) -> dict[str, object]:
+        canonical_blocks: list[Block] = []
+        best_head = self.store.best_head_hash()
+        if best_head is not None:
+            canonical_blocks = self.store.path_to_root(best_head)
+        genesis_supply = 0
+        subsidy_issued = 0
+        migration_minted = 0
+        transaction_fees = 0
+        fees_paid_to_miners = 0
+        for block in canonical_blocks:
+            if block.index == 0:
+                genesis_supply += sum(
+                    output.amount
+                    for transaction in block.transactions
+                    for output in transaction.outputs
+                )
+                continue
+            expected_subsidy = self.currency_policy().subsidy_at_height(block.index)
+            reward_paid = sum(output.amount for output in block.transactions[0].outputs)
+            non_reward_fees = sum(transaction.fee for transaction in block.transactions[1:])
+            subsidy_issued += expected_subsidy
+            transaction_fees += non_reward_fees
+            fees_paid_to_miners += max(0, reward_paid - expected_subsidy)
+            for transaction in block.transactions[1:]:
+                if transaction.kind == "migration_claim":
+                    migration_minted += sum(output.amount for output in transaction.outputs)
+        utxo_supply = sum(output.amount for _, _, output in self.store.list_utxos())
+        theoretical_supply = genesis_supply + subsidy_issued + migration_minted
+        fees_burned = max(0, transaction_fees - fees_paid_to_miners)
+        return {
+            "currency": self.monetary_policy(),
+            "height": self.store.block_count(),
+            "genesis_supply": genesis_supply,
+            "subsidy_issued": subsidy_issued,
+            "migration_minted": migration_minted,
+            "transaction_fees": transaction_fees,
+            "fees_paid_to_miners": fees_paid_to_miners,
+            "fees_burned": fees_burned,
+            "theoretical_supply": theoretical_supply,
+            "utxo_supply": utxo_supply,
+            "unspent_supply": utxo_supply,
+            "max_money": self.config.max_money,
+            "within_max_money": theoretical_supply <= self.config.max_money,
+            "formatted_theoretical_supply": format_units(
+                theoretical_supply,
+                decimals=self.config.currency_decimals,
+                symbol=self.config.currency_symbol,
+            ),
+            "formatted_unspent_supply": format_units(
+                utxo_supply,
+                decimals=self.config.currency_decimals,
+                symbol=self.config.currency_symbol,
+            ),
+        }
 
     def migration_policy(self, height: int | None = None) -> dict[str, object]:
         effective_height = self.store.block_count() if height is None else height
@@ -550,6 +643,7 @@ class NodeService:
 
     def operational_status(self) -> dict[str, object]:
         chain = self.chain_summary()
+        supply = self.supply_snapshot()
         provider_statuses = list_signature_provider_statuses()
         migration_provider_statuses = list_classical_claim_verifier_statuses()
         reservation_counts = self.wallet_state_store.reservation_status_counts()
@@ -572,6 +666,7 @@ class NodeService:
             "status": health,
             "reasons": reasons,
             "chain": chain,
+            "currency": supply,
             "wallet_custody": self.wallet_state_store.custody_status(),
             "wallet_reservation_status": reservation_counts,
             "providers": {
@@ -599,6 +694,7 @@ class NodeService:
 
     def metrics_snapshot(self) -> dict[str, object]:
         chain = self.chain_summary()
+        supply = self.supply_snapshot()
         peer_session_counts = self.store.peer_session_counts()
         provider_statuses = list_signature_provider_statuses()
         active_provider_statuses = [item for item in provider_statuses if item.get("status") != "planned"]
@@ -612,6 +708,11 @@ class NodeService:
             "migration_source_count": int(chain.get("migration_source_count", 0)),
             "migration_claim_count": int(chain.get("migration_claim_count", 0)),
             "migration_snapshot_count": len(self.store.list_migration_snapshots()),
+            "currency_theoretical_supply": int(supply["theoretical_supply"]),
+            "currency_unspent_supply": int(supply["unspent_supply"]),
+            "currency_subsidy_issued": int(supply["subsidy_issued"]),
+            "currency_migration_minted": int(supply["migration_minted"]),
+            "currency_fees_paid_to_miners": int(supply["fees_paid_to_miners"]),
             "peer_count": len(self.list_peers()),
             "admitted_peer_count": self.store.peer_identity_count(status="admitted"),
             "active_peer_sessions": int(peer_session_counts.get("active", 0)),

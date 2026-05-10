@@ -36,6 +36,13 @@ def _service_from_args(args: argparse.Namespace) -> NodeService:
             db_path=Path(args.db_path) if getattr(args, "db_path", None) else base.db_path,
             difficulty=base.difficulty,
             mining_reward=base.mining_reward,
+            currency_name=base.currency_name,
+            currency_symbol=base.currency_symbol,
+            currency_decimals=base.currency_decimals,
+            currency_base_unit=base.currency_base_unit,
+            genesis_supply_cap=base.genesis_supply_cap,
+            subsidy_halving_interval=base.subsidy_halving_interval,
+            max_money=base.max_money,
             host=base.host,
             port=base.port,
             chain_id=base.chain_id,
@@ -78,6 +85,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--db-path", default=None, help="Path to the chain state SQLite database")
     parser.add_argument("--wallet-state-db-path", default=None, help="Path to the wallet state SQLite database")
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    currency = subparsers.add_parser("currency", help="Show native currency monetary policy")
+    currency.add_argument("--output", default=None)
+    currency.set_defaults(handler=cmd_currency)
+
+    supply = subparsers.add_parser("currency-supply", help="Show native currency supply accounting")
+    supply.add_argument("--output", default=None)
+    supply.set_defaults(handler=cmd_currency_supply)
 
     networks = subparsers.add_parser("migration-networks", help="List supported migration source-network profiles")
     networks.set_defaults(handler=cmd_migration_networks)
@@ -214,6 +229,18 @@ def build_parser() -> argparse.ArgumentParser:
 def cmd_migration_networks(args: argparse.Namespace) -> int:
     service = _service_from_args(args)
     _write_json_output(service.migration_network_profiles(), None if args.output is None else Path(args.output))
+    return 0
+
+
+def cmd_currency(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    _write_json_output(service.monetary_policy(), None if args.output is None else Path(args.output))
+    return 0
+
+
+def cmd_currency_supply(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    _write_json_output(service.supply_snapshot(), None if args.output is None else Path(args.output))
     return 0
 
 
