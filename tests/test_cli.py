@@ -185,6 +185,134 @@ class OperatorCliTests(unittest.TestCase):
         payload = json.loads(buffer.getvalue())
         self.assertEqual(payload["bundle"]["snapshot_ref"], "source-export-cli")
         self.assertEqual(payload["bundle"]["entry_count"], 1)
+        self.assertTrue(payload["ingestion_manifest"]["ingestion_manifest_hash"])
+
+    def test_cli_batch_normalizes_source_exports_and_builds_runbook(self) -> None:
+        first_path = self.root / "source-export-one.json"
+        second_path = self.root / "source-export-two.json"
+        normalized_path = self.root / "normalized.json"
+        approval_path = self.root / "approval.json"
+        first_path.write_text(
+            json.dumps(
+                {
+                    "source_network": "legacy-demo-ledger",
+                    "snapshot_ref": "source-export-one",
+                    "generated_at": 301.0,
+                    "provider_id": "classical_claim_demo_v1",
+                    "source_address_format": "demo_claim_address",
+                    "records": [{"classical_address": self.demo_address("batch-one"), "amount": 10}],
+                }
+            ),
+            encoding="utf-8",
+        )
+        second_path.write_text(
+            json.dumps(
+                {
+                    "source_network": "legacy-demo-ledger",
+                    "snapshot_ref": "source-export-two",
+                    "generated_at": 302.0,
+                    "provider_id": "classical_claim_demo_v1",
+                    "source_address_format": "demo_claim_address",
+                    "records": [{"classical_address": self.demo_address("batch-two"), "amount": 11}],
+                }
+            ),
+            encoding="utf-8",
+        )
+        batch_buffer = io.StringIO()
+
+        with redirect_stdout(batch_buffer):
+            batch_exit = main(
+                [
+                    "--db-path",
+                    str(self.db_path),
+                    "--wallet-state-db-path",
+                    str(self.wallet_state_db_path),
+                    "migration-source-export-batch-normalize",
+                    "--input",
+                    str(first_path),
+                    "--input",
+                    str(second_path),
+                ]
+            )
+
+        self.assertEqual(batch_exit, 0)
+        batch_payload = json.loads(batch_buffer.getvalue())
+        self.assertEqual(batch_payload["batch_manifest"]["item_count"], 2)
+        normalized_path.write_text(json.dumps(batch_payload["items"][0]), encoding="utf-8")
+        runbook_buffer = io.StringIO()
+
+        with redirect_stdout(runbook_buffer):
+            runbook_exit = main(
+                [
+                    "--db-path",
+                    str(self.db_path),
+                    "--wallet-state-db-path",
+                    str(self.wallet_state_db_path),
+                    "migration-source-ingestion-runbook",
+                    "--input",
+                    str(normalized_path),
+                ]
+            )
+
+        self.assertEqual(runbook_exit, 0)
+        runbook_payload = json.loads(runbook_buffer.getvalue())
+        self.assertEqual(runbook_payload["snapshot_ref"], "source-export-one")
+        self.assertTrue(runbook_payload["operator_steps"])
+
+        manifest_buffer = io.StringIO()
+        with redirect_stdout(manifest_buffer):
+            manifest_exit = main(
+                [
+                    "--db-path",
+                    str(self.db_path),
+                    "--wallet-state-db-path",
+                    str(self.wallet_state_db_path),
+                    "migration-source-ingestion-manifest-status",
+                    "--input",
+                    str(normalized_path),
+                ]
+            )
+        self.assertEqual(manifest_exit, 0)
+        self.assertTrue(json.loads(manifest_buffer.getvalue())["valid"])
+
+        with redirect_stdout(io.StringIO()) as approval_buffer:
+            approval_exit = main(
+                [
+                    "--db-path",
+                    str(self.db_path),
+                    "--wallet-state-db-path",
+                    str(self.wallet_state_db_path),
+                    "migration-source-ingestion-approve",
+                    "--input",
+                    str(normalized_path),
+                    "--operator",
+                    "cli-operator",
+                    "--reason",
+                    "reviewed source export",
+                    "--output",
+                    str(approval_path),
+                ]
+            )
+        self.assertEqual(approval_exit, 0)
+        self.assertEqual(approval_buffer.getvalue(), "")
+
+        plan_buffer = io.StringIO()
+        with redirect_stdout(plan_buffer):
+            plan_exit = main(
+                [
+                    "--db-path",
+                    str(self.db_path),
+                    "--wallet-state-db-path",
+                    str(self.wallet_state_db_path),
+                    "migration-source-ingestion-import-plan",
+                    "--input",
+                    str(normalized_path),
+                    "--approval",
+                    str(approval_path),
+                ]
+            )
+        self.assertEqual(plan_exit, 0)
+        self.assertTrue(json.loads(plan_buffer.getvalue())["ready"])
 
     def test_cli_preflights_migration_claim(self) -> None:
         self.service.create_genesis_block({"bootstrap": 1})

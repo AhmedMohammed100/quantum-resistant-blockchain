@@ -242,6 +242,61 @@ Phase 37 now adds source-chain export ingestion:
 - exported source addresses are validated against the configured legacy network profile before entering the snapshot pipeline
 - normalized source exports can be signed, reconciled, imported, and audited through the same snapshot workflow
 
+Phase 38 now adds source-export schema enforcement:
+
+- source export records now validate required network, provider, snapshot, address, and amount fields before snapshot generation
+- exports can include optional source provenance fields such as source height, transaction id, and output index
+- records with public keys are checked against the claimed external source address before they can become migration entries
+
+Phase 39 now adds deterministic ingestion manifests:
+
+- normalized source exports now include an ingestion manifest with record count, total amount, records root, source export hash, snapshot manifest hash, and snapshot entries root
+- equivalent source exports produce stable ingestion roots even when record order changes
+- ingestion warnings are preserved for operator review when a record relies on a precomputed canonical address instead of a public key
+
+Phase 40 now adds batch source-export normalization:
+
+- operators can normalize multiple source-chain exports in one run and receive a batch manifest with item hashes, total records, total amount, and a batch hash
+- each batch item remains a normal snapshot artifact, so it can still be reconciled, signed, imported, and audited independently
+
+Phase 41 now adds source-ingestion runbooks:
+
+- normalized source exports can now produce operator runbooks with required evidence and review steps
+- runbooks reference the snapshot manifest hash and ingestion manifest hash so review records can be tied back to exact artifacts
+
+Phase 42 now adds ingestion manifest validation:
+
+- normalized source exports can be checked for matching record count, total amount, snapshot manifest hash, and snapshot entries root
+- operators can validate ingestion evidence separately from snapshot validation before approving an import
+
+Phase 43 now adds operator approval artifacts:
+
+- operators can create approval records tied to exact ingestion and snapshot manifest hashes
+- approvals include operator identity, decision, reason, and a deterministic approval hash
+- rejected or malformed approvals cannot be used to execute an approved import
+
+Phase 44 now adds source-ingestion import plans:
+
+- nodes can now dry-run a normalized source export against local migration state and approval evidence
+- import plans block changed existing sources, invalid manifests, invalid approvals, and review conflicts before import
+- plans report how many entries would import, skip as unchanged, or block as unsafe changes
+
+Phase 45 now adds approved source-ingestion imports:
+
+- approved imports run through the same snapshot import pipeline while preserving the import plan and approval evidence
+- approved import results include a post-import migration audit report
+
+Phase 46 now adds rollback evidence:
+
+- approved imports return a rollback evidence block with snapshot ref, manifest hash, entries root, entry count, and the quarantine action needed to freeze the imported snapshot
+- this gives operators a concrete recovery artifact if a source export later needs to be halted
+
+Phase 47 now hardens source-ingestion policy gates:
+
+- import execution now requires a valid approval artifact
+- changed local sources and review conflicts are blocked at plan time instead of relying on the lower-level snapshot conflict path
+- CLI and API controls now cover manifest validation, approval, import planning, and approved import execution
+
 ## Quantum-resistant direction
 
 The chain now supports a provider registry with both active and reserved backends:
@@ -320,6 +375,12 @@ HTTP endpoints:
 
 - `POST /migration/snapshots/export`
 - `POST /migration/source-exports/normalize`
+- `POST /migration/source-exports/batch-normalize`
+- `POST /migration/source-exports/runbook`
+- `POST /migration/source-exports/manifest-status`
+- `POST /migration/source-exports/approve`
+- `POST /migration/source-exports/import-plan`
+- `POST /migration/source-exports/import-approved`
 - `POST /migration/snapshots/sign`
 - `POST /migration/snapshots/import`
 - `POST /migration/snapshots/reconcile`
@@ -333,6 +394,12 @@ CLI commands:
 
 - `python -m qr_blockchain migration-snapshot-export --source-network <network> [--snapshot-ref <ref>] [--include-claimed] [--include-inactive] [--sign]`
 - `python -m qr_blockchain migration-source-export-normalize --input source-export.json [--sign]`
+- `python -m qr_blockchain migration-source-export-batch-normalize --input source-a.json --input source-b.json`
+- `python -m qr_blockchain migration-source-ingestion-runbook --input normalized-source-export.json`
+- `python -m qr_blockchain migration-source-ingestion-manifest-status --input normalized-source-export.json`
+- `python -m qr_blockchain migration-source-ingestion-approve --input normalized-source-export.json --operator <name> --reason <reason>`
+- `python -m qr_blockchain migration-source-ingestion-import-plan --input normalized-source-export.json [--approval approval.json]`
+- `python -m qr_blockchain migration-source-ingestion-import-approved --input normalized-source-export.json --approval approval.json`
 - `python -m qr_blockchain migration-snapshot-sign --input snapshot.json`
 - `python -m qr_blockchain migration-snapshot-import --input snapshot.json`
 - `python -m qr_blockchain migration-snapshot-reconcile --input snapshot.json`
@@ -592,6 +659,12 @@ python -m unittest discover -s tests -v
 ```powershell
 qr-chain migration-networks
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-source-export-normalize --input source-export.json --sign --output snapshot.json
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-source-export-batch-normalize --input source-a.json --input source-b.json --output batch.json
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-source-ingestion-runbook --input snapshot.json --output runbook.json
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-source-ingestion-manifest-status --input snapshot.json
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-source-ingestion-approve --input snapshot.json --operator operator-a --reason "reviewed source export" --output approval.json
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-source-ingestion-import-plan --input snapshot.json --approval approval.json
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-source-ingestion-import-approved --input snapshot.json --approval approval.json
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-snapshot-export --source-network legacy-demo-ledger --snapshot-ref snapshot-2026-04 --sign --output snapshot.json
 qr-chain migration-snapshot-validate --input snapshot.json
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-snapshot-reconcile --input snapshot.json

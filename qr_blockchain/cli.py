@@ -115,6 +115,59 @@ def build_parser() -> argparse.ArgumentParser:
     normalize_parser.add_argument("--output", default=None)
     normalize_parser.set_defaults(handler=cmd_migration_source_export_normalize)
 
+    batch_normalize_parser = subparsers.add_parser(
+        "migration-source-export-batch-normalize",
+        help="Normalize multiple source-chain exports into snapshot artifacts",
+    )
+    batch_normalize_parser.add_argument("--input", action="append", required=True)
+    batch_normalize_parser.add_argument("--output", default=None)
+    batch_normalize_parser.set_defaults(handler=cmd_migration_source_export_batch_normalize)
+
+    runbook_parser = subparsers.add_parser(
+        "migration-source-ingestion-runbook",
+        help="Generate an operator runbook from a normalized source export",
+    )
+    runbook_parser.add_argument("--input", required=True)
+    runbook_parser.add_argument("--output", default=None)
+    runbook_parser.set_defaults(handler=cmd_migration_source_ingestion_runbook)
+
+    manifest_status_parser = subparsers.add_parser(
+        "migration-source-ingestion-manifest-status",
+        help="Validate a normalized source-ingestion manifest",
+    )
+    manifest_status_parser.add_argument("--input", required=True)
+    manifest_status_parser.add_argument("--output", default=None)
+    manifest_status_parser.set_defaults(handler=cmd_migration_source_ingestion_manifest_status)
+
+    approval_parser = subparsers.add_parser(
+        "migration-source-ingestion-approve",
+        help="Create an operator approval artifact for a normalized source export",
+    )
+    approval_parser.add_argument("--input", required=True)
+    approval_parser.add_argument("--operator", required=True)
+    approval_parser.add_argument("--decision", default="approved")
+    approval_parser.add_argument("--reason", required=True)
+    approval_parser.add_argument("--output", default=None)
+    approval_parser.set_defaults(handler=cmd_migration_source_ingestion_approve)
+
+    import_plan_parser = subparsers.add_parser(
+        "migration-source-ingestion-import-plan",
+        help="Build an import plan for a normalized source export",
+    )
+    import_plan_parser.add_argument("--input", required=True)
+    import_plan_parser.add_argument("--approval", default=None)
+    import_plan_parser.add_argument("--output", default=None)
+    import_plan_parser.set_defaults(handler=cmd_migration_source_ingestion_import_plan)
+
+    import_approved_parser = subparsers.add_parser(
+        "migration-source-ingestion-import-approved",
+        help="Import a normalized source export using an approval artifact",
+    )
+    import_approved_parser.add_argument("--input", required=True)
+    import_approved_parser.add_argument("--approval", required=True)
+    import_approved_parser.add_argument("--output", default=None)
+    import_approved_parser.set_defaults(handler=cmd_migration_source_ingestion_import_approved)
+
     reconcile_parser = subparsers.add_parser("migration-snapshot-reconcile", help="Compare a snapshot artifact with local migration state")
     reconcile_parser.add_argument("--input", required=True)
     reconcile_parser.add_argument("--output", default=None)
@@ -217,6 +270,61 @@ def cmd_migration_source_export_normalize(args: argparse.Namespace) -> int:
     payload = _read_json_file(Path(args.input))
     normalized = service.normalize_source_export_snapshot(payload, sign=args.sign)
     _write_json_output(normalized, None if args.output is None else Path(args.output))
+    return 0
+
+
+def cmd_migration_source_export_batch_normalize(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    payloads = [_read_json_file(Path(path)) for path in args.input]
+    normalized = service.normalize_source_export_batch(payloads)
+    _write_json_output(normalized, None if args.output is None else Path(args.output))
+    return 0
+
+
+def cmd_migration_source_ingestion_runbook(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    payload = _read_json_file(Path(args.input))
+    runbook = service.source_ingestion_runbook(payload)
+    _write_json_output(runbook, None if args.output is None else Path(args.output))
+    return 0
+
+
+def cmd_migration_source_ingestion_manifest_status(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    payload = _read_json_file(Path(args.input))
+    status = service.source_ingestion_manifest_status(payload)
+    _write_json_output(status, None if args.output is None else Path(args.output))
+    return 0
+
+
+def cmd_migration_source_ingestion_approve(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    payload = _read_json_file(Path(args.input))
+    approval = service.approve_source_ingestion(
+        payload,
+        operator=args.operator,
+        decision=args.decision,
+        reason=args.reason,
+    )
+    _write_json_output(approval, None if args.output is None else Path(args.output))
+    return 0
+
+
+def cmd_migration_source_ingestion_import_plan(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    payload = _read_json_file(Path(args.input))
+    approval = _read_json_file(Path(args.approval)) if args.approval else None
+    plan = service.source_ingestion_import_plan(payload, approval=approval)
+    _write_json_output(plan, None if args.output is None else Path(args.output))
+    return 0
+
+
+def cmd_migration_source_ingestion_import_approved(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    payload = _read_json_file(Path(args.input))
+    approval = _read_json_file(Path(args.approval))
+    result = service.import_approved_source_ingestion(payload, approval=approval)
+    _write_json_output(result, None if args.output is None else Path(args.output))
     return 0
 
 

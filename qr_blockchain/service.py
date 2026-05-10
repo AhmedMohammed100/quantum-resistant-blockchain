@@ -33,7 +33,14 @@ from .snapshot import (
     snapshot_manifest_claims,
     validate_snapshot_bundle,
 )
-from .source_ingestion import normalize_source_export_to_snapshot
+from .source_ingestion import (
+    build_source_ingestion_runbook,
+    build_ingestion_approval,
+    normalize_source_export,
+    normalize_source_export_batch,
+    validate_ingestion_approval,
+    validate_ingestion_manifest,
+)
 from .storage import SQLiteChainStore
 from .wallet_store import SQLiteWalletStateStore
 
@@ -751,18 +758,106 @@ class NodeService:
         return next(item for item in snapshots if item["snapshot_ref"] == bundle.snapshot_ref)
 
     def normalize_source_export_snapshot(self, payload: dict[str, object], *, sign: bool = False) -> dict[str, object]:
-        bundle = normalize_source_export_to_snapshot(payload)
+        normalized = normalize_source_export(payload)
+        bundle = normalized["bundle"]
         result: dict[str, object] = {
-            "bundle": bundle.to_dict(),
-            "source_count": len(bundle.entries),
-            "source_network_profile": describe_legacy_network(bundle.source_network),
+            "bundle": bundle.to_dict(),  # type: ignore[union-attr]
+            "ingestion_manifest": normalized["ingestion_manifest"],
+            "source_count": len(bundle.entries),  # type: ignore[union-attr]
+            "source_network_profile": describe_legacy_network(bundle.source_network),  # type: ignore[union-attr]
         }
         if sign:
             result["envelope"] = self.identity.sign_claims(
                 "migration_snapshot_manifest_v1",
-                snapshot_manifest_claims(bundle),
+                snapshot_manifest_claims(bundle),  # type: ignore[arg-type]
             )
         return result
+
+    def normalize_source_export_batch(self, payloads: list[dict[str, object]]) -> dict[str, object]:
+        return normalize_source_export_batch(payloads)
+
+    def source_ingestion_runbook(self, normalized_payload: dict[str, object]) -> dict[str, object]:
+        return build_source_ingestion_runbook(normalized_payload)
+
+    def source_ingestion_manifest_status(self, normalized_payload: dict[str, object]) -> dict[str, object]:
+        return validate_ingestion_manifest(normalized_payload)
+
+    def approve_source_ingestion(
+        self,
+        normalized_payload: dict[str, object],
+        *,
+        operator: str,
+        decision: str,
+        reason: str,
+    ) -> dict[str, object]:
+        return build_ingestion_approval(
+            normalized_payload,
+            operator=operator,
+            decision=decision,
+            reason=reason,
+        )
+
+    def source_ingestion_import_plan(
+        self,
+        normalized_payload: dict[str, object],
+        *,
+        approval: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        manifest_status = self.source_ingestion_manifest_status(normalized_payload)
+        reconciliation = self.reconcile_migration_snapshot(normalized_payload)
+        approval_status = {"accepted": approval is None, "checks": []}
+        if approval is not None:
+            approval_status = validate_ingestion_approval(normalized_payload, approval)
+        blockers = []
+        if not manifest_status["valid"]:
+            blockers.append("ingestion_manifest_invalid")
+        if approval is not None and not approval_status["accepted"]:
+            blockers.append("approval_invalid")
+        if reconciliation["summary"]["changed"]:
+            blockers.append("existing_sources_would_change")
+        if reconciliation["summary"]["review_conflicts"]:
+            blockers.append("review_conflicts")
+        return {
+            "ready": not blockers,
+            "blockers": blockers,
+            "manifest_status": manifest_status,
+            "approval_status": approval_status,
+            "reconciliation": reconciliation,
+            "actions": {
+                "would_import": reconciliation["summary"]["would_add"],
+                "would_skip_unchanged": reconciliation["summary"]["unchanged"],
+                "would_block_changed": reconciliation["summary"]["changed"],
+            },
+        }
+
+    def import_approved_source_ingestion(
+        self,
+        normalized_payload: dict[str, object],
+        *,
+        approval: dict[str, object],
+    ) -> dict[str, object]:
+        plan = self.source_ingestion_import_plan(normalized_payload, approval=approval)
+        if not plan["ready"]:
+            raise ValueError("Source ingestion import plan is blocked.")
+        imported = self.import_migration_snapshot(normalized_payload)
+        return {
+            "imported": imported,
+            "plan": plan,
+            "approval": approval,
+            "rollback_evidence": {
+                "snapshot_ref": imported["snapshot_ref"],
+                "manifest_hash": imported["manifest_hash"],
+                "entries_root": imported["entries_root"],
+                "entry_count": imported["entry_count"],
+                "status_reversal": {
+                    "endpoint": "/migration/snapshots/status",
+                    "status": "quarantined",
+                    "reason": "rollback requested after approved source ingestion",
+                    "cascade_sources": True,
+                },
+            },
+            "post_import_audit_report": self.migration_audit_report(source_network=str(imported["source_network"])),
+        }
 
     def list_migration_snapshots(self) -> list[dict[str, object]]:
         return self.store.list_migration_snapshots()

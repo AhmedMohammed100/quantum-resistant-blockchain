@@ -216,6 +216,74 @@ class NodeRequestHandler(BaseHTTPRequestHandler):
             self._respond(HTTPStatus.OK, normalized)
             return
 
+        if path == "/migration/source-exports/batch-normalize":
+            try:
+                exports = payload.get("exports", [])
+                if not isinstance(exports, list):
+                    raise ValueError("exports must be a list.")
+                normalized = self.service.normalize_source_export_batch([dict(item) for item in exports])
+            except ValueError as error:
+                self._respond(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+                return
+            self._respond(HTTPStatus.OK, normalized)
+            return
+
+        if path == "/migration/source-exports/runbook":
+            try:
+                runbook = self.service.source_ingestion_runbook(payload)
+            except ValueError as error:
+                self._respond(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+                return
+            self._respond(HTTPStatus.OK, runbook)
+            return
+
+        if path == "/migration/source-exports/manifest-status":
+            try:
+                status = self.service.source_ingestion_manifest_status(payload)
+            except ValueError as error:
+                self._respond(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+                return
+            self._respond(HTTPStatus.OK, status)
+            return
+
+        if path == "/migration/source-exports/approve":
+            try:
+                approval = self.service.approve_source_ingestion(
+                    dict(payload.get("normalized", payload)),
+                    operator=str(payload.get("operator", "")),
+                    decision=str(payload.get("decision", "approved")),
+                    reason=str(payload.get("reason", "")),
+                )
+            except ValueError as error:
+                self._respond(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+                return
+            self._respond(HTTPStatus.OK, approval)
+            return
+
+        if path == "/migration/source-exports/import-plan":
+            try:
+                plan = self.service.source_ingestion_import_plan(
+                    dict(payload.get("normalized", payload)),
+                    approval=dict(payload["approval"]) if isinstance(payload.get("approval"), dict) else None,
+                )
+            except ValueError as error:
+                self._respond(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+                return
+            self._respond(HTTPStatus.OK, plan)
+            return
+
+        if path == "/migration/source-exports/import-approved":
+            try:
+                result = self.service.import_approved_source_ingestion(
+                    dict(payload.get("normalized", {})),
+                    approval=dict(payload.get("approval", {})),
+                )
+            except ValueError as error:
+                self._respond(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+                return
+            self._respond(HTTPStatus.CREATED, result)
+            return
+
         if path == "/migration/snapshots/reconcile":
             try:
                 report = self.service.reconcile_migration_snapshot(payload)
