@@ -5,18 +5,37 @@ import os
 from pathlib import Path
 
 
+COIN = 100000000
+QBC_MAX_MONEY = 500000000 * COIN
+QBC_GENESIS_SUPPLY_CAP = 125000000 * COIN
+QBC_MIGRATION_POOL_CAP = 200000000 * COIN
+QBC_EMISSION_SUPPLY_CAP = 175000000 * COIN
+QBC_TREASURY_ALLOCATION_CAP = 75000000 * COIN
+QBC_SECURITY_RESERVE_CAP = 25000000 * COIN
+QBC_PUBLIC_GOODS_ALLOCATION_CAP = 25000000 * COIN
+QBC_INITIAL_SUBSIDY = 175 * COIN
+QBC_SUBSIDY_HALVING_INTERVAL = 500000
+
+
 @dataclass(frozen=True)
 class NodeConfig:
     db_path: Path = Path("data/chain.db")
     difficulty: int = 3
-    mining_reward: int = 30
-    currency_name: str = "Quantum Resistant Coin"
-    currency_symbol: str = "QRC"
+    mining_reward: int = QBC_INITIAL_SUBSIDY
+    currency_name: str = "Quantum Blockchain Coin"
+    currency_symbol: str = "QBC"
     currency_decimals: int = 8
     currency_base_unit: str = "quark"
-    genesis_supply_cap: int = 0
-    subsidy_halving_interval: int = 210000
-    max_money: int = 21000000 * 100000000
+    genesis_supply_cap: int = QBC_GENESIS_SUPPLY_CAP
+    subsidy_halving_interval: int = QBC_SUBSIDY_HALVING_INTERVAL
+    max_money: int = QBC_MAX_MONEY
+    emission_supply_cap: int = QBC_EMISSION_SUPPLY_CAP
+    migration_pool_cap: int = QBC_MIGRATION_POOL_CAP
+    treasury_allocation_cap: int = QBC_TREASURY_ALLOCATION_CAP
+    security_reserve_cap: int = QBC_SECURITY_RESERVE_CAP
+    public_goods_allocation_cap: int = QBC_PUBLIC_GOODS_ALLOCATION_CAP
+    migration_conversion_policy: str = "capped_pool_normalized_claims"
+    reward_recipient_policy: str = "single_miner_or_validator"
     host: str = "127.0.0.1"
     port: int = 8080
     chain_id: str = "qr-chain-devnet"
@@ -73,14 +92,35 @@ class NodeConfig:
         return NodeConfig(
             db_path=Path(os.getenv("QR_CHAIN_DB_PATH", "data/chain.db")),
             difficulty=int(os.getenv("QR_CHAIN_DIFFICULTY", "3")),
-            mining_reward=int(os.getenv("QR_CHAIN_MINING_REWARD", "30")),
-            currency_name=os.getenv("QR_CHAIN_CURRENCY_NAME", "Quantum Resistant Coin"),
-            currency_symbol=os.getenv("QR_CHAIN_CURRENCY_SYMBOL", "QRC"),
+            mining_reward=int(os.getenv("QR_CHAIN_MINING_REWARD", str(QBC_INITIAL_SUBSIDY))),
+            currency_name=os.getenv("QR_CHAIN_CURRENCY_NAME", "Quantum Blockchain Coin"),
+            currency_symbol=os.getenv("QR_CHAIN_CURRENCY_SYMBOL", "QBC"),
             currency_decimals=int(os.getenv("QR_CHAIN_CURRENCY_DECIMALS", "8")),
             currency_base_unit=os.getenv("QR_CHAIN_CURRENCY_BASE_UNIT", "quark"),
-            genesis_supply_cap=int(os.getenv("QR_CHAIN_GENESIS_SUPPLY_CAP", "0")),
-            subsidy_halving_interval=int(os.getenv("QR_CHAIN_SUBSIDY_HALVING_INTERVAL", "210000")),
-            max_money=int(os.getenv("QR_CHAIN_MAX_MONEY", str(21000000 * 100000000))),
+            genesis_supply_cap=int(os.getenv("QR_CHAIN_GENESIS_SUPPLY_CAP", str(QBC_GENESIS_SUPPLY_CAP))),
+            subsidy_halving_interval=int(
+                os.getenv("QR_CHAIN_SUBSIDY_HALVING_INTERVAL", str(QBC_SUBSIDY_HALVING_INTERVAL))
+            ),
+            max_money=int(os.getenv("QR_CHAIN_MAX_MONEY", str(QBC_MAX_MONEY))),
+            emission_supply_cap=int(os.getenv("QR_CHAIN_EMISSION_SUPPLY_CAP", str(QBC_EMISSION_SUPPLY_CAP))),
+            migration_pool_cap=int(os.getenv("QR_CHAIN_MIGRATION_POOL_CAP", str(QBC_MIGRATION_POOL_CAP))),
+            treasury_allocation_cap=int(
+                os.getenv("QR_CHAIN_TREASURY_ALLOCATION_CAP", str(QBC_TREASURY_ALLOCATION_CAP))
+            ),
+            security_reserve_cap=int(
+                os.getenv("QR_CHAIN_SECURITY_RESERVE_CAP", str(QBC_SECURITY_RESERVE_CAP))
+            ),
+            public_goods_allocation_cap=int(
+                os.getenv("QR_CHAIN_PUBLIC_GOODS_ALLOCATION_CAP", str(QBC_PUBLIC_GOODS_ALLOCATION_CAP))
+            ),
+            migration_conversion_policy=os.getenv(
+                "QR_CHAIN_MIGRATION_CONVERSION_POLICY",
+                "capped_pool_normalized_claims",
+            ),
+            reward_recipient_policy=os.getenv(
+                "QR_CHAIN_REWARD_RECIPIENT_POLICY",
+                "single_miner_or_validator",
+            ),
             host=os.getenv("QR_CHAIN_HOST", "127.0.0.1"),
             port=int(os.getenv("QR_CHAIN_PORT", "8080")),
             chain_id=os.getenv("QR_CHAIN_ID", "qr-chain-devnet"),

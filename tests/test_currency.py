@@ -5,7 +5,18 @@ import shutil
 import unittest
 
 from qr_blockchain import NodeConfig, NodeService, Wallet
+from qr_blockchain.config import (
+    QBC_EMISSION_SUPPLY_CAP,
+    QBC_MAX_MONEY,
+    QBC_MIGRATION_POOL_CAP,
+)
 from qr_blockchain.currency import CurrencyPolicy, format_units
+from qr_blockchain.migration import (
+    build_demo_classical_claim_address,
+    build_demo_classical_claim_proof,
+    build_demo_classical_claim_public_key,
+    classical_claim_message_bytes,
+)
 
 
 class CurrencyTests(unittest.TestCase):
@@ -24,6 +35,9 @@ class CurrencyTests(unittest.TestCase):
                 currency_symbol="QRC",
                 currency_decimals=2,
                 currency_base_unit="quark",
+                emission_supply_cap=0,
+                genesis_supply_cap=0,
+                migration_pool_cap=0,
             )
         )
 
@@ -42,6 +56,32 @@ class CurrencyTests(unittest.TestCase):
         self.assertEqual(policy.subsidy_at_height(2), 50)
         self.assertEqual(policy.subsidy_at_height(4), 25)
         self.assertEqual(policy.cumulative_subsidy_through_height(4), 225)
+
+    def test_qbc_default_policy_uses_capped_allocation_plan(self) -> None:
+        root = Path("test_runtime") / self._testMethodName
+        if root.exists():
+            shutil.rmtree(root)
+        root.mkdir(parents=True, exist_ok=True)
+        self.addCleanup(lambda: shutil.rmtree(root, ignore_errors=True))
+        policy = NodeService(
+            NodeConfig(
+                db_path=root / "default_chain.db",
+                wallet_state_db_path=root / "default_wallet.db",
+            )
+        ).currency_policy()
+
+        self.assertEqual(policy.name, "Quantum Blockchain Coin")
+        self.assertEqual(policy.symbol, "QBC")
+        self.assertEqual(policy.max_money, QBC_MAX_MONEY)
+        self.assertEqual(policy.migration_pool_cap, QBC_MIGRATION_POOL_CAP)
+        self.assertEqual(policy.emission_supply_cap, QBC_EMISSION_SUPPLY_CAP)
+        self.assertEqual(sum(policy.allocation_plan()[key] for key in (
+            "emission_supply_cap",
+            "migration_pool_cap",
+            "treasury_allocation_cap",
+            "security_reserve_cap",
+            "public_goods_allocation_cap",
+        )), QBC_MAX_MONEY)
 
     def test_mining_uses_height_based_subsidy_and_supply_snapshot(self) -> None:
         service = self.make_service(reward=100, halving=2)
@@ -89,6 +129,54 @@ class CurrencyTests(unittest.TestCase):
         self.assertEqual(balance["amount"], 12345)
         self.assertEqual(balance["formatted"], "123.45 QRC")
         self.assertEqual(format_units(1, decimals=2, symbol="QRC"), "0.01 QRC")
+
+    def test_migration_pool_cap_is_enforced_for_claims(self) -> None:
+        service = self.make_service(reward=0, halving=1)
+        service.config = NodeConfig(
+            db_path=service.config.db_path,
+            wallet_state_db_path=service.config.wallet_state_db_path,
+            mining_reward=0,
+            subsidy_halving_interval=1,
+            migration_pool_cap=10,
+            emission_supply_cap=0,
+            genesis_supply_cap=0,
+        )
+        wallet = Wallet("migration-cap")
+        service.create_genesis_block({"treasury": 1})
+        public_key = build_demo_classical_claim_public_key("pool-cap-user")
+        classical_address = build_demo_classical_claim_address(public_key)
+        service.seed_migration_source(
+            classical_address=classical_address,
+            provider_id="classical_claim_demo_v1",
+            source_network="legacy-demo-ledger",
+            amount=11,
+            snapshot_ref="pool-cap",
+        )
+        preview = service.build_migration_claim_draft(
+            destination_address=wallet.create_address(),
+            classical_address=classical_address,
+            classical_provider_id="classical_claim_demo_v1",
+            source_network="legacy-demo-ledger",
+            snapshot_ref="pool-cap",
+            classical_public_key=public_key,
+        )
+        signature = build_demo_classical_claim_proof(
+            public_key,
+            classical_claim_message_bytes(preview.migration_claim_payload()),
+        )
+        claim = wallet.create_migration_claim(
+            service,
+            classical_address=classical_address,
+            classical_provider_id="classical_claim_demo_v1",
+            classical_public_key=public_key,
+            classical_signature=signature,
+            source_network="legacy-demo-ledger",
+            snapshot_ref="pool-cap",
+            destination_address=preview.outputs[0].recipient,
+        )
+
+        with self.assertRaisesRegex(ValueError, "migration pool cap"):
+            service.submit_transaction(claim)
 
 
 if __name__ == "__main__":

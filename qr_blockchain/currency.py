@@ -13,8 +13,15 @@ class CurrencyPolicy:
     subsidy_halving_interval: int
     max_money: int
     genesis_supply_cap: int = 0
+    emission_supply_cap: int = 0
+    migration_pool_cap: int = 0
+    treasury_allocation_cap: int = 0
+    security_reserve_cap: int = 0
+    public_goods_allocation_cap: int = 0
+    migration_conversion_policy: str = "capped_pool_normalized_claims"
+    reward_recipient_policy: str = "single_miner_or_validator"
 
-    def subsidy_at_height(self, height: int) -> int:
+    def _uncapped_subsidy_at_height(self, height: int) -> int:
         if height <= 0:
             return 0
         if self.subsidy_halving_interval <= 0:
@@ -24,13 +31,13 @@ class CurrencyPolicy:
             return 0
         return self.initial_subsidy >> halvings
 
-    def cumulative_subsidy_through_height(self, height: int) -> int:
+    def _cumulative_uncapped_subsidy_through_height(self, height: int) -> int:
         if height <= 0:
             return 0
         total = 0
         current_height = 1
         while current_height <= height:
-            subsidy = self.subsidy_at_height(current_height)
+            subsidy = self._uncapped_subsidy_at_height(current_height)
             if subsidy == 0:
                 break
             if self.subsidy_halving_interval <= 0:
@@ -42,8 +49,33 @@ class CurrencyPolicy:
             current_height = segment_end + 1
         return total
 
+    def subsidy_at_height(self, height: int) -> int:
+        subsidy = self._uncapped_subsidy_at_height(height)
+        if self.emission_supply_cap <= 0 or subsidy <= 0:
+            return subsidy
+        issued_before = self._cumulative_uncapped_subsidy_through_height(height - 1)
+        remaining = max(0, self.emission_supply_cap - issued_before)
+        return min(subsidy, remaining)
+
+    def cumulative_subsidy_through_height(self, height: int) -> int:
+        total = self._cumulative_uncapped_subsidy_through_height(height)
+        if self.emission_supply_cap <= 0:
+            return total
+        return min(total, self.emission_supply_cap)
+
     def units_per_coin(self) -> int:
         return 10 ** self.decimals
+
+    def allocation_plan(self) -> dict[str, int]:
+        return {
+            "genesis_allocation_cap": self.genesis_supply_cap,
+            "emission_supply_cap": self.emission_supply_cap,
+            "migration_pool_cap": self.migration_pool_cap,
+            "treasury_allocation_cap": self.treasury_allocation_cap,
+            "security_reserve_cap": self.security_reserve_cap,
+            "public_goods_allocation_cap": self.public_goods_allocation_cap,
+            "total_supply_cap": self.max_money,
+        }
 
     def describe(self, *, height: int = 0) -> dict[str, object]:
         return {
@@ -57,6 +89,11 @@ class CurrencyPolicy:
             "subsidy_at_next_height": self.subsidy_at_height(height + 1),
             "issued_subsidy_through_height": self.cumulative_subsidy_through_height(height),
             "genesis_supply_cap": self.genesis_supply_cap,
+            "emission_supply_cap": self.emission_supply_cap,
+            "migration_pool_cap": self.migration_pool_cap,
+            "migration_conversion_policy": self.migration_conversion_policy,
+            "reward_recipient_policy": self.reward_recipient_policy,
+            "allocation_plan": self.allocation_plan(),
             "max_money": self.max_money,
         }
 

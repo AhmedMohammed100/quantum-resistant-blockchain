@@ -327,6 +327,38 @@ Phase 53 now adds native-currency test coverage:
 
 - tests cover halving behavior, supply snapshots, genesis caps, formatted balances, config overrides, and CLI reporting
 
+Phase 54 now defines the QBC coin identity:
+
+- the default native asset is `Quantum Blockchain Coin` with ticker `QBC`
+- QBC uses 8 decimals and the `quark` base unit
+- the protocol default supply cap is fixed at 500,000,000 QBC
+
+Phase 55 now adds a capped allocation model:
+
+- 175,000,000 QBC is reserved for miner/validator emissions
+- 200,000,000 QBC is reserved for migration claims from approved classical/source-chain snapshots
+- 75,000,000 QBC is reserved for ecosystem treasury allocations
+- 25,000,000 QBC is reserved for security reserves
+- 25,000,000 QBC is reserved for public goods and liquidity support
+
+Phase 56 now makes the emission curve explicit:
+
+- the default initial reward is 175 QBC per block
+- rewards halve every 500,000 blocks
+- scheduled subsidy issuance is capped by the 175,000,000 QBC emission bucket
+
+Phase 57 now formalizes migration conversion:
+
+- migration does not mint unlimited 1:1 QBC against BTC, ETH, or other source balances
+- source balances must be normalized by approved migration snapshots and conversion policy before claim import
+- accepted migration claims draw from the capped 200,000,000 QBC migration pool
+
+Phase 58 now enforces supply policy in validation:
+
+- canonical supply accounting reports emission remaining and migration-pool remaining
+- block validation rejects branches that would exceed emission, migration, genesis, or total supply caps
+- mempool admission rejects migration claims that would exceed the current canonical migration pool
+
 ## Quantum-resistant direction
 
 The chain now supports a provider registry with both active and reserved backends:
@@ -556,14 +588,21 @@ Mempool policy:
 
 Native currency policy:
 
-- `QR_CHAIN_CURRENCY_NAME` sets the native currency display name
-- `QR_CHAIN_CURRENCY_SYMBOL` sets the ticker-style symbol
+- `QR_CHAIN_CURRENCY_NAME` sets the native currency display name; default `Quantum Blockchain Coin`
+- `QR_CHAIN_CURRENCY_SYMBOL` sets the ticker-style symbol; default `QBC`
 - `QR_CHAIN_CURRENCY_DECIMALS` sets display precision for formatted balances
 - `QR_CHAIN_CURRENCY_BASE_UNIT` names the smallest accounting unit
 - `QR_CHAIN_MINING_REWARD` sets the initial block subsidy in base units
 - `QR_CHAIN_SUBSIDY_HALVING_INTERVAL` controls the height interval for subsidy halvings
-- `QR_CHAIN_GENESIS_SUPPLY_CAP` optionally caps genesis allocations; `0` means no separate genesis cap
-- `QR_CHAIN_MAX_MONEY` caps theoretical native supply
+- `QR_CHAIN_GENESIS_SUPPLY_CAP` caps genesis allocations
+- `QR_CHAIN_EMISSION_SUPPLY_CAP` caps total block-subsidy issuance
+- `QR_CHAIN_MIGRATION_POOL_CAP` caps QBC minted by approved migration claims
+- `QR_CHAIN_TREASURY_ALLOCATION_CAP` records the ecosystem treasury allocation bucket
+- `QR_CHAIN_SECURITY_RESERVE_CAP` records the security reserve allocation bucket
+- `QR_CHAIN_PUBLIC_GOODS_ALLOCATION_CAP` records the public-goods/liquidity allocation bucket
+- `QR_CHAIN_MIGRATION_CONVERSION_POLICY` names the source-balance conversion model; default `capped_pool_normalized_claims`
+- `QR_CHAIN_REWARD_RECIPIENT_POLICY` names how block rewards are assigned; default `single_miner_or_validator`
+- `QR_CHAIN_MAX_MONEY` caps theoretical native supply; default 500,000,000 QBC
 
 Peer framing:
 

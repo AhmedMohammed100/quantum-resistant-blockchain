@@ -59,7 +59,7 @@ class OperatorCliTests(unittest.TestCase):
 
         self.assertEqual(currency_exit, 0)
         self.assertEqual(supply_exit, 0)
-        self.assertEqual(json.loads(currency_buffer.getvalue())["symbol"], "QRC")
+        self.assertEqual(json.loads(currency_buffer.getvalue())["symbol"], "QBC")
         self.assertEqual(json.loads(supply_buffer.getvalue())["genesis_supply"], 100)
 
     def test_cli_exports_and_validates_signed_snapshot(self) -> None:

@@ -72,6 +72,13 @@ class NodeService:
             subsidy_halving_interval=self.config.subsidy_halving_interval,
             max_money=self.config.max_money,
             genesis_supply_cap=self.config.genesis_supply_cap,
+            emission_supply_cap=self.config.emission_supply_cap,
+            migration_pool_cap=self.config.migration_pool_cap,
+            treasury_allocation_cap=self.config.treasury_allocation_cap,
+            security_reserve_cap=self.config.security_reserve_cap,
+            public_goods_allocation_cap=self.config.public_goods_allocation_cap,
+            migration_conversion_policy=self.config.migration_conversion_policy,
+            reward_recipient_policy=self.config.reward_recipient_policy,
         )
 
     def create_genesis_block(self, initial_allocations: dict[str, int]) -> Block:
@@ -240,6 +247,8 @@ class NodeService:
         actual_reward = sum(output.amount for output in reward_transaction.outputs)
         if actual_reward != expected_reward:
             raise ValueError("Reward transaction amount is invalid.")
+        parent_path = self.store.path_to_root(block.previous_hash)
+        self._validate_supply_limits(self._supply_for_blocks([*parent_path, block]))
 
     def sync_with_peer(self, peer_url: str) -> int:
         normalized = normalize_peer_url(peer_url)
@@ -480,17 +489,14 @@ class NodeService:
     def monetary_policy(self) -> dict[str, object]:
         return self.currency_policy().describe(height=self.store.block_count())
 
-    def supply_snapshot(self) -> dict[str, object]:
-        canonical_blocks: list[Block] = []
-        best_head = self.store.best_head_hash()
-        if best_head is not None:
-            canonical_blocks = self.store.path_to_root(best_head)
+    def _supply_for_blocks(self, blocks: list[Block]) -> dict[str, int]:
         genesis_supply = 0
         subsidy_issued = 0
         migration_minted = 0
         transaction_fees = 0
         fees_paid_to_miners = 0
-        for block in canonical_blocks:
+        policy = self.currency_policy()
+        for block in blocks:
             if block.index == 0:
                 genesis_supply += sum(
                     output.amount
@@ -498,7 +504,7 @@ class NodeService:
                     for output in transaction.outputs
                 )
                 continue
-            expected_subsidy = self.currency_policy().subsidy_at_height(block.index)
+            expected_subsidy = policy.subsidy_at_height(block.index)
             reward_paid = sum(output.amount for output in block.transactions[0].outputs)
             non_reward_fees = sum(transaction.fee for transaction in block.transactions[1:])
             subsidy_issued += expected_subsidy
@@ -507,9 +513,42 @@ class NodeService:
             for transaction in block.transactions[1:]:
                 if transaction.kind == "migration_claim":
                     migration_minted += sum(output.amount for output in transaction.outputs)
-        utxo_supply = sum(output.amount for _, _, output in self.store.list_utxos())
         theoretical_supply = genesis_supply + subsidy_issued + migration_minted
         fees_burned = max(0, transaction_fees - fees_paid_to_miners)
+        return {
+            "genesis_supply": genesis_supply,
+            "subsidy_issued": subsidy_issued,
+            "migration_minted": migration_minted,
+            "transaction_fees": transaction_fees,
+            "fees_paid_to_miners": fees_paid_to_miners,
+            "fees_burned": fees_burned,
+            "theoretical_supply": theoretical_supply,
+        }
+
+    def _validate_supply_limits(self, supply: dict[str, int]) -> None:
+        if self.config.genesis_supply_cap > 0 and supply["genesis_supply"] > self.config.genesis_supply_cap:
+            raise ValueError("Genesis allocation exceeds configured genesis supply cap.")
+        if self.config.emission_supply_cap > 0 and supply["subsidy_issued"] > self.config.emission_supply_cap:
+            raise ValueError("Block would exceed the configured emission supply cap.")
+        if self.config.migration_pool_cap > 0 and supply["migration_minted"] > self.config.migration_pool_cap:
+            raise ValueError("Migration claim would exceed the configured migration pool cap.")
+        if supply["theoretical_supply"] > self.config.max_money:
+            raise ValueError("Block would exceed the configured native supply cap.")
+
+    def supply_snapshot(self) -> dict[str, object]:
+        canonical_blocks: list[Block] = []
+        best_head = self.store.best_head_hash()
+        if best_head is not None:
+            canonical_blocks = self.store.path_to_root(best_head)
+        supply = self._supply_for_blocks(canonical_blocks)
+        genesis_supply = supply["genesis_supply"]
+        subsidy_issued = supply["subsidy_issued"]
+        migration_minted = supply["migration_minted"]
+        transaction_fees = supply["transaction_fees"]
+        fees_paid_to_miners = supply["fees_paid_to_miners"]
+        utxo_supply = sum(output.amount for _, _, output in self.store.list_utxos())
+        theoretical_supply = supply["theoretical_supply"]
+        fees_burned = supply["fees_burned"]
         return {
             "currency": self.monetary_policy(),
             "height": self.store.block_count(),
@@ -524,6 +563,10 @@ class NodeService:
             "unspent_supply": utxo_supply,
             "max_money": self.config.max_money,
             "within_max_money": theoretical_supply <= self.config.max_money,
+            "migration_pool_cap": self.config.migration_pool_cap,
+            "migration_pool_remaining": max(0, self.config.migration_pool_cap - migration_minted),
+            "emission_supply_cap": self.config.emission_supply_cap,
+            "emission_remaining": max(0, self.config.emission_supply_cap - subsidy_issued),
             "formatted_theoretical_supply": format_units(
                 theoretical_supply,
                 decimals=self.config.currency_decimals,
@@ -556,6 +599,9 @@ class NodeService:
             "require_snapshot_signatures": self.config.migration_require_snapshot_signatures,
             "trusted_snapshot_signers": list(self.config.migration_trusted_snapshot_signers),
             "trusted_snapshot_nodes": list(self.config.migration_trusted_snapshot_nodes),
+            "conversion_policy": self.config.migration_conversion_policy,
+            "migration_pool_cap": self.config.migration_pool_cap,
+            "migration_pool_remaining": self.supply_snapshot()["migration_pool_remaining"],
         }
 
     def migration_network_profiles(self) -> dict[str, object]:
@@ -1725,6 +1771,10 @@ class NodeService:
             raise ValueError("Migration claim transactions must create exactly one PQ output.")
         if transaction.outputs[0].amount != int(source["amount"]):
             raise ValueError("Migration claim amount does not match the seeded source balance.")
+        if claimed_classical_addresses is None and self.config.migration_pool_cap > 0:
+            projected_migration_minted = int(self.supply_snapshot()["migration_minted"]) + transaction.outputs[0].amount
+            if projected_migration_minted > self.config.migration_pool_cap:
+                raise ValueError("Migration claim would exceed the configured migration pool cap.")
 
         verifier = get_classical_claim_verifier(provider_id)
         claim_message = classical_claim_message_bytes(transaction.migration_claim_payload())

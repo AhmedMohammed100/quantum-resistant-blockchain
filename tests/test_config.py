@@ -20,6 +20,13 @@ class NodeConfigTests(unittest.TestCase):
             "QR_CHAIN_GENESIS_SUPPLY_CAP": "1000000",
             "QR_CHAIN_SUBSIDY_HALVING_INTERVAL": "25",
             "QR_CHAIN_MAX_MONEY": "21000000000000",
+            "QR_CHAIN_EMISSION_SUPPLY_CAP": "17000000000000",
+            "QR_CHAIN_MIGRATION_POOL_CAP": "20000000000000",
+            "QR_CHAIN_TREASURY_ALLOCATION_CAP": "7000000000000",
+            "QR_CHAIN_SECURITY_RESERVE_CAP": "2000000000000",
+            "QR_CHAIN_PUBLIC_GOODS_ALLOCATION_CAP": "1000000000000",
+            "QR_CHAIN_MIGRATION_CONVERSION_POLICY": "test_capped_pool",
+            "QR_CHAIN_REWARD_RECIPIENT_POLICY": "test_validator_split",
             "QR_CHAIN_HOST": "0.0.0.0",
             "QR_CHAIN_PORT": "9000",
             "QR_CHAIN_ID": "qr-chain-testnet",
@@ -65,6 +72,13 @@ class NodeConfigTests(unittest.TestCase):
         self.assertEqual(config.genesis_supply_cap, 1000000)
         self.assertEqual(config.subsidy_halving_interval, 25)
         self.assertEqual(config.max_money, 21000000000000)
+        self.assertEqual(config.emission_supply_cap, 17000000000000)
+        self.assertEqual(config.migration_pool_cap, 20000000000000)
+        self.assertEqual(config.treasury_allocation_cap, 7000000000000)
+        self.assertEqual(config.security_reserve_cap, 2000000000000)
+        self.assertEqual(config.public_goods_allocation_cap, 1000000000000)
+        self.assertEqual(config.migration_conversion_policy, "test_capped_pool")
+        self.assertEqual(config.reward_recipient_policy, "test_validator_split")
         self.assertEqual(config.host, "0.0.0.0")
         self.assertEqual(config.port, 9000)
         self.assertEqual(config.chain_id, "qr-chain-testnet")
