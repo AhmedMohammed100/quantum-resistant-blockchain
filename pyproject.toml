@@ -1,7 +1,7 @@
 [project]
 name = "quantum-resistant-blockchain"
 version = "0.2.0"
-description = "Phase-1 service architecture for a quantum-resistant blockchain prototype"
+description = "Post-quantum-oriented blockchain node with QBC economics and classical-to-PQ migration tooling"
 requires-python = ">=3.11"
 
 [project.scripts]
