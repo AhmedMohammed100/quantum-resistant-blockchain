@@ -115,6 +115,13 @@ def normalize_source_export(payload: dict[str, object]) -> dict[str, object]:
             entries=tuple(entries),
         )
     )
+    provenance = build_source_export_provenance(
+        payload,
+        source_network=source_network,
+        snapshot_ref=snapshot_ref,
+        provider_id=provider_id,
+        normalized_records=normalized_records,
+    )
     manifest = {
         "ingestion_version": 1,
         "source_network": source_network,
@@ -137,14 +144,51 @@ def normalize_source_export(payload: dict[str, object]) -> dict[str, object]:
         ).hexdigest(),
         "snapshot_manifest_hash": bundle.manifest_hash,
         "snapshot_entries_root": bundle.entries_root(),
+        "source_provenance_hash": provenance["source_provenance_hash"],
         "warnings": warnings,
     }
     manifest["ingestion_manifest_hash"] = hashlib.sha256(canonical_json(manifest).encode("utf-8")).hexdigest()
     return {
         "bundle": bundle,
         "ingestion_manifest": manifest,
+        "source_provenance": provenance,
         "normalized_records": normalized_records,
     }
+
+
+def build_source_export_provenance(
+    payload: dict[str, object],
+    *,
+    source_network: str,
+    snapshot_ref: str,
+    provider_id: str,
+    normalized_records: list[dict[str, object]],
+) -> dict[str, object]:
+    extractor = dict(payload.get("extractor", {})) if isinstance(payload.get("extractor"), dict) else {}
+    source_anchor = dict(payload.get("source_anchor", {})) if isinstance(payload.get("source_anchor"), dict) else {}
+    records_root = _merkle_root(normalized_records, empty_message="Source export must include records.")
+    provenance = {
+        "provenance_version": 1,
+        "source_network": source_network,
+        "snapshot_ref": snapshot_ref,
+        "provider_id": provider_id,
+        "extractor": {
+            "name": str(extractor.get("name", payload.get("extractor_name", ""))),
+            "version": str(extractor.get("version", payload.get("extractor_version", ""))),
+            "command": str(extractor.get("command", payload.get("extractor_command", ""))),
+            "code_commit": str(extractor.get("code_commit", payload.get("extractor_code_commit", ""))),
+        },
+        "source_anchor": {
+            "height": int(source_anchor.get("height", payload.get("source_height", 0))),
+            "block_hash": str(source_anchor.get("block_hash", payload.get("source_block_hash", ""))),
+            "exported_at": str(source_anchor.get("exported_at", payload.get("exported_at", ""))),
+        },
+        "record_count": len(normalized_records),
+        "records_root": records_root,
+        "source_export_hash": hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest(),
+    }
+    provenance["source_provenance_hash"] = hashlib.sha256(canonical_json(provenance).encode("utf-8")).hexdigest()
+    return provenance
 
 
 def normalize_source_export_to_snapshot(payload: dict[str, object]) -> MigrationSnapshotBundle:

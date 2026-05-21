@@ -811,6 +811,28 @@ class SQLiteChainStore:
             "claimed_at": float(row["claimed_at"]),
         }
 
+    def list_migration_claims(self) -> list[dict[str, object]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT classical_address, provider_id, source_network, destination_address, amount, tx_id, claimed_at
+                FROM migration_claims
+                ORDER BY classical_address ASC
+                """
+            ).fetchall()
+        return [
+            {
+                "classical_address": str(row["classical_address"]),
+                "provider_id": str(row["provider_id"]),
+                "source_network": str(row["source_network"]),
+                "destination_address": str(row["destination_address"]),
+                "amount": int(row["amount"]),
+                "tx_id": str(row["tx_id"]),
+                "claimed_at": float(row["claimed_at"]),
+            }
+            for row in rows
+        ]
+
     def list_utxos(self, addresses: list[str] | None = None) -> list[tuple[str, int, TxOutput]]:
         with self._connect() as connection:
             if addresses:

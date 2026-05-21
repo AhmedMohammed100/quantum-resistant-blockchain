@@ -31,6 +31,12 @@ class NodeRequestHandler(BaseHTTPRequestHandler):
         if path == "/chain/summary":
             self._respond(HTTPStatus.OK, self.service.chain_summary())
             return
+        if path == "/protocol":
+            self._respond(HTTPStatus.OK, self.service.protocol_manifest())
+            return
+        if path == "/migration/readiness":
+            self._respond(HTTPStatus.OK, self.service.migration_readiness_report())
+            return
         if path == "/currency":
             self._respond(HTTPStatus.OK, self.service.monetary_policy())
             return
@@ -40,8 +46,17 @@ class NodeRequestHandler(BaseHTTPRequestHandler):
         if path == "/crypto/providers":
             self._respond(HTTPStatus.OK, self.service.signature_provider_statuses())
             return
+        if path == "/crypto/hardening":
+            self._respond(HTTPStatus.OK, self.service.crypto_runtime_hardening_report())
+            return
         if path == "/migration/policy":
             self._respond(HTTPStatus.OK, self.service.migration_policy())
+            return
+        if path == "/migration/governance":
+            self._respond(HTTPStatus.OK, self.service.migration_governance_report())
+            return
+        if path == "/migration/adversarial":
+            self._respond(HTTPStatus.OK, self.service.migration_adversarial_simulation_report())
             return
         if path == "/migration/networks":
             self._respond(HTTPStatus.OK, self.service.migration_network_profiles())
@@ -50,6 +65,11 @@ class NodeRequestHandler(BaseHTTPRequestHandler):
             query = parse_qs(parsed.query)
             source_network = query.get("source_network", [None])[0]
             self._respond(HTTPStatus.OK, self.service.migration_audit_report(source_network=source_network))
+            return
+        if path == "/migration/integrity":
+            query = parse_qs(parsed.query)
+            source_network = query.get("source_network", [None])[0]
+            self._respond(HTTPStatus.OK, self.service.migration_integrity_report(source_network=source_network))
             return
         if path == "/migration/claims/receipt":
             query = parse_qs(parsed.query)
@@ -61,6 +81,26 @@ class NodeRequestHandler(BaseHTTPRequestHandler):
                 self._respond(HTTPStatus.BAD_REQUEST, {"error": str(error)})
                 return
             self._respond(HTTPStatus.OK, receipt)
+            return
+        if path == "/migration/claims/quote":
+            query = parse_qs(parsed.query)
+            classical_address = query.get("classical_address", [""])[0]
+            try:
+                quote = self.service.migration_claim_quote(classical_address)
+            except ValueError as error:
+                self._respond(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+                return
+            self._respond(HTTPStatus.OK, quote)
+            return
+        if path == "/migration/claims/status":
+            query = parse_qs(parsed.query)
+            classical_address = query.get("classical_address", [""])[0]
+            try:
+                status = self.service.migration_claim_status(classical_address)
+            except ValueError as error:
+                self._respond(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+                return
+            self._respond(HTTPStatus.OK, status)
             return
         if path == "/migration/snapshots":
             self._respond(HTTPStatus.OK, {"snapshots": self.service.list_migration_snapshots()})
@@ -313,6 +353,31 @@ class NodeRequestHandler(BaseHTTPRequestHandler):
                 self._respond(HTTPStatus.BAD_REQUEST, {"error": str(error)})
                 return
             self._respond(HTTPStatus.OK, report)
+            return
+
+        if path == "/migration/claims/quote":
+            try:
+                quote = self.service.migration_claim_quote(str(payload.get("classical_address", "")))
+            except ValueError as error:
+                self._respond(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+                return
+            self._respond(HTTPStatus.OK, quote)
+            return
+
+        if path == "/migration/claims/package":
+            try:
+                package = self.service.build_wallet_migration_claim_package(
+                    destination_address=str(payload.get("destination_address", "")),
+                    classical_address=str(payload.get("classical_address", "")),
+                    classical_provider_id=str(payload.get("classical_provider_id", "")),
+                    source_network=str(payload.get("source_network", "")),
+                    snapshot_ref=str(payload.get("snapshot_ref", "")),
+                    classical_public_key=payload.get("classical_public_key"),
+                )
+            except ValueError as error:
+                self._respond(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+                return
+            self._respond(HTTPStatus.OK, package)
             return
 
         if path == "/migration/snapshots/status":

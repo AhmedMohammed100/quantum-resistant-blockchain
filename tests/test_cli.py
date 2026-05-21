@@ -62,6 +62,86 @@ class OperatorCliTests(unittest.TestCase):
         self.assertEqual(json.loads(currency_buffer.getvalue())["symbol"], "QBC")
         self.assertEqual(json.loads(supply_buffer.getvalue())["genesis_supply"], 100)
 
+    def test_cli_reports_protocol_and_migration_readiness(self) -> None:
+        protocol_buffer = io.StringIO()
+        readiness_buffer = io.StringIO()
+
+        with redirect_stdout(protocol_buffer):
+            protocol_exit = main(
+                ["--db-path", str(self.db_path), "--wallet-state-db-path", str(self.wallet_state_db_path), "protocol"]
+            )
+        with redirect_stdout(readiness_buffer):
+            readiness_exit = main(
+                ["--db-path", str(self.db_path), "--wallet-state-db-path", str(self.wallet_state_db_path), "migration-readiness"]
+            )
+
+        self.assertEqual(protocol_exit, 0)
+        self.assertEqual(readiness_exit, 0)
+        self.assertEqual(json.loads(protocol_buffer.getvalue())["native_currency"]["symbol"], "QBC")
+        self.assertIn("migration_layer_status", json.loads(readiness_buffer.getvalue()))
+
+    def test_cli_reports_governance_crypto_and_adversarial_status(self) -> None:
+        outputs: dict[str, dict[str, object]] = {}
+        for command, key in [
+            ("migration-governance", "governance_status"),
+            ("crypto-hardening", "hardening_status"),
+            ("migration-adversarial", "status"),
+        ]:
+            buffer = io.StringIO()
+            with redirect_stdout(buffer):
+                exit_code = main(
+                    ["--db-path", str(self.db_path), "--wallet-state-db-path", str(self.wallet_state_db_path), command]
+                )
+            self.assertEqual(exit_code, 0)
+            outputs[command] = json.loads(buffer.getvalue())
+            self.assertIn(key, outputs[command])
+
+    def test_cli_quotes_migration_claim(self) -> None:
+        classical_address = self.demo_address("quote-cli")
+        self.service.seed_migration_source(
+            classical_address=classical_address,
+            provider_id="classical_claim_demo_v1",
+            source_network="legacy-demo-ledger",
+            amount=9,
+            snapshot_ref="quote-cli",
+        )
+        buffer = io.StringIO()
+
+        with redirect_stdout(buffer):
+            exit_code = main(
+                [
+                    "--db-path",
+                    str(self.db_path),
+                    "--wallet-state-db-path",
+                    str(self.wallet_state_db_path),
+                    "migration-claim-quote",
+                    "--classical-address",
+                    classical_address,
+                ]
+            )
+
+        self.assertEqual(exit_code, 0)
+        payload = json.loads(buffer.getvalue())
+        self.assertTrue(payload["claimable"])
+        self.assertEqual(payload["normalized_claim_amount"], 9)
+        self.assertTrue(payload["claim_intent_hash"])
+
+        status_buffer = io.StringIO()
+        with redirect_stdout(status_buffer):
+            status_exit = main(
+                [
+                    "--db-path",
+                    str(self.db_path),
+                    "--wallet-state-db-path",
+                    str(self.wallet_state_db_path),
+                    "migration-claim-status",
+                    "--classical-address",
+                    classical_address,
+                ]
+            )
+        self.assertEqual(status_exit, 0)
+        self.assertEqual(json.loads(status_buffer.getvalue())["lifecycle_state"], "claimable")
+
     def test_cli_exports_and_validates_signed_snapshot(self) -> None:
         self.service.seed_migration_source(
             classical_address=self.demo_address("cli-user"),
@@ -382,6 +462,47 @@ class OperatorCliTests(unittest.TestCase):
         payload = json.loads(buffer.getvalue())
         self.assertTrue(payload["ready"])
         self.assertTrue(payload["classical_claim_message_hex"])
+
+    def test_cli_builds_wallet_migration_claim_package(self) -> None:
+        self.service.create_genesis_block({"bootstrap": 1})
+        public_key = build_demo_classical_claim_public_key("package-cli")
+        classical_address = build_demo_classical_claim_address(public_key)
+        self.service.seed_migration_source(
+            classical_address=classical_address,
+            provider_id="classical_claim_demo_v1",
+            source_network="legacy-demo-ledger",
+            amount=6,
+            snapshot_ref="cli-package",
+        )
+        buffer = io.StringIO()
+
+        with redirect_stdout(buffer):
+            exit_code = main(
+                [
+                    "--db-path",
+                    str(self.db_path),
+                    "--wallet-state-db-path",
+                    str(self.wallet_state_db_path),
+                    "migration-claim-package",
+                    "--destination-address",
+                    "pq-test-destination",
+                    "--classical-address",
+                    classical_address,
+                    "--classical-provider-id",
+                    "classical_claim_demo_v1",
+                    "--source-network",
+                    "legacy-demo-ledger",
+                    "--snapshot-ref",
+                    "cli-package",
+                    "--classical-public-key-json",
+                    json.dumps(public_key),
+                ]
+            )
+
+        self.assertEqual(exit_code, 0)
+        payload = json.loads(buffer.getvalue())
+        self.assertTrue(payload["ready"])
+        self.assertTrue(payload["package_hash"])
 
     def test_cli_can_quarantine_snapshot(self) -> None:
         self.service.seed_migration_source(

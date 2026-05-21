@@ -9,6 +9,7 @@ import shutil
 import sys
 import types
 import unittest
+from dataclasses import replace
 from unittest.mock import patch
 
 from qr_blockchain import NodeConfig, NodeService, Wallet
@@ -127,6 +128,155 @@ class NodeServiceTests(unittest.TestCase):
         service = NodeService(self.make_config(db_path))
         self.addCleanup(lambda: shutil.rmtree(case_dir, ignore_errors=True))
         return service, db_path
+
+    def test_protocol_manifest_is_reported(self) -> None:
+        service, _ = self.make_service()
+
+        manifest = service.protocol_manifest()
+
+        self.assertEqual(manifest["chain_id"], service.config.chain_id)
+        self.assertEqual(manifest["native_currency"]["symbol"], "QBC")
+        self.assertTrue(manifest["protocol_manifest_hash"])
+
+    def test_migration_readiness_report_exposes_integrity_gates(self) -> None:
+        service, _ = self.make_service()
+
+        report = service.migration_readiness_report()
+
+        self.assertIn(report["migration_layer_status"], {"blocked", "operational"})
+        self.assertIn("integrity_summary", report)
+        self.assertTrue(any(check["name"] == "pq_provider_available" for check in report["checks"]))
+        self.assertTrue(any(check["name"] == "governance_window_configured" for check in report["checks"]))
+
+    def test_crypto_hardening_report_tracks_pinned_oqs_runtime(self) -> None:
+        service, _ = self.make_service()
+
+        report = service.crypto_runtime_hardening_report()
+
+        self.assertEqual(report["pinned_runtime"]["mechanism"], "ML-DSA-65")
+        self.assertTrue(any(check["name"] == "liboqs_python_pin_matches" for check in report["checks"]))
+        self.assertIn(report["hardening_status"], {"ready", "needs_review"})
+
+    def test_migration_governance_report_tracks_disputes_and_pause(self) -> None:
+        service, _ = self.make_service()
+        public_key = build_demo_classical_claim_public_key("governance-user")
+        classical_address = build_demo_classical_claim_address(public_key)
+        service.seed_migration_source(
+            classical_address=classical_address,
+            provider_id="classical_claim_demo_v1",
+            source_network="legacy-demo-ledger",
+            amount=7,
+            snapshot_ref="governance-snapshot",
+        )
+        service.set_migration_source_status(classical_address, status="quarantined", reason="operator dispute")
+
+        report = service.migration_governance_report()
+
+        self.assertEqual(report["disputes"]["blocked_source_count"], 1)
+        self.assertEqual(report["policy"]["dispute_window_blocks"], service.config.migration_dispute_window_blocks)
+
+    def test_source_export_normalization_includes_provenance_hash(self) -> None:
+        service, _ = self.make_service()
+        public_key = build_demo_classical_claim_public_key("provenance-user")
+        payload = {
+            "source_network": "legacy-demo-ledger",
+            "snapshot_ref": "provenance-snapshot",
+            "generated_at": 1.0,
+            "provider_id": "classical_claim_demo_v1",
+            "extractor": {"name": "demo-exporter", "version": "1.0", "command": "export --height 10"},
+            "source_anchor": {"height": 10, "block_hash": "abc123"},
+            "records": [{"classical_public_key": public_key, "amount": 11}],
+        }
+
+        normalized = service.normalize_source_export_snapshot(payload)
+
+        self.assertTrue(normalized["source_provenance"]["source_provenance_hash"])
+        self.assertEqual(
+            normalized["ingestion_manifest"]["source_provenance_hash"],
+            normalized["source_provenance"]["source_provenance_hash"],
+        )
+
+    def test_peer_allowlist_policy_blocks_unapproved_manual_registration(self) -> None:
+        service, _ = self.make_service()
+        service.config = replace(
+            service.config,
+            require_peer_allowlist=True,
+            peer_allowlist=("http://allowed-peer:8080",),
+        )
+
+        with self.assertRaisesRegex(ValueError, "not allowed"):
+            service.register_peer("http://blocked-peer:8080")
+        self.assertEqual(service.register_peer("http://allowed-peer:8080"), "http://allowed-peer:8080")
+
+    def test_migration_claim_quote_reports_pool_capacity(self) -> None:
+        service, _ = self.make_service()
+        public_key = build_demo_classical_claim_public_key("quote-user")
+        classical_address = build_demo_classical_claim_address(public_key)
+        service.seed_migration_source(
+            classical_address=classical_address,
+            provider_id="classical_claim_demo_v1",
+            source_network="legacy-demo-ledger",
+            amount=7,
+            snapshot_ref="quote-snapshot",
+        )
+
+        quote = service.migration_claim_quote(classical_address)
+
+        self.assertTrue(quote["claimable"])
+        self.assertEqual(quote["normalized_claim_amount"], 7)
+        self.assertEqual(quote["conversion_policy"], service.config.migration_conversion_policy)
+        self.assertTrue(quote["claim_intent_hash"])
+        self.assertEqual(service.migration_claim_status(classical_address)["lifecycle_state"], "claimable")
+
+    def test_wallet_migration_claim_package_and_adversarial_report(self) -> None:
+        service, _ = self.make_service()
+        service.create_genesis_block({"bootstrap": 1})
+        public_key = build_demo_classical_claim_public_key("package-user")
+        classical_address = build_demo_classical_claim_address(public_key)
+        service.seed_migration_source(
+            classical_address=classical_address,
+            provider_id="classical_claim_demo_v1",
+            source_network="legacy-demo-ledger",
+            amount=9,
+            snapshot_ref="package-snapshot",
+        )
+
+        package = service.build_wallet_migration_claim_package(
+            destination_address="pq-package-destination",
+            classical_address=classical_address,
+            classical_provider_id="classical_claim_demo_v1",
+            source_network="legacy-demo-ledger",
+            snapshot_ref="package-snapshot",
+            classical_public_key=public_key,
+        )
+        adversarial = service.migration_adversarial_simulation_report()
+
+        self.assertTrue(package["ready"])
+        self.assertTrue(package["package_hash"])
+        self.assertEqual(package["claims"]["classical_address"], classical_address)
+        self.assertIn(adversarial["status"], {"passed", "needs_review"})
+        self.assertTrue(any(item["name"] == "claimable_amount_within_pool" for item in adversarial["scenarios"]))
+
+    def test_migration_integrity_report_flags_missing_snapshot(self) -> None:
+        service, _ = self.make_service()
+        public_key = build_demo_classical_claim_public_key("integrity-user")
+        classical_address = build_demo_classical_claim_address(public_key)
+        service.store.add_migration_source(
+            classical_address=classical_address,
+            provider_id="classical_claim_demo_v1",
+            source_network="legacy-demo-ledger",
+            amount=5,
+            snapshot_ref="missing-snapshot",
+            source_address=classical_address,
+            source_address_format="demo_claim_address",
+            reviewed_at=1.0,
+            added_at=1.0,
+        )
+
+        report = service.migration_integrity_report(source_network="legacy-demo-ledger")
+
+        self.assertEqual(report["summary"]["critical_anomaly_count"], 1)
+        self.assertEqual(report["anomalies"][0]["type"], "missing_snapshot_record")
 
     def make_additional_service(self, suffix: str, *, chain_id: str = "qr-chain-devnet") -> NodeService:
         temp_root = Path("test_runtime")

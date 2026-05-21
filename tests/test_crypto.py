@@ -33,10 +33,12 @@ class SignatureProviderRegistryTests(unittest.TestCase):
 
         self.assertIn("hash_lamport_v1", providers)
         self.assertIn("xmss_merkle_lamport_v1", providers)
+        self.assertIn("mldsa65_oqs_v1", providers)
         self.assertIn("xmss_nist_v1", providers)
         self.assertIn("lms_nist_v1", providers)
         self.assertIn("sphincsplus_v1", providers)
         self.assertEqual(providers["xmss_nist_v1"].status, "adapter_ready")
+        self.assertEqual(providers["mldsa65_oqs_v1"].algorithm_family, "ml-dsa")
         self.assertEqual(providers["lms_nist_v1"].implementation, "external_module_adapter")
         self.assertEqual(providers["sphincsplus_v1"].implementation, "external_module_adapter")
 
@@ -261,10 +263,33 @@ class SignatureProviderRegistryTests(unittest.TestCase):
         self,
         *,
         mechanisms: list[str] | None = None,
+        sig_mechanisms: list[str] | None = None,
         native_error: BaseException | None = None,
     ) -> types.ModuleType:
         module = types.ModuleType("oqs")
         available_mechanisms = mechanisms or ["XMSS-SHA2_10_256"]
+        available_sig_mechanisms = sig_mechanisms or ["ML-DSA-65"]
+
+        class FakeSignature:
+            def __init__(self, mechanism: str):
+                self.mechanism = mechanism
+                self.public_key = b""
+                self.secret_key = b""
+
+            def generate_keypair(self):
+                self.public_key = f"public:{self.mechanism}".encode("utf-8")
+                self.secret_key = f"secret:{self.mechanism}".encode("utf-8")
+                return self.public_key
+
+            def export_secret_key(self):
+                return self.secret_key
+
+            def sign(self, message: bytes, secret_key: bytes):
+                return b"sig:" + secret_key + b":" + message
+
+            def verify(self, message: bytes, signature: bytes, public_key: bytes):
+                expected_secret = public_key.replace(b"public:", b"secret:", 1)
+                return signature == b"sig:" + expected_secret + b":" + message
 
         class FakeStatefulSignature:
             def __init__(self, mechanism: str):
@@ -296,8 +321,10 @@ class SignatureProviderRegistryTests(unittest.TestCase):
                 )
 
         module.__version__ = "0.test"
+        module.Signature = FakeSignature
         module.StatefulSignature = FakeStatefulSignature
         module.get_enabled_stateful_sig_mechanisms = lambda: list(available_mechanisms)
+        module.get_enabled_sig_mechanisms = lambda: list(available_sig_mechanisms)
         if native_error is None:
             class FakeNativeLibrary:
                 def __init__(self):
@@ -312,6 +339,40 @@ class SignatureProviderRegistryTests(unittest.TestCase):
                 raise native_error
             module.native = _raise_native_error
         return module
+
+    def test_mldsa65_oqs_provider_uses_stateless_signature_runtime(self) -> None:
+        provider = get_signature_provider("mldsa65_oqs_v1")
+        fake_oqs = self.build_fake_oqs_module(sig_mechanisms=["ML-DSA-65"])
+        with patch.dict(sys.modules, {"oqs": fake_oqs}, clear=False):
+            keypair = provider.generate_keypair()
+            public_key, signature = provider.sign(keypair, b"hello")
+
+            self.assertEqual(provider.derive_address(keypair), provider.address_from_public_key(public_key))
+            self.assertTrue(provider.verify(b"hello", signature, public_key))
+            self.assertEqual(provider.serialize_keypair(keypair)["mechanism"], "ML-DSA-65")
+
+    def test_mldsa65_oqs_provider_accepts_dilithium3_alias(self) -> None:
+        provider = get_signature_provider("mldsa65_oqs_v1")
+        fake_oqs = self.build_fake_oqs_module(sig_mechanisms=["ML-DSA-65"])
+        with patch.dict(os.environ, {"QR_CHAIN_MLDSA_OQS_MECHANISM": "Dilithium3"}, clear=False):
+            with patch.dict(sys.modules, {"oqs": fake_oqs}, clear=False):
+                keypair = provider.generate_keypair()
+
+        self.assertEqual(provider.serialize_keypair(keypair)["mechanism"], "ML-DSA-65")
+
+    def test_mldsa65_oqs_provider_reports_disabled_mechanism(self) -> None:
+        provider = get_signature_provider("mldsa65_oqs_v1")
+        fake_oqs = self.build_fake_oqs_module(sig_mechanisms=["ML-DSA-44"])
+        with patch.dict(sys.modules, {"oqs": fake_oqs}, clear=False):
+            with self.assertRaisesRegex(ValueError, "ML-DSA-65"):
+                provider.generate_keypair()
+
+    def test_mldsa65_status_reports_missing_oqs_cleanly(self) -> None:
+        with patch.dict(sys.modules, {"oqs": None}, clear=False):
+            providers = {item["provider_id"]: item for item in list_signature_provider_statuses()}
+
+        self.assertFalse(providers["mldsa65_oqs_v1"]["available"])
+        self.assertIn("oqs", providers["mldsa65_oqs_v1"]["error"])
 
     def test_oqs_backend_target_reports_missing_library_cleanly(self) -> None:
         provider = get_signature_provider("xmss_nist_v1")

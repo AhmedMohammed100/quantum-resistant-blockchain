@@ -524,8 +524,8 @@ class ExternalModuleSignatureProvider(SignatureProvider):
                 return status
             status["available"] = True
             status.setdefault("backend_module", getattr(backend, "__name__", self._module_path()))
-            status["supports_stateful_signing"] = callable(getattr(backend, "reserve_signing_material", None))
-            status["supports_reserved_signing"] = callable(getattr(backend, "sign_with_reservation", None))
+            status.setdefault("supports_stateful_signing", callable(getattr(backend, "reserve_signing_material", None)))
+            status.setdefault("supports_reserved_signing", callable(getattr(backend, "sign_with_reservation", None)))
             return status
         except ValueError as error:
             status["available"] = False
@@ -573,6 +573,18 @@ def get_signature_suite(identifier: str) -> SignatureProvider:
 
 register_signature_provider(LamportSignatureProvider())
 register_signature_provider(XMSSMerkleLamportSignatureProvider())
+register_signature_provider(
+    ExternalModuleSignatureProvider(
+        provider_id="mldsa65_oqs_v1",
+        algorithm_family="ml-dsa",
+        module_env_var="QR_CHAIN_MLDSA_BACKEND_MODULE",
+        default_module_path="qr_chain_mldsa_backend",
+        notes=(
+            "liboqs-backed ML-DSA-65 provider. ML-DSA is the NIST FIPS 204 standardized "
+            "family derived from CRYSTALS-Dilithium; Dilithium3 maps to ML-DSA-65 compatibility."
+        ),
+    )
+)
 register_signature_provider(
     ExternalModuleSignatureProvider(
         provider_id="xmss_nist_v1",

@@ -235,3 +235,46 @@ This changelog preserves the implementation history that previously lived in the
 ### Phase 58 - Supply Policy Enforcement
 
 - Added emission/migration remaining reporting and validation against genesis, emission, migration, and total supply caps.
+
+### Phase 59 - Protocol Manifest Surface
+
+- Added a machine-readable protocol manifest for chain id, network profile, object versions, peer frame version, QBC policy, migration policy, and security controls.
+- Exposed the manifest through service, API, and CLI surfaces.
+
+### Phase 60 - Migration Claim Quote Safety
+
+- Added migration claim quotes with normalized claim amount, migration pool capacity, evidence scoring, and a claim intent hash.
+- Exposed claim quotes through service, API, and CLI surfaces so wallets can check claim economics before signing.
+
+### Phase 61 - Migration Claim Lifecycle Status
+
+- Added lifecycle reporting for migration sources so operators and wallets can distinguish claimable, blocked, and claimed states.
+- Attached quote data and mined claim settlement records to claim status output.
+
+### Phase 62 - Migration Integrity Reporting
+
+- Added migration integrity reports for missing snapshot records, weak source evidence, unsigned active snapshots when signatures are required, and pool exposure.
+- Added migration-layer readiness gates based on integrity, provider availability, pool capacity, and signer recovery state.
+
+### Phase 63 - Peer Admission Policy
+
+- Added bounded peer admission with max admitted peers, optional allowlist enforcement, and denylist checks.
+- Applied the policy to manual peer registration and authenticated peer identity admission.
+
+### Phase 64 - ML-DSA OQS Backend Target
+
+- Added `mldsa65_oqs_v1`, a stateless external signature provider backed by Open Quantum Safe `liboqs` through the Python `oqs` bindings.
+- Added a `qr_chain_mldsa_backend` package boundary with ML-DSA-65 as the default mechanism and `Dilithium3` as a compatibility alias.
+- Provider diagnostics now report ML-DSA standardization metadata, selected OQS mechanism, enabled mechanisms, and clean dependency/runtime errors.
+
+### Phase 65 - Pinned OQS Runtime Path
+
+- Pinned the optional `liboqs-python` dependency path, documented the native `liboqs` runtime target, and verified live `ML-DSA-65` signing through the `mldsa65_oqs_v1` provider.
+
+### Phase 66 - Migration Assurance And Runtime Hardening
+
+- Added source-export provenance hashes, source-chain anchors, and extractor metadata to normalized migration snapshots.
+- Added migration governance reports for dispute windows, reviewer quorum, emergency pause, snapshot review state, and blocked sources.
+- Added crypto runtime hardening reports for the pinned ML-DSA/OQS backend path.
+- Added wallet-safe migration claim packages that bundle quotes, preflight checks, claim-intent hashes, and signing messages.
+- Added deterministic adversarial migration checks for blocked snapshots, pool exposure, duplicate claims, and canonical claim uniqueness.

@@ -1,0 +1,10 @@
+# Optional audited PQ runtime path for the ML-DSA provider.
+#
+# This pins the Python binding version. Pin the native liboqs runtime during
+# install with:
+#
+#   $env:PYOQS_VERSION = "0.15.0"
+#   python -m pip install --requirement requirements-oqs.txt
+#
+# The project imports this package as "oqs" through the mldsa65_oqs_v1 backend.
+liboqs-python==0.14.1

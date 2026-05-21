@@ -42,6 +42,10 @@ class NodeConfig:
     node_id: str = "node-local"
     advertised_url: str = "http://127.0.0.1:8080"
     peers: tuple[str, ...] = ()
+    max_admitted_peers: int = 64
+    peer_allowlist: tuple[str, ...] = ()
+    peer_denylist: tuple[str, ...] = ()
+    require_peer_allowlist: bool = False
     max_transactions_per_block: int = 500
     max_pending_transactions: int = 2000
     min_transaction_fee: int = 1
@@ -61,6 +65,9 @@ class NodeConfig:
     migration_claim_end_height: int = 0
     migration_dual_control_start_height: int = 0
     migration_dual_control_end_height: int = 0
+    migration_dispute_window_blocks: int = 1008
+    migration_snapshot_reviewer_quorum: int = 2
+    migration_emergency_pause: bool = False
     migration_require_snapshot_signatures: bool = False
     migration_allowed_classical_providers: tuple[str, ...] = (
         "ecdsa_secp256k1_migration_v1",
@@ -70,6 +77,7 @@ class NodeConfig:
     migration_trusted_snapshot_signers: tuple[str, ...] = ()
     migration_trusted_snapshot_nodes: tuple[str, ...] = ()
     preferred_signature_providers: tuple[str, ...] = (
+        "mldsa65_oqs_v1",
         "sphincsplus_v1",
         "lms_nist_v1",
         "xmss_nist_v1",
@@ -89,6 +97,8 @@ class NodeConfig:
         migration_providers_env = os.getenv("QR_CHAIN_MIGRATION_ALLOWED_CLASSICAL_PROVIDERS", "").strip()
         trusted_snapshot_signers_env = os.getenv("QR_CHAIN_MIGRATION_TRUSTED_SNAPSHOT_SIGNERS", "").strip()
         trusted_snapshot_nodes_env = os.getenv("QR_CHAIN_MIGRATION_TRUSTED_SNAPSHOT_NODES", "").strip()
+        peer_allowlist_env = os.getenv("QR_CHAIN_PEER_ALLOWLIST", "").strip()
+        peer_denylist_env = os.getenv("QR_CHAIN_PEER_DENYLIST", "").strip()
         return NodeConfig(
             db_path=Path(os.getenv("QR_CHAIN_DB_PATH", "data/chain.db")),
             difficulty=int(os.getenv("QR_CHAIN_DIFFICULTY", "3")),
@@ -127,6 +137,11 @@ class NodeConfig:
             node_id=os.getenv("QR_CHAIN_NODE_ID", "node-local"),
             advertised_url=os.getenv("QR_CHAIN_ADVERTISED_URL", "http://127.0.0.1:8080"),
             peers=tuple(peer.strip() for peer in peers_env.split(",") if peer.strip()),
+            max_admitted_peers=int(os.getenv("QR_CHAIN_MAX_ADMITTED_PEERS", "64")),
+            peer_allowlist=tuple(item.strip() for item in peer_allowlist_env.split(",") if item.strip()),
+            peer_denylist=tuple(item.strip() for item in peer_denylist_env.split(",") if item.strip()),
+            require_peer_allowlist=os.getenv("QR_CHAIN_REQUIRE_PEER_ALLOWLIST", "0").strip().lower()
+            in {"1", "true", "yes", "on"},
             max_transactions_per_block=int(os.getenv("QR_CHAIN_MAX_TRANSACTIONS_PER_BLOCK", "500")),
             max_pending_transactions=int(os.getenv("QR_CHAIN_MAX_PENDING_TRANSACTIONS", "2000")),
             min_transaction_fee=int(os.getenv("QR_CHAIN_MIN_TRANSACTION_FEE", "1")),
@@ -146,6 +161,10 @@ class NodeConfig:
             migration_claim_end_height=int(os.getenv("QR_CHAIN_MIGRATION_CLAIM_END_HEIGHT", "0")),
             migration_dual_control_start_height=int(os.getenv("QR_CHAIN_MIGRATION_DUAL_CONTROL_START_HEIGHT", "0")),
             migration_dual_control_end_height=int(os.getenv("QR_CHAIN_MIGRATION_DUAL_CONTROL_END_HEIGHT", "0")),
+            migration_dispute_window_blocks=int(os.getenv("QR_CHAIN_MIGRATION_DISPUTE_WINDOW_BLOCKS", "1008")),
+            migration_snapshot_reviewer_quorum=int(os.getenv("QR_CHAIN_MIGRATION_SNAPSHOT_REVIEWER_QUORUM", "2")),
+            migration_emergency_pause=os.getenv("QR_CHAIN_MIGRATION_EMERGENCY_PAUSE", "0").strip().lower()
+            in {"1", "true", "yes", "on"},
             migration_require_snapshot_signatures=os.getenv(
                 "QR_CHAIN_MIGRATION_REQUIRE_SNAPSHOT_SIGNATURES", "0"
             ).strip().lower()
@@ -176,6 +195,7 @@ class NodeConfig:
                 if item.strip()
             )
             or (
+                "mldsa65_oqs_v1",
                 "sphincsplus_v1",
                 "lms_nist_v1",
                 "xmss_nist_v1",

@@ -56,6 +56,10 @@ def _service_from_args(args: argparse.Namespace) -> NodeService:
             node_id=base.node_id,
             advertised_url=base.advertised_url,
             peers=base.peers,
+            max_admitted_peers=base.max_admitted_peers,
+            peer_allowlist=base.peer_allowlist,
+            peer_denylist=base.peer_denylist,
+            require_peer_allowlist=base.require_peer_allowlist,
             max_transactions_per_block=base.max_transactions_per_block,
             max_pending_transactions=base.max_pending_transactions,
             min_transaction_fee=base.min_transaction_fee,
@@ -77,6 +81,9 @@ def _service_from_args(args: argparse.Namespace) -> NodeService:
             migration_claim_end_height=base.migration_claim_end_height,
             migration_dual_control_start_height=base.migration_dual_control_start_height,
             migration_dual_control_end_height=base.migration_dual_control_end_height,
+            migration_dispute_window_blocks=base.migration_dispute_window_blocks,
+            migration_snapshot_reviewer_quorum=base.migration_snapshot_reviewer_quorum,
+            migration_emergency_pause=base.migration_emergency_pause,
             migration_require_snapshot_signatures=base.migration_require_snapshot_signatures,
             migration_allowed_classical_providers=base.migration_allowed_classical_providers,
             migration_trusted_snapshot_signers=base.migration_trusted_snapshot_signers,
@@ -96,6 +103,26 @@ def build_parser() -> argparse.ArgumentParser:
     currency = subparsers.add_parser("currency", help="Show native currency monetary policy")
     currency.add_argument("--output", default=None)
     currency.set_defaults(handler=cmd_currency)
+
+    protocol = subparsers.add_parser("protocol", help="Show protocol manifest")
+    protocol.add_argument("--output", default=None)
+    protocol.set_defaults(handler=cmd_protocol)
+
+    migration_readiness = subparsers.add_parser("migration-readiness", help="Show migration-layer readiness gates")
+    migration_readiness.add_argument("--output", default=None)
+    migration_readiness.set_defaults(handler=cmd_migration_readiness)
+
+    crypto_hardening = subparsers.add_parser("crypto-hardening", help="Show pinned PQ runtime hardening status")
+    crypto_hardening.add_argument("--output", default=None)
+    crypto_hardening.set_defaults(handler=cmd_crypto_hardening)
+
+    migration_governance = subparsers.add_parser("migration-governance", help="Show migration governance gates")
+    migration_governance.add_argument("--output", default=None)
+    migration_governance.set_defaults(handler=cmd_migration_governance)
+
+    migration_adversarial = subparsers.add_parser("migration-adversarial", help="Run deterministic migration adversarial checks")
+    migration_adversarial.add_argument("--output", default=None)
+    migration_adversarial.set_defaults(handler=cmd_migration_adversarial)
 
     supply = subparsers.add_parser("currency-supply", help="Show native currency supply accounting")
     supply.add_argument("--output", default=None)
@@ -200,6 +227,11 @@ def build_parser() -> argparse.ArgumentParser:
     report_parser.add_argument("--output", default=None)
     report_parser.set_defaults(handler=cmd_migration_report)
 
+    integrity_parser = subparsers.add_parser("migration-integrity", help="Emit migration integrity and risk report")
+    integrity_parser.add_argument("--source-network", default=None)
+    integrity_parser.add_argument("--output", default=None)
+    integrity_parser.set_defaults(handler=cmd_migration_integrity)
+
     preflight_parser = subparsers.add_parser("migration-claim-preflight", help="Build a claim signing preflight report")
     preflight_parser.add_argument("--destination-address", required=True)
     preflight_parser.add_argument("--classical-address", required=True)
@@ -209,6 +241,26 @@ def build_parser() -> argparse.ArgumentParser:
     preflight_parser.add_argument("--classical-public-key-json", default="")
     preflight_parser.add_argument("--output", default=None)
     preflight_parser.set_defaults(handler=cmd_migration_claim_preflight)
+
+    claim_package_parser = subparsers.add_parser("migration-claim-package", help="Build a wallet-safe migration claim package")
+    claim_package_parser.add_argument("--destination-address", required=True)
+    claim_package_parser.add_argument("--classical-address", required=True)
+    claim_package_parser.add_argument("--classical-provider-id", required=True)
+    claim_package_parser.add_argument("--source-network", required=True)
+    claim_package_parser.add_argument("--snapshot-ref", default="")
+    claim_package_parser.add_argument("--classical-public-key-json", default="")
+    claim_package_parser.add_argument("--output", default=None)
+    claim_package_parser.set_defaults(handler=cmd_migration_claim_package)
+
+    quote_parser = subparsers.add_parser("migration-claim-quote", help="Quote a migration claim against pool policy")
+    quote_parser.add_argument("--classical-address", required=True)
+    quote_parser.add_argument("--output", default=None)
+    quote_parser.set_defaults(handler=cmd_migration_claim_quote)
+
+    claim_status_parser = subparsers.add_parser("migration-claim-status", help="Show lifecycle status for a migration claim")
+    claim_status_parser.add_argument("--classical-address", required=True)
+    claim_status_parser.add_argument("--output", default=None)
+    claim_status_parser.set_defaults(handler=cmd_migration_claim_status)
 
     receipt_parser = subparsers.add_parser("migration-claim-receipt", help="Emit a signed migration claim receipt")
     receipt_parser.add_argument("--classical-address", required=True)
@@ -242,6 +294,36 @@ def cmd_migration_networks(args: argparse.Namespace) -> int:
 def cmd_currency(args: argparse.Namespace) -> int:
     service = _service_from_args(args)
     _write_json_output(service.monetary_policy(), None if args.output is None else Path(args.output))
+    return 0
+
+
+def cmd_protocol(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    _write_json_output(service.protocol_manifest(), None if args.output is None else Path(args.output))
+    return 0
+
+
+def cmd_migration_readiness(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    _write_json_output(service.migration_readiness_report(), None if args.output is None else Path(args.output))
+    return 0
+
+
+def cmd_crypto_hardening(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    _write_json_output(service.crypto_runtime_hardening_report(), None if args.output is None else Path(args.output))
+    return 0
+
+
+def cmd_migration_governance(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    _write_json_output(service.migration_governance_report(), None if args.output is None else Path(args.output))
+    return 0
+
+
+def cmd_migration_adversarial(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    _write_json_output(service.migration_adversarial_simulation_report(), None if args.output is None else Path(args.output))
     return 0
 
 
@@ -377,6 +459,13 @@ def cmd_migration_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_migration_integrity(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    report = service.migration_integrity_report(source_network=args.source_network)
+    _write_json_output(report, None if args.output is None else Path(args.output))
+    return 0
+
+
 def cmd_migration_claim_preflight(args: argparse.Namespace) -> int:
     service = _service_from_args(args)
     report = service.preflight_migration_claim(
@@ -388,6 +477,34 @@ def cmd_migration_claim_preflight(args: argparse.Namespace) -> int:
         classical_public_key=_read_json_value(args.classical_public_key_json),
     )
     _write_json_output(report, None if args.output is None else Path(args.output))
+    return 0
+
+
+def cmd_migration_claim_package(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    package = service.build_wallet_migration_claim_package(
+        destination_address=args.destination_address,
+        classical_address=args.classical_address,
+        classical_provider_id=args.classical_provider_id,
+        source_network=args.source_network,
+        snapshot_ref=args.snapshot_ref,
+        classical_public_key=_read_json_value(args.classical_public_key_json),
+    )
+    _write_json_output(package, None if args.output is None else Path(args.output))
+    return 0
+
+
+def cmd_migration_claim_quote(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    quote = service.migration_claim_quote(args.classical_address)
+    _write_json_output(quote, None if args.output is None else Path(args.output))
+    return 0
+
+
+def cmd_migration_claim_status(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    status = service.migration_claim_status(args.classical_address)
+    _write_json_output(status, None if args.output is None else Path(args.output))
     return 0
 
 

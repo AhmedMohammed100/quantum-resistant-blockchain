@@ -61,3 +61,62 @@ def frame_digest(protocol_version: str, message_type: str, payload: dict[str, ob
             }
         ).encode("utf-8")
     ).hexdigest()
+
+
+def protocol_manifest(
+    *,
+    chain_id: str,
+    peer_protocol_version: str,
+    currency: dict[str, object],
+    migration_policy: dict[str, object],
+) -> dict[str, object]:
+    manifest: dict[str, object] = {
+        "protocol_name": "Quantum-Resistant Blockchain",
+        "protocol_manifest_version": 1,
+        "chain_id": chain_id,
+        "native_currency": {
+            "name": currency["name"],
+            "symbol": currency["symbol"],
+            "decimals": currency["decimals"],
+            "base_unit": currency["base_unit"],
+            "max_money": currency["max_money"],
+            "allocation_plan": currency.get("allocation_plan", {}),
+        },
+        "object_versions": {
+            "block_version": 2,
+            "transaction_version": 1,
+            "migration_snapshot_version": 1,
+            "source_ingestion_version": 1,
+            "approval_artifact_version": 1,
+            "peer_frame_protocol": peer_protocol_version,
+        },
+        "transaction_kinds": ["transfer", "migration_claim"],
+        "peer_message_types": [
+            "peer_handshake_request",
+            "peer_handshake_response",
+            "peer_summary_request",
+            "peer_summary_response",
+            "peer_blocks_request",
+            "peer_blocks_response",
+        ],
+        "migration": {
+            "conversion_policy": migration_policy["conversion_policy"],
+            "claim_start_height": migration_policy["claim_start_height"],
+            "claim_end_height": migration_policy["claim_end_height"],
+            "dual_control_start_height": migration_policy["dual_control_start_height"],
+            "dual_control_end_height": migration_policy["dual_control_end_height"],
+            "allowed_classical_providers": migration_policy["allowed_classical_providers"],
+        },
+        "security_controls": [
+            "chain-bound transaction signatures",
+            "provider-resolved PQ signature verification",
+            "stateful signer reservations",
+            "signed peer handshakes",
+            "peer session nonces",
+            "canonical frame digests",
+            "review-gated migration snapshots",
+            "QBC supply cap enforcement",
+        ],
+    }
+    manifest["protocol_manifest_hash"] = hashlib.sha256(canonical_json(manifest).encode("utf-8")).hexdigest()
+    return manifest

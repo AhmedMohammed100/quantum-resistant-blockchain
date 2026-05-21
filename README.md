@@ -13,9 +13,19 @@ python -m unittest discover -s tests -v
 python main.py
 ```
 
+Optional ML-DSA/OQS runtime path:
+
+```powershell
+$env:PYOQS_VERSION = "0.15.0"
+python -m pip install --upgrade --force-reinstall --requirement requirements-oqs.txt
+```
+
 Useful contributor commands:
 
 ```powershell
+python -m qr_blockchain protocol
+python -m qr_blockchain migration-readiness
+python -m qr_blockchain migration-integrity
 python -m qr_blockchain currency
 python -m qr_blockchain currency-supply
 python -m qr_blockchain migration-networks
@@ -32,7 +42,7 @@ The project is not trying to fork Bitcoin, Ethereum, or another existing chain. 
 
 ## What It Solves
 
-- **Post-quantum wallet direction:** wallet signing is abstracted behind provider interfaces so XMSS, LMS, SPHINCS+, and other backends can be integrated without rewriting transaction validation.
+- **Post-quantum wallet direction:** wallet signing is abstracted behind provider interfaces so ML-DSA, XMSS, LMS, SPHINCS+, and other backends can be integrated without rewriting transaction validation.
 - **Classical-to-PQ migration:** users can prove control of legacy ECC/RSA-style addresses and claim normalized QBC allocations into PQ destination addresses.
 - **Auditable source snapshots:** migration data is imported as deterministic bundles with manifest hashes, review status, reconciliation, approval artifacts, and rollback evidence.
 - **Stateful signer safety:** wallet state supports protected persistence and durable reservation coordination to avoid reusing one-time signing material.
@@ -54,6 +64,29 @@ This repository is **production-shaped, but not production-ready for public valu
 It currently has a real service architecture, persistent storage, API/CLI surfaces, authenticated peer flows, canonical supply accounting, migration policy, and a broad test suite. It also includes real classical migration verifier paths for secp256k1 and RSA PKCS#1 v1.5 SHA-256 ownership proofs.
 
 The remaining maturity gap is mostly around audited cryptography, network hardening, consensus economics, production operations, independent review, and long-running multi-node testing.
+
+## PQ Signature Backends
+
+The project now has two classes of PQ signing providers:
+
+- **Reference providers:** in-repo software providers used for development and deterministic tests, including `xmss_merkle_lamport_v1`.
+- **External library providers:** provider boundaries that load a real cryptographic runtime when installed.
+
+The first standardized stateless external target is `mldsa65_oqs_v1`, backed by Open Quantum Safe `liboqs` through the Python `oqs` bindings. It targets `ML-DSA-65`, the NIST FIPS 204 family formerly known through the CRYSTALS-Dilithium process. `Dilithium3` is treated as a compatibility alias for the same intended security level, but the preferred protocol-facing name is ML-DSA.
+
+The existing XMSS, LMS/HSS, and SPHINCS+ provider boundaries remain available for hash-based and stateless PQ evolution. A node should treat a provider as usable only when `/crypto/providers` reports it as available.
+
+See [docs/OQS_RUNTIME.md](docs/OQS_RUNTIME.md) for the pinned OQS runtime target and verification commands.
+
+## Current Capability Stages
+
+The latest migration-hardening work adds five production-path control surfaces:
+
+- **Source provenance:** normalized source exports now include extractor metadata, source-chain anchors, record roots, and provenance hashes.
+- **Governance gates:** migration policy now exposes dispute windows, reviewer quorum, emergency pause, blocked sources, and snapshot review state.
+- **PQ runtime hardening:** the ML-DSA/OQS path has a pinned dependency file, runtime verification commands, and a hardening report for release gates.
+- **Wallet claim packages:** wallets can request one package containing quote, preflight checks, claim intent hash, and exact messages to sign.
+- **Adversarial simulation:** operators can run deterministic checks for duplicate claims, blocked snapshots, pool exhaustion, and claim uniqueness.
 
 ## Architecture
 
@@ -131,6 +164,30 @@ sequenceDiagram
     Node-->>User: Signed migration receipt
 ```
 
+## Migration Assurance Flow
+
+```mermaid
+flowchart TD
+    Export["Source Export"]
+    Provenance["Provenance Hash + Source Anchor"]
+    Normalize["Normalize Snapshot"]
+    Approve["Operator Approval + Reviewer Quorum"]
+    Governance["Governance Gates"]
+    Package["Wallet Claim Package"]
+    Verify["Classical Proof + PQ Destination Check"]
+    Sim["Adversarial Migration Checks"]
+    Mine["Canonical Claim"]
+
+    Export --> Provenance
+    Provenance --> Normalize
+    Normalize --> Approve
+    Approve --> Governance
+    Governance --> Package
+    Package --> Verify
+    Verify --> Sim
+    Sim --> Mine
+```
+
 ## PQ Signing Flow
 
 ```mermaid
@@ -148,6 +205,24 @@ sequenceDiagram
     Wallet->>Node: Submit signed transaction
     Node->>Provider: Verify signature through provider registry
     Node-->>Wallet: Accept or reject
+```
+
+## PQ Runtime Hardening Flow
+
+```mermaid
+flowchart LR
+    Pin["requirements-oqs.txt"]
+    OQS["liboqs-python + native liboqs"]
+    Probe["ML-DSA-65 Runtime Probe"]
+    Provider["mldsa65_oqs_v1 Provider"]
+    Report["Crypto Hardening Report"]
+    Release["Signed Release Gate"]
+
+    Pin --> OQS
+    OQS --> Probe
+    Probe --> Provider
+    Provider --> Report
+    Report --> Release
 ```
 
 ## Native Currency: QBC
@@ -181,6 +256,8 @@ The current security model is based on layered controls:
 - **Protected key storage:** Windows deployments can protect wallet state with DPAPI; plaintext mode is explicitly development-oriented.
 - **Authenticated peer exchange:** node identity, signed handshakes, admitted peer sessions, nonce replay protection, and payload digests protect peer RPCs.
 - **Migration review gates:** snapshots and sources can be active, quarantined, or revoked before claims are accepted.
+- **Governance pause and disputes:** operators can pause migration claims and expose dispute/reviewer windows through service reports.
+- **Provenance-bound snapshots:** source exports carry deterministic provenance hashes and source-chain anchors before import.
 - **Supply caps:** validation rejects blocks or claims that exceed configured QBC caps.
 
 ## Threat Model
@@ -224,7 +301,7 @@ Not ready yet:
 - Final audited PQ signature backend selection.
 - Exchange, wallet, or validator production onboarding.
 
-Before public testnet, the strongest next gates are long-running multi-node soak tests, audited PQ backend selection, stricter network transport, signed release builds, reproducible migration-source extraction, and clear validator/miner participation rules.
+Before public value, the strongest migration gates are reproducible source-chain extraction, signed and independently reviewed migration snapshots, explicit conversion-ratio governance, broader real external-address proof coverage, and migration-specific load/reorg chaos testing.
 
 ## Run A Node
 
@@ -254,10 +331,12 @@ Core endpoints:
 - `GET /health`
 - `GET /status`
 - `GET /metrics`
+- `GET /protocol`
 - `GET /chain/summary`
 - `GET /currency`
 - `GET /currency/supply`
 - `GET /crypto/providers`
+- `GET /crypto/hardening`
 - `GET /blocks?start_height=0`
 - `GET /blocks/{height}`
 - `GET /addresses/{address}/balance`
@@ -269,11 +348,17 @@ Core endpoints:
 Migration endpoints:
 
 - `GET /migration/policy`
+- `GET /migration/governance`
+- `GET /migration/adversarial`
 - `GET /migration/networks`
 - `GET /migration/report`
+- `GET /migration/integrity`
+- `GET /migration/readiness`
 - `GET /migration/snapshots`
 - `GET /migration/sources`
 - `GET /migration/claims/receipt`
+- `GET /migration/claims/quote`
+- `GET /migration/claims/status`
 - `POST /migration/source-exports/normalize`
 - `POST /migration/source-exports/batch-normalize`
 - `POST /migration/source-exports/runbook`
@@ -288,6 +373,8 @@ Migration endpoints:
 - `POST /migration/snapshots/status`
 - `POST /migration/sources/status`
 - `POST /migration/claims/preflight`
+- `POST /migration/claims/quote`
+- `POST /migration/claims/package`
 
 Peer endpoints:
 
@@ -299,12 +386,21 @@ Peer endpoints:
 
 ```powershell
 qr-chain migration-networks
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db protocol
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db crypto-hardening
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-governance
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-readiness
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-integrity
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-adversarial
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db currency
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db currency-supply
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-source-export-normalize --input source-export.json --sign --output snapshot.json
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-source-ingestion-import-plan --input snapshot.json --approval approval.json
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-source-ingestion-import-approved --input snapshot.json --approval approval.json
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-claim-quote --classical-address legacy-address
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-claim-status --classical-address legacy-address
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-claim-preflight --destination-address pq-address --classical-address legacy-address --classical-provider-id classical_claim_demo_v1 --source-network legacy-demo-ledger
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-claim-package --destination-address pq-address --classical-address legacy-address --classical-provider-id classical_claim_demo_v1 --source-network legacy-demo-ledger
 ```
 
 ## Configuration Reference
@@ -336,6 +432,10 @@ Network and node:
 - `QR_CHAIN_NODE_ID`
 - `QR_CHAIN_ADVERTISED_URL`
 - `QR_CHAIN_PEERS`
+- `QR_CHAIN_MAX_ADMITTED_PEERS`
+- `QR_CHAIN_PEER_ALLOWLIST`
+- `QR_CHAIN_PEER_DENYLIST`
+- `QR_CHAIN_REQUIRE_PEER_ALLOWLIST`
 - `QR_CHAIN_PEER_PROTOCOL_VERSION`
 - `QR_CHAIN_MAX_PEER_BLOCKS_PER_REQUEST`
 
@@ -344,6 +444,8 @@ Wallet and providers:
 - `QR_CHAIN_DEFAULT_SIGNATURE_PROVIDER`
 - `QR_CHAIN_PREFERRED_SIGNATURE_PROVIDERS`
 - `QR_CHAIN_ALLOWED_SIGNATURE_PROVIDERS`
+- `QR_CHAIN_MLDSA_BACKEND_MODULE`
+- `QR_CHAIN_MLDSA_OQS_MECHANISM`
 - `QR_CHAIN_WALLET_STATE_DB_PATH`
 - `QR_CHAIN_WALLET_CUSTODY_MODE`
 - `QR_CHAIN_WALLET_CUSTODY_SCOPE`
@@ -355,6 +457,9 @@ Migration:
 - `QR_CHAIN_MIGRATION_CLAIM_END_HEIGHT`
 - `QR_CHAIN_MIGRATION_DUAL_CONTROL_START_HEIGHT`
 - `QR_CHAIN_MIGRATION_DUAL_CONTROL_END_HEIGHT`
+- `QR_CHAIN_MIGRATION_DISPUTE_WINDOW_BLOCKS`
+- `QR_CHAIN_MIGRATION_SNAPSHOT_REVIEWER_QUORUM`
+- `QR_CHAIN_MIGRATION_EMERGENCY_PAUSE`
 - `QR_CHAIN_MIGRATION_REQUIRE_SNAPSHOT_SIGNATURES`
 - `QR_CHAIN_MIGRATION_ALLOWED_CLASSICAL_PROVIDERS`
 - `QR_CHAIN_MIGRATION_TRUSTED_SNAPSHOT_SIGNERS`
@@ -370,12 +475,12 @@ python -m unittest discover -s tests -v
 
 - Integrate audited, standards-aligned PQ backends for XMSS, LMS/HSS, SPHINCS+, and NIST-standard signature families where appropriate.
 - Build reproducible Bitcoin/Ethereum source extraction pipelines for migration snapshots.
-- Add stronger peer transport with encryption, rate limits, peer scoring, and public testnet bootstrapping.
+- Add stronger peer transport with encryption, rate limits, and peer scoring.
 - Define validator/miner participation, governance, and reward distribution rules for QBC.
 - Add long-running load, soak, chaos, and adversarial network tests.
 - Add hardware-backed or isolated signer custody options.
 - Produce public protocol specs for transaction format, migration claims, peer frames, and snapshot artifacts.
-- Prepare signed releases, deployment guides, and public testnet operations.
+- Prepare signed releases, deployment guides, and migration operator playbooks.
 
 ## Changelog
 

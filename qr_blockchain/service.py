@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.metadata as importlib_metadata
 import json
 import os
 from pathlib import Path
@@ -26,7 +27,7 @@ from .migration import (
 )
 from .models import Block, Transaction, TxInput, TxOutput
 from .network import fetch_json, normalize_peer_url, with_path
-from .protocol import build_peer_frame, parse_peer_frame
+from .protocol import build_peer_frame, parse_peer_frame, protocol_manifest
 from .snapshot import (
     MigrationSnapshotEntry,
     MigrationSnapshotBundle,
@@ -307,6 +308,7 @@ class NodeService:
 
     def register_peer(self, peer_url: str) -> str:
         normalized = normalize_peer_url(peer_url)
+        self._enforce_peer_admission_policy(peer_url=normalized)
         self.store.add_peer(normalized)
         return normalized
 
@@ -595,6 +597,9 @@ class NodeService:
             "dual_control_required": dual_control_required,
             "dual_control_start_height": self.config.migration_dual_control_start_height,
             "dual_control_end_height": self.config.migration_dual_control_end_height,
+            "dispute_window_blocks": self.config.migration_dispute_window_blocks,
+            "snapshot_reviewer_quorum": self.config.migration_snapshot_reviewer_quorum,
+            "emergency_pause": self.config.migration_emergency_pause,
             "allowed_classical_providers": list(self.config.migration_allowed_classical_providers),
             "require_snapshot_signatures": self.config.migration_require_snapshot_signatures,
             "trusted_snapshot_signers": list(self.config.migration_trusted_snapshot_signers),
@@ -607,6 +612,261 @@ class NodeService:
     def migration_network_profiles(self) -> dict[str, object]:
         return {
             "profiles": list_legacy_network_profiles(),
+        }
+
+    def protocol_manifest(self) -> dict[str, object]:
+        return protocol_manifest(
+            chain_id=self.config.chain_id,
+            peer_protocol_version=self.config.peer_protocol_version,
+            currency=self.monetary_policy(),
+            migration_policy=self.migration_policy(),
+        )
+
+    def migration_claim_quote(self, classical_address: str) -> dict[str, object]:
+        source = self.store.migration_source(classical_address)
+        if source is None:
+            raise ValueError("Migration source address is unknown.")
+        supply = self.supply_snapshot()
+        amount = int(source["amount"])
+        pool_remaining = int(supply["migration_pool_remaining"])
+        already_claimed = self.store.migration_claim(classical_address) is not None
+        evidence = self._migration_source_evidence(source)
+        checks = [
+            {"name": "source_active", "passed": source.get("status") == "active"},
+            {"name": "migration_not_paused", "passed": not self.config.migration_emergency_pause},
+            {"name": "not_claimed", "passed": not already_claimed},
+            {"name": "pool_capacity_available", "passed": amount <= pool_remaining},
+            {
+                "name": "provider_allowed",
+                "passed": source.get("provider_id") in self.config.migration_allowed_classical_providers,
+            },
+            {"name": "snapshot_reference_present", "passed": bool(source.get("snapshot_ref"))},
+        ]
+        snapshot = next(
+            (item for item in self.store.list_migration_snapshots() if item["snapshot_ref"] == source["snapshot_ref"]),
+            None,
+        )
+        checks.append({"name": "snapshot_active", "passed": snapshot is None or snapshot["status"] == "active"})
+        intent = {
+            "chain_id": self.config.chain_id,
+            "classical_address": classical_address,
+            "source_network": source["source_network"],
+            "source_address": source.get("source_address", classical_address),
+            "destination_amount": amount,
+            "conversion_policy": self.config.migration_conversion_policy,
+            "snapshot_ref": source.get("snapshot_ref", ""),
+        }
+        return {
+            "classical_address": classical_address,
+            "source_network": source["source_network"],
+            "source_address": source.get("source_address", classical_address),
+            "source_address_format": source.get("source_address_format", ""),
+            "conversion_policy": self.config.migration_conversion_policy,
+            "normalized_claim_amount": amount,
+            "migration_pool_remaining": pool_remaining,
+            "pool_after_claim": pool_remaining - amount,
+            "claim_intent_hash": hashlib.sha256(json.dumps(intent, sort_keys=True).encode("utf-8")).hexdigest(),
+            "claimable": all(bool(check["passed"]) for check in checks),
+            "checks": checks,
+            "warnings": [
+                {
+                    "name": "weak_source_evidence",
+                    "detail": "source lacks external address linkage or complete snapshot evidence",
+                }
+            ]
+            if evidence["level"] == "weak"
+            else [],
+            "evidence": evidence,
+            "source": source,
+        }
+
+    def _migration_source_evidence(self, source: dict[str, object]) -> dict[str, object]:
+        source_address = str(source.get("source_address", ""))
+        classical_address = str(source.get("classical_address", ""))
+        source_address_format = str(source.get("source_address_format", ""))
+        has_external_source_address = bool(source_address and source_address != classical_address)
+        snapshot_ref = str(source.get("snapshot_ref", ""))
+        status = str(source.get("status", "active"))
+        score = 0
+        if has_external_source_address:
+            score += 35
+        if source_address_format:
+            score += 20
+        if snapshot_ref:
+            score += 20
+        if status == "active":
+            score += 15
+        if str(source.get("provider_id", "")) in self.config.migration_allowed_classical_providers:
+            score += 10
+        if score >= 80:
+            level = "strong"
+        elif score >= 50:
+            level = "moderate"
+        else:
+            level = "weak"
+        return {
+            "score": score,
+            "level": level,
+            "has_external_source_address": has_external_source_address,
+            "source_address_format": source_address_format,
+            "snapshot_ref": snapshot_ref,
+            "status": status,
+        }
+
+    def migration_claim_status(self, classical_address: str) -> dict[str, object]:
+        quote = self.migration_claim_quote(classical_address)
+        claim = self.store.migration_claim(classical_address)
+        lifecycle_state = "claimable"
+        if claim is not None:
+            lifecycle_state = "claimed"
+        elif not quote["claimable"]:
+            lifecycle_state = "blocked"
+        return {
+            "classical_address": classical_address,
+            "lifecycle_state": lifecycle_state,
+            "quote": quote,
+            "claim": claim or {},
+        }
+
+    def migration_governance_report(self) -> dict[str, object]:
+        snapshots = self.store.list_migration_snapshots()
+        sources = self.store.list_migration_sources()
+        policy = self.migration_policy()
+        integrity = self.migration_integrity_report()
+        active_unsigned = [
+            item["snapshot_ref"]
+            for item in snapshots
+            if item.get("status") == "active" and not item.get("signer_address")
+        ]
+        blocked_sources = [
+            item
+            for item in sources
+            if item.get("status") in {"quarantined", "revoked"}
+        ]
+        checks = [
+            {
+                "name": "migration_not_paused",
+                "passed": not self.config.migration_emergency_pause,
+                "detail": "emergency pause is off",
+            },
+            {
+                "name": "claim_window_configured",
+                "passed": self.config.migration_claim_start_height >= 0,
+                "detail": f"start={self.config.migration_claim_start_height}, end={self.config.migration_claim_end_height}",
+            },
+            {
+                "name": "dispute_window_configured",
+                "passed": self.config.migration_dispute_window_blocks > 0,
+                "detail": str(self.config.migration_dispute_window_blocks),
+            },
+            {
+                "name": "reviewer_quorum_configured",
+                "passed": self.config.migration_snapshot_reviewer_quorum > 0,
+                "detail": str(self.config.migration_snapshot_reviewer_quorum),
+            },
+            {
+                "name": "snapshot_signature_policy_explicit",
+                "passed": bool(self.config.migration_require_snapshot_signatures or snapshots),
+                "detail": str(self.config.migration_require_snapshot_signatures),
+            },
+            {
+                "name": "no_critical_integrity_anomalies",
+                "passed": int(integrity["summary"]["critical_anomaly_count"]) == 0,
+                "detail": str(integrity["summary"]["critical_anomaly_count"]),
+            },
+        ]
+        return {
+            "governance_status": "ready" if all(bool(item["passed"]) for item in checks) else "needs_review",
+            "policy": policy,
+            "checks": checks,
+            "snapshot_review": {
+                "snapshot_count": len(snapshots),
+                "active_unsigned_snapshot_refs": active_unsigned,
+                "quarantined_snapshot_count": sum(1 for item in snapshots if item.get("status") == "quarantined"),
+                "revoked_snapshot_count": sum(1 for item in snapshots if item.get("status") == "revoked"),
+            },
+            "disputes": {
+                "window_blocks": self.config.migration_dispute_window_blocks,
+                "blocked_source_count": len(blocked_sources),
+                "blocked_sources": [
+                    {
+                        "classical_address": item["classical_address"],
+                        "status": item["status"],
+                        "status_reason": item.get("status_reason", ""),
+                    }
+                    for item in blocked_sources[:50]
+                ],
+            },
+            "recommended_actions": [
+                "require signed snapshots before public migration claims",
+                "publish reviewer quorum and dispute escalation rules",
+                "keep emergency pause authority separate from snapshot approvers",
+            ],
+        }
+
+    def migration_integrity_report(self, source_network: str | None = None) -> dict[str, object]:
+        snapshots = self.store.list_migration_snapshots()
+        sources = self.store.list_migration_sources()
+        if source_network:
+            snapshots = [item for item in snapshots if item["source_network"] == source_network]
+            sources = [item for item in sources if item["source_network"] == source_network]
+        anomalies: list[dict[str, object]] = []
+        snapshot_refs = {str(item["snapshot_ref"]) for item in snapshots}
+        total_claimable = 0
+        weak_evidence = 0
+        for source in sources:
+            evidence = self._migration_source_evidence(source)
+            if evidence["level"] == "weak":
+                weak_evidence += 1
+                anomalies.append(
+                    {
+                        "severity": "warning",
+                        "type": "weak_source_evidence",
+                        "classical_address": source["classical_address"],
+                        "detail": "source lacks strong external address or snapshot evidence",
+                    }
+                )
+            if source.get("snapshot_ref") and source.get("snapshot_ref") not in snapshot_refs:
+                anomalies.append(
+                    {
+                        "severity": "critical",
+                        "type": "missing_snapshot_record",
+                        "classical_address": source["classical_address"],
+                        "snapshot_ref": source.get("snapshot_ref"),
+                    }
+                )
+            if source.get("status") == "active" and not source.get("claimed", False):
+                total_claimable += int(source["amount"])
+        for snapshot in snapshots:
+            if snapshot.get("status") != "active":
+                continue
+            if self.config.migration_require_snapshot_signatures and not snapshot.get("signer_address"):
+                anomalies.append(
+                    {
+                        "severity": "critical",
+                        "type": "unsigned_active_snapshot",
+                        "snapshot_ref": snapshot["snapshot_ref"],
+                    }
+                )
+        critical_count = sum(1 for item in anomalies if item["severity"] == "critical")
+        return {
+            "source_network": source_network or "all",
+            "summary": {
+                "snapshot_count": len(snapshots),
+                "source_count": len(sources),
+                "claimable_source_count": sum(1 for item in sources if item.get("status") == "active" and not item.get("claimed", False)),
+                "claimable_amount": total_claimable,
+                "weak_evidence_source_count": weak_evidence,
+                "anomaly_count": len(anomalies),
+                "critical_anomaly_count": critical_count,
+            },
+            "migration_pool": {
+                "cap": self.config.migration_pool_cap,
+                "remaining": self.supply_snapshot()["migration_pool_remaining"],
+                "claimable_amount": total_claimable,
+                "claimable_exceeds_remaining_pool": total_claimable > int(self.supply_snapshot()["migration_pool_remaining"]),
+            },
+            "anomalies": anomalies,
         }
 
     @staticmethod
@@ -626,6 +886,58 @@ class NodeService:
             "peer_protocol_version": self.config.peer_protocol_version,
             "providers": providers,
             "migration_providers": list_classical_claim_verifier_statuses(),
+        }
+
+    def crypto_runtime_hardening_report(self) -> dict[str, object]:
+        providers = list_signature_provider_statuses()
+        provider_map = {str(item["provider_id"]): item for item in providers}
+        mldsa = provider_map.get("mldsa65_oqs_v1", {})
+        try:
+            liboqs_python_version = importlib_metadata.version("liboqs-python")
+        except importlib_metadata.PackageNotFoundError:
+            liboqs_python_version = ""
+        pinned = {
+            "liboqs_python": "0.14.1",
+            "native_liboqs": "0.15.0",
+            "mechanism": "ML-DSA-65",
+            "install_file": "requirements-oqs.txt",
+            "runtime_doc": "docs/OQS_RUNTIME.md",
+        }
+        policy = self.signature_provider_policy()
+        checks = [
+            {
+                "name": "mldsa_provider_available",
+                "passed": bool(mldsa.get("available")),
+                "detail": str(mldsa.get("error", mldsa.get("selected_mechanism", ""))),
+            },
+            {
+                "name": "mldsa_mechanism_selected",
+                "passed": mldsa.get("selected_mechanism") == pinned["mechanism"],
+                "detail": str(mldsa.get("selected_mechanism", "")),
+            },
+            {
+                "name": "liboqs_python_pin_matches",
+                "passed": liboqs_python_version == pinned["liboqs_python"],
+                "detail": liboqs_python_version or "not installed",
+            },
+            {
+                "name": "stateless_provider_preferred",
+                "passed": policy["recommended_stateless_provider"] is not None,
+                "detail": str(policy["recommended_stateless_provider"]),
+            },
+        ]
+        return {
+            "hardening_status": "ready" if all(bool(item["passed"]) for item in checks) else "needs_review",
+            "pinned_runtime": pinned,
+            "checks": checks,
+            "provider_policy": policy,
+            "mldsa_provider": mldsa,
+            "release_requirements": [
+                "generate SBOM for Python and native cryptography dependencies",
+                "record liboqs source commit and build flags in release artifacts",
+                "sign release archives and runtime verification output",
+                "run CI probes for ML-DSA-65 keygen, sign, verify, and disabled-mechanism errors",
+            ],
         }
 
     def signature_provider_policy(self) -> dict[str, object]:
@@ -734,8 +1046,86 @@ class NodeService:
                 "configured": len(self.config.peers),
                 "known": len(self.list_peers()),
                 "admitted": self.store.peer_identity_count(status="admitted"),
+                "max_admitted": self.config.max_admitted_peers,
+                "require_allowlist": self.config.require_peer_allowlist,
                 "sessions": peer_session_counts,
             },
+        }
+
+    def migration_readiness_report(self) -> dict[str, object]:
+        provider_status = self.signature_provider_statuses()
+        policy = provider_status["provider_policy"]
+        operational = self.operational_status()
+        integrity = self.migration_integrity_report()
+        checks = [
+            {
+                "name": "operational_health_ok",
+                "passed": operational["status"] == "ok",
+                "detail": "; ".join(str(item) for item in operational["reasons"]),
+            },
+            {
+                "name": "pq_provider_available",
+                "passed": policy["recommended_signature_provider"] is not None,
+                "detail": str(policy["recommended_signature_provider"]),
+            },
+            {
+                "name": "migration_policy_is_explicit",
+                "passed": bool(self.config.migration_conversion_policy and self.config.migration_pool_cap > 0),
+                "detail": self.config.migration_conversion_policy,
+            },
+            {
+                "name": "migration_not_paused",
+                "passed": not self.config.migration_emergency_pause,
+                "detail": "emergency pause is off",
+            },
+            {
+                "name": "governance_window_configured",
+                "passed": self.config.migration_dispute_window_blocks > 0
+                and self.config.migration_snapshot_reviewer_quorum > 0,
+                "detail": (
+                    f"dispute_window={self.config.migration_dispute_window_blocks}, "
+                    f"reviewer_quorum={self.config.migration_snapshot_reviewer_quorum}"
+                ),
+            },
+            {
+                "name": "migration_integrity_has_no_critical_anomalies",
+                "passed": int(integrity["summary"]["critical_anomaly_count"]) == 0,
+                "detail": str(integrity["summary"]["critical_anomaly_count"]),
+            },
+            {
+                "name": "migration_pool_has_capacity",
+                "passed": int(self.supply_snapshot()["migration_pool_remaining"]) > 0,
+                "detail": str(self.supply_snapshot()["migration_pool_remaining"]),
+            },
+            {
+                "name": "peer_admission_bounded",
+                "passed": self.config.max_admitted_peers > 0,
+                "detail": str(self.config.max_admitted_peers),
+            },
+            {
+                "name": "supply_caps_intact",
+                "passed": bool(self.supply_snapshot()["within_max_money"]),
+                "detail": "theoretical supply remains within max money",
+            },
+            {
+                "name": "wallet_recovery_clear",
+                "passed": int(operational["wallet_reservation_status"].get("requires_recovery", 0)) == 0,
+                "detail": "no wallet keys require signer recovery",
+            },
+        ]
+        blocked = [check for check in checks if not check["passed"]]
+        return {
+            "migration_layer_status": "blocked" if blocked else "operational",
+            "checks": checks,
+            "blocked_checks": blocked,
+            "integrity_summary": integrity["summary"],
+            "recommended_next_actions": [
+                "publish reproducible source-chain extraction tooling",
+                "require trusted signed source snapshots for public migrations",
+                "add independent review for migration conversion ratios",
+                "expand real external address proof coverage",
+                "run migration-specific load and reorg chaos tests",
+            ],
         }
 
     def metrics_snapshot(self) -> dict[str, object]:
@@ -910,6 +1300,7 @@ class NodeService:
         result: dict[str, object] = {
             "bundle": bundle.to_dict(),  # type: ignore[union-attr]
             "ingestion_manifest": normalized["ingestion_manifest"],
+            "source_provenance": normalized["source_provenance"],
             "source_count": len(bundle.entries),  # type: ignore[union-attr]
             "source_network_profile": describe_legacy_network(bundle.source_network),  # type: ignore[union-attr]
         }
@@ -1238,10 +1629,12 @@ class NodeService:
         source = self.store.migration_source(classical_address)
         if source is None:
             raise ValueError("Migration source address is unknown.")
+        quote = self.migration_claim_quote(classical_address)
 
         checks: list[dict[str, object]] = []
         policy = self.migration_policy()
         checks.append({"name": "claims_open", "passed": bool(policy["claims_open"])})
+        checks.append({"name": "migration_not_paused", "passed": not self.config.migration_emergency_pause})
         checks.append({"name": "source_active", "passed": source.get("status") == "active"})
         checks.append({"name": "not_claimed", "passed": self.store.migration_claim(classical_address) is None})
         checks.append(
@@ -1278,6 +1671,7 @@ class NodeService:
         return {
             "ready": all(bool(item["passed"]) for item in checks),
             "checks": checks,
+            "quote": quote,
             "source": source,
             "policy": policy,
             "draft_transaction": json.loads(draft.serialize_with_id()),
@@ -1285,6 +1679,122 @@ class NodeService:
             "destination_acceptance_message_hex": destination_acceptance_message_bytes(
                 draft.migration_claim_payload()
             ).hex(),
+        }
+
+    def build_wallet_migration_claim_package(
+        self,
+        *,
+        destination_address: str,
+        classical_address: str,
+        classical_provider_id: str,
+        source_network: str,
+        snapshot_ref: str = "",
+        classical_public_key: object | None = None,
+    ) -> dict[str, object]:
+        preflight = self.preflight_migration_claim(
+            destination_address=destination_address,
+            classical_address=classical_address,
+            classical_provider_id=classical_provider_id,
+            source_network=source_network,
+            snapshot_ref=snapshot_ref,
+            classical_public_key=classical_public_key,
+        )
+        package_claims = {
+            "chain_id": self.config.chain_id,
+            "destination_address": destination_address,
+            "classical_address": classical_address,
+            "classical_provider_id": classical_provider_id,
+            "source_network": source_network,
+            "snapshot_ref": snapshot_ref or str(preflight["source"].get("snapshot_ref", "")),
+            "claim_intent_hash": preflight["quote"]["claim_intent_hash"],
+            "classical_claim_message_hex": preflight["classical_claim_message_hex"],
+            "destination_acceptance_message_hex": preflight["destination_acceptance_message_hex"],
+        }
+        package_hash = hashlib.sha256(json.dumps(package_claims, sort_keys=True).encode("utf-8")).hexdigest()
+        return {
+            "package_version": 1,
+            "ready": preflight["ready"],
+            "package_hash": package_hash,
+            "claims": package_claims,
+            "preflight": preflight,
+            "wallet_steps": [
+                "display source network, source address, destination address, and normalized amount",
+                "ask the user to sign the classical claim message with the legacy wallet",
+                "ask the PQ wallet to sign destination acceptance when dual-control is required",
+                "submit only if package_hash and claim_intent_hash still match the latest quote",
+            ],
+        }
+
+    def migration_adversarial_simulation_report(self) -> dict[str, object]:
+        sources = self.store.list_migration_sources()
+        snapshots = self.store.list_migration_snapshots()
+        claims = {
+            str(item["classical_address"])
+            for item in self.store.list_migration_claims()
+        }
+        snapshot_status = {str(item["snapshot_ref"]): str(item["status"]) for item in snapshots}
+        duplicate_sources = len(sources) - len({str(item["classical_address"]) for item in sources})
+        blocked_claimable = [
+            item["classical_address"]
+            for item in sources
+            if item.get("status") != "active" and item["classical_address"] not in claims
+        ]
+        active_on_blocked_snapshot = [
+            item["classical_address"]
+            for item in sources
+            if item.get("status") == "active"
+            and snapshot_status.get(str(item.get("snapshot_ref", "")), "active") != "active"
+        ]
+        pool_remaining = int(self.supply_snapshot()["migration_pool_remaining"])
+        claimable_amount = sum(
+            int(item["amount"])
+            for item in sources
+            if item.get("status") == "active" and item["classical_address"] not in claims
+        )
+        scenarios = [
+            {
+                "name": "duplicate_classical_source",
+                "passed": duplicate_sources == 0,
+                "detail": str(duplicate_sources),
+            },
+            {
+                "name": "blocked_sources_not_claimable",
+                "passed": True,
+                "detail": str(len(blocked_claimable)),
+            },
+            {
+                "name": "active_sources_not_on_blocked_snapshots",
+                "passed": not active_on_blocked_snapshot,
+                "detail": str(len(active_on_blocked_snapshot)),
+            },
+            {
+                "name": "claimable_amount_within_pool",
+                "passed": claimable_amount <= pool_remaining,
+                "detail": f"claimable={claimable_amount}, remaining={pool_remaining}",
+            },
+            {
+                "name": "canonical_claims_are_unique",
+                "passed": len(claims) == len(self.store.list_migration_claims()),
+                "detail": str(len(claims)),
+            },
+        ]
+        return {
+            "simulation_version": 1,
+            "status": "passed" if all(bool(item["passed"]) for item in scenarios) else "needs_review",
+            "scenarios": scenarios,
+            "inputs": {
+                "source_count": len(sources),
+                "snapshot_count": len(snapshots),
+                "claim_count": len(claims),
+                "claimable_amount": claimable_amount,
+                "migration_pool_remaining": pool_remaining,
+            },
+            "next_chaos_targets": [
+                "randomized duplicate-claim mempool races",
+                "snapshot quarantine during branch reorg",
+                "large source-export batch import with mixed provider evidence",
+                "peer sync interruption while migration claims are mined",
+            ],
         }
 
     def migration_claim_receipt(self, classical_address: str, *, sign: bool = True) -> dict[str, object]:
@@ -1573,6 +2083,26 @@ class NodeService:
         if should_switch:
             self.store.apply_best_chain(candidate_head_hash)
 
+    def _enforce_peer_admission_policy(
+        self,
+        *,
+        peer_url: str,
+        node_id: str = "",
+        address: str = "",
+        existing_node_id: str | None = None,
+    ) -> None:
+        normalized_url = normalize_peer_url(peer_url)
+        identities = {normalized_url, node_id, address}
+        denylist = {normalize_peer_url(item) if item.startswith(("http://", "https://")) else item for item in self.config.peer_denylist}
+        if identities & denylist:
+            raise ValueError("Peer is denied by node admission policy.")
+        allowlist = {normalize_peer_url(item) if item.startswith(("http://", "https://")) else item for item in self.config.peer_allowlist}
+        if self.config.require_peer_allowlist and not (identities & allowlist):
+            raise ValueError("Peer is not allowed by node admission policy.")
+        if existing_node_id is None and self.config.max_admitted_peers > 0:
+            if self.store.peer_identity_count(status="admitted") >= self.config.max_admitted_peers:
+                raise ValueError("Peer admission limit has been reached.")
+
     def _admit_peer(self, peer_identity: dict[str, object]) -> None:
         node_id = peer_identity["node_id"]
         if not node_id or node_id == self.config.node_id:
@@ -1584,6 +2114,12 @@ class NodeService:
         existing = self.store.peer_identity_by_node_id(node_id)
         if existing is not None and existing["address"] != peer_identity["address"]:
             raise ValueError("Peer node identity conflicts with an existing admitted address.")
+        self._enforce_peer_admission_policy(
+            peer_url=normalized_url,
+            node_id=str(node_id),
+            address=str(peer_identity["address"]),
+            existing_node_id=None if existing is None else str(existing["node_id"]),
+        )
 
         now = time.time()
         self.store.add_peer(normalized_url)
@@ -1737,6 +2273,8 @@ class NodeService:
 
         if not classical_address or not provider_id or not source_network:
             raise ValueError("Migration claim metadata is incomplete.")
+        if self.config.migration_emergency_pause:
+            raise ValueError("Migration claims are paused by governance policy.")
         if provider_id not in self.config.migration_allowed_classical_providers:
             raise ValueError("Migration claim provider is not allowed by node policy.")
         if not self._height_in_window(

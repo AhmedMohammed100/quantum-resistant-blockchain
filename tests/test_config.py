@@ -33,6 +33,10 @@ class NodeConfigTests(unittest.TestCase):
             "QR_CHAIN_NODE_ID": "node-7",
             "QR_CHAIN_ADVERTISED_URL": "http://node-7:9000",
             "QR_CHAIN_PEERS": "http://node-a:8080, http://node-b:8080",
+            "QR_CHAIN_MAX_ADMITTED_PEERS": "17",
+            "QR_CHAIN_PEER_ALLOWLIST": "node-a,http://node-b:8080",
+            "QR_CHAIN_PEER_DENYLIST": "node-x,http://node-y:8080",
+            "QR_CHAIN_REQUIRE_PEER_ALLOWLIST": "true",
             "QR_CHAIN_MAX_TRANSACTIONS_PER_BLOCK": "77",
             "QR_CHAIN_MAX_PENDING_TRANSACTIONS": "123",
             "QR_CHAIN_MIN_TRANSACTION_FEE": "3",
@@ -52,6 +56,9 @@ class NodeConfigTests(unittest.TestCase):
             "QR_CHAIN_MIGRATION_CLAIM_END_HEIGHT": "50",
             "QR_CHAIN_MIGRATION_DUAL_CONTROL_START_HEIGHT": "12",
             "QR_CHAIN_MIGRATION_DUAL_CONTROL_END_HEIGHT": "40",
+            "QR_CHAIN_MIGRATION_DISPUTE_WINDOW_BLOCKS": "144",
+            "QR_CHAIN_MIGRATION_SNAPSHOT_REVIEWER_QUORUM": "3",
+            "QR_CHAIN_MIGRATION_EMERGENCY_PAUSE": "true",
             "QR_CHAIN_MIGRATION_REQUIRE_SNAPSHOT_SIGNATURES": "true",
             "QR_CHAIN_MIGRATION_ALLOWED_CLASSICAL_PROVIDERS": "ecdsa_secp256k1_migration_v1,rsa_pkcs1v15_sha256_migration_v1",
             "QR_CHAIN_MIGRATION_TRUSTED_SNAPSHOT_SIGNERS": "signer-a,signer-b",
@@ -85,6 +92,10 @@ class NodeConfigTests(unittest.TestCase):
         self.assertEqual(config.node_id, "node-7")
         self.assertEqual(config.advertised_url, "http://node-7:9000")
         self.assertEqual(config.peers, ("http://node-a:8080", "http://node-b:8080"))
+        self.assertEqual(config.max_admitted_peers, 17)
+        self.assertEqual(config.peer_allowlist, ("node-a", "http://node-b:8080"))
+        self.assertEqual(config.peer_denylist, ("node-x", "http://node-y:8080"))
+        self.assertTrue(config.require_peer_allowlist)
         self.assertEqual(config.max_transactions_per_block, 77)
         self.assertEqual(config.max_pending_transactions, 123)
         self.assertEqual(config.min_transaction_fee, 3)
@@ -104,6 +115,9 @@ class NodeConfigTests(unittest.TestCase):
         self.assertEqual(config.migration_claim_end_height, 50)
         self.assertEqual(config.migration_dual_control_start_height, 12)
         self.assertEqual(config.migration_dual_control_end_height, 40)
+        self.assertEqual(config.migration_dispute_window_blocks, 144)
+        self.assertEqual(config.migration_snapshot_reviewer_quorum, 3)
+        self.assertTrue(config.migration_emergency_pause)
         self.assertTrue(config.migration_require_snapshot_signatures)
         self.assertEqual(
             config.migration_allowed_classical_providers,
