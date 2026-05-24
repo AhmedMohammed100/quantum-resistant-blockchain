@@ -84,6 +84,12 @@ class NodeConfig:
         "xmss_merkle_lamport_v1",
     )
     allowed_signature_providers: tuple[str, ...] = ()
+    preferred_signature_profile: str = "fast_standardized_lattice"
+    target_signature_sign_ms: int = 25
+    max_signature_payload_bytes: int = 131072
+    min_fee_per_kib: int = 1
+    coinbase_maturity_blocks: int = 0
+    validator_set_policy: str = "open_pow_dev"
 
     @staticmethod
     def from_env() -> "NodeConfig":
@@ -93,6 +99,10 @@ class NodeConfig:
             os.getenv("QR_CHAIN_DEFAULT_SIGNATURE_SCHEME", "xmss_merkle_lamport_v1"),
         )
         allowed_providers_env = os.getenv("QR_CHAIN_ALLOWED_SIGNATURE_PROVIDERS", "").strip()
+        preferred_signature_profile = os.getenv(
+            "QR_CHAIN_PREFERRED_SIGNATURE_PROFILE",
+            "fast_standardized_lattice",
+        )
         preferred_providers_env = os.getenv("QR_CHAIN_PREFERRED_SIGNATURE_PROVIDERS", "").strip()
         migration_providers_env = os.getenv("QR_CHAIN_MIGRATION_ALLOWED_CLASSICAL_PROVIDERS", "").strip()
         trusted_snapshot_signers_env = os.getenv("QR_CHAIN_MIGRATION_TRUSTED_SNAPSHOT_SIGNERS", "").strip()
@@ -206,4 +216,10 @@ class NodeConfig:
                 for item in allowed_providers_env.split(",")
                 if item.strip()
             ),
+            preferred_signature_profile=preferred_signature_profile,
+            target_signature_sign_ms=int(os.getenv("QR_CHAIN_TARGET_SIGNATURE_SIGN_MS", "25")),
+            max_signature_payload_bytes=int(os.getenv("QR_CHAIN_MAX_SIGNATURE_PAYLOAD_BYTES", "131072")),
+            min_fee_per_kib=int(os.getenv("QR_CHAIN_MIN_FEE_PER_KIB", "1")),
+            coinbase_maturity_blocks=int(os.getenv("QR_CHAIN_COINBASE_MATURITY_BLOCKS", "0")),
+            validator_set_policy=os.getenv("QR_CHAIN_VALIDATOR_SET_POLICY", "open_pow_dev"),
         )

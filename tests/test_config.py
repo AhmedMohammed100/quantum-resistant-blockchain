@@ -65,6 +65,12 @@ class NodeConfigTests(unittest.TestCase):
             "QR_CHAIN_MIGRATION_TRUSTED_SNAPSHOT_NODES": "node-a,node-b",
             "QR_CHAIN_PREFERRED_SIGNATURE_PROVIDERS": "sphincsplus_v1,lms_nist_v1,xmss_nist_v1",
             "QR_CHAIN_ALLOWED_SIGNATURE_PROVIDERS": "xmss_nist_v1,sphincsplus_v1",
+            "QR_CHAIN_PREFERRED_SIGNATURE_PROFILE": "fast_lattice_test",
+            "QR_CHAIN_TARGET_SIGNATURE_SIGN_MS": "40",
+            "QR_CHAIN_MAX_SIGNATURE_PAYLOAD_BYTES": "65536",
+            "QR_CHAIN_MIN_FEE_PER_KIB": "2",
+            "QR_CHAIN_COINBASE_MATURITY_BLOCKS": "12",
+            "QR_CHAIN_VALIDATOR_SET_POLICY": "test_validators",
         }
         with patch.dict(os.environ, env, clear=False):
             config = NodeConfig.from_env()
@@ -133,6 +139,12 @@ class NodeConfigTests(unittest.TestCase):
             config.allowed_signature_providers,
             ("xmss_nist_v1", "sphincsplus_v1"),
         )
+        self.assertEqual(config.preferred_signature_profile, "fast_lattice_test")
+        self.assertEqual(config.target_signature_sign_ms, 40)
+        self.assertEqual(config.max_signature_payload_bytes, 65536)
+        self.assertEqual(config.min_fee_per_kib, 2)
+        self.assertEqual(config.coinbase_maturity_blocks, 12)
+        self.assertEqual(config.validator_set_policy, "test_validators")
 
 
 if __name__ == "__main__":

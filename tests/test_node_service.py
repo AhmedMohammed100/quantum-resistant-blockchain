@@ -157,6 +157,98 @@ class NodeServiceTests(unittest.TestCase):
         self.assertTrue(any(check["name"] == "liboqs_python_pin_matches" for check in report["checks"]))
         self.assertIn(report["hardening_status"], {"ready", "needs_review"})
 
+    def test_signature_strategy_and_performance_reports_favor_fast_lattice(self) -> None:
+        service, _ = self.make_service()
+
+        strategy = service.signature_strategy_report()
+        performance = service.signature_performance_report()
+
+        self.assertEqual(strategy["profile"], service.config.preferred_signature_profile)
+        self.assertTrue(any(item["lane"] == "fast_lattice_default" for item in strategy["ranked_providers"]))
+        self.assertIn("results", performance)
+        self.assertEqual(performance["target_sign_ms"], service.config.target_signature_sign_ms)
+
+    def test_resource_consensus_release_and_incident_reports(self) -> None:
+        service, _ = self.make_service()
+
+        resource_policy = service.transaction_resource_policy_report()
+        consensus = service.consensus_economics_report()
+        release = service.release_provenance_manifest()
+        incident = service.operator_incident_runbook()
+
+        self.assertEqual(resource_policy["limits"]["max_signature_payload_bytes"], service.config.max_signature_payload_bytes)
+        self.assertIn("known_gaps", consensus)
+        self.assertTrue(release["release_manifest_hash"])
+        self.assertEqual(incident["migration_pause"]["env"], "QR_CHAIN_MIGRATION_EMERGENCY_PAUSE=true")
+
+    def test_migration_batch_conversion_and_attestation_reports(self) -> None:
+        service, _ = self.make_service()
+        service.create_genesis_block({"bootstrap": 1})
+        first = build_demo_classical_claim_address(build_demo_classical_claim_public_key("batch-one"))
+        second = build_demo_classical_claim_address(build_demo_classical_claim_public_key("batch-two"))
+        service.seed_migration_source(
+            classical_address=first,
+            provider_id="classical_claim_demo_v1",
+            source_network="legacy-demo-ledger",
+            amount=5,
+            snapshot_ref="batch-snapshot",
+        )
+        service.seed_migration_source(
+            classical_address=second,
+            provider_id="classical_claim_demo_v1",
+            source_network="legacy-demo-ledger",
+            amount=7,
+            snapshot_ref="batch-snapshot",
+        )
+        service.set_migration_source_status(second, status="quarantined", reason="review")
+
+        batch = service.migration_claim_batch_plan(source_network="legacy-demo-ledger")
+        conversion = service.migration_conversion_risk_report()
+        attestations = service.migration_snapshot_attestation_readiness()
+
+        self.assertEqual(batch["planned_claim_count"], 1)
+        self.assertEqual(batch["blocked_claim_count"], 1)
+        self.assertEqual(conversion["by_network"]["legacy-demo-ledger"]["source_count"], 2)
+        self.assertEqual(attestations["snapshot_count"], 1)
+
+    def test_protocol_preflight_privacy_and_migration_proof_reports(self) -> None:
+        service, _ = self.make_service()
+        service.create_genesis_block({"bootstrap": 1})
+        public_key = build_demo_classical_claim_public_key("proof-coverage")
+        classical_address = build_demo_classical_claim_address(public_key)
+        service.seed_migration_source(
+            classical_address=classical_address,
+            provider_id="classical_claim_demo_v1",
+            source_network="legacy-demo-ledger",
+            amount=4,
+            snapshot_ref="proof-snapshot",
+        )
+
+        conformance = service.protocol_conformance_report()
+        dispute = service.migration_dispute_packet(classical_address)
+        proof_coverage = service.migration_source_proof_coverage_report()
+        preflight = service.node_launch_preflight_report()
+        redaction = service.privacy_redaction_policy_report()
+
+        self.assertEqual(conformance["conformance_status"], "conformant")
+        self.assertTrue(dispute["packet_hash"])
+        self.assertEqual(proof_coverage["source_count"], 1)
+        self.assertIn(preflight["preflight_status"], {"ready", "blocked"})
+        self.assertIn("secret_key_hex", redaction["sensitive_fields"])
+
+    def test_network_transport_and_backup_reports(self) -> None:
+        service, db_path = self.make_service()
+        service.create_genesis_block({"bootstrap": 1})
+        service.register_peer("http://peer-a:8080")
+
+        transport = service.network_transport_readiness_report()
+        backup = service.state_backup_manifest()
+
+        self.assertEqual(transport["peers"]["http_peer_count"], 1)
+        self.assertTrue(backup["backup_manifest_hash"])
+        self.assertTrue(backup["files"]["chain_db"]["exists"])
+        self.assertEqual(backup["files"]["chain_db"]["path"], str(db_path))
+
     def test_migration_governance_report_tracks_disputes_and_pause(self) -> None:
         service, _ = self.make_service()
         public_key = build_demo_classical_claim_public_key("governance-user")

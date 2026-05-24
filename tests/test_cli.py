@@ -85,7 +85,21 @@ class OperatorCliTests(unittest.TestCase):
         for command, key in [
             ("migration-governance", "governance_status"),
             ("crypto-hardening", "hardening_status"),
+            ("crypto-strategy", "profile"),
+            ("crypto-performance", "performance_profile"),
+            ("tx-resource-policy", "resource_policy_status"),
+            ("consensus-economics", "consensus_economics_status"),
+            ("release-provenance", "release_manifest_hash"),
+            ("incident-runbook", "runbook_version"),
+            ("backup-manifest", "backup_manifest_hash"),
+            ("network-transport-readiness", "transport_status"),
+            ("migration-claim-batch-plan", "planned_claim_count"),
+            ("migration-conversion-risk", "conversion_policy"),
+            ("migration-snapshot-attestations", "snapshot_count"),
             ("migration-adversarial", "status"),
+            ("protocol-conformance", "conformance_status"),
+            ("node-preflight", "preflight_status"),
+            ("privacy-redaction-policy", "policy_status"),
         ]:
             buffer = io.StringIO()
             with redirect_stdout(buffer):
@@ -124,7 +138,36 @@ class OperatorCliTests(unittest.TestCase):
         payload = json.loads(buffer.getvalue())
         self.assertTrue(payload["claimable"])
         self.assertEqual(payload["normalized_claim_amount"], 9)
-        self.assertTrue(payload["claim_intent_hash"])
+
+    def test_cli_builds_migration_dispute_packet(self) -> None:
+        classical_address = self.demo_address("dispute-cli")
+        self.service.seed_migration_source(
+            classical_address=classical_address,
+            provider_id="classical_claim_demo_v1",
+            source_network="legacy-demo-ledger",
+            amount=9,
+            snapshot_ref="dispute-cli",
+        )
+        buffer = io.StringIO()
+
+        with redirect_stdout(buffer):
+            exit_code = main(
+                [
+                    "--db-path",
+                    str(self.db_path),
+                    "--wallet-state-db-path",
+                    str(self.wallet_state_db_path),
+                    "migration-dispute-packet",
+                    "--classical-address",
+                    classical_address,
+                ]
+            )
+
+        self.assertEqual(exit_code, 0)
+        payload = json.loads(buffer.getvalue())
+        self.assertEqual(payload["classical_address"], classical_address)
+        self.assertTrue(payload["packet_hash"])
+        self.assertTrue(payload["evidence"]["claim_intent_hash"])
 
         status_buffer = io.StringIO()
         with redirect_stdout(status_buffer):

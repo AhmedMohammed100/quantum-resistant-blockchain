@@ -119,8 +119,15 @@ def sign(keypair: object, message: bytes) -> tuple[object, object]:
         raise ValueError("Invalid keypair for OQS-backed SPHINCS+ backend.")
     oqs_module = _load_oqs()
     _ensure_mechanism_supported(oqs_module, keypair.mechanism)
-    signer = oqs_module.Signature(keypair.mechanism)
-    signer.import_secret_key(bytes.fromhex(keypair.secret_key_hex))
+    secret_key = bytes.fromhex(keypair.secret_key_hex)
+    try:
+        signer = oqs_module.Signature(keypair.mechanism, secret_key)
+    except TypeError:
+        signer = oqs_module.Signature(keypair.mechanism)
+        import_secret_key = getattr(signer, "import_secret_key", None)
+        if not callable(import_secret_key):
+            raise ValueError("The installed OQS Signature object cannot import a SPHINCS+ secret key.")
+        import_secret_key(secret_key)
     signature = signer.sign(message)
     return export_public_key(keypair), {
         "mechanism": keypair.mechanism,

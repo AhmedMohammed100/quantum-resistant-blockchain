@@ -34,6 +34,9 @@ class NodeRequestHandler(BaseHTTPRequestHandler):
         if path == "/protocol":
             self._respond(HTTPStatus.OK, self.service.protocol_manifest())
             return
+        if path == "/protocol/conformance":
+            self._respond(HTTPStatus.OK, self.service.protocol_conformance_report())
+            return
         if path == "/migration/readiness":
             self._respond(HTTPStatus.OK, self.service.migration_readiness_report())
             return
@@ -49,6 +52,36 @@ class NodeRequestHandler(BaseHTTPRequestHandler):
         if path == "/crypto/hardening":
             self._respond(HTTPStatus.OK, self.service.crypto_runtime_hardening_report())
             return
+        if path == "/crypto/strategy":
+            self._respond(HTTPStatus.OK, self.service.signature_strategy_report())
+            return
+        if path == "/crypto/performance":
+            self._respond(HTTPStatus.OK, self.service.signature_performance_report())
+            return
+        if path == "/transactions/resource-policy":
+            self._respond(HTTPStatus.OK, self.service.transaction_resource_policy_report())
+            return
+        if path == "/consensus/economics":
+            self._respond(HTTPStatus.OK, self.service.consensus_economics_report())
+            return
+        if path == "/release/provenance":
+            self._respond(HTTPStatus.OK, self.service.release_provenance_manifest())
+            return
+        if path == "/operations/incident-runbook":
+            self._respond(HTTPStatus.OK, self.service.operator_incident_runbook())
+            return
+        if path == "/operations/backup-manifest":
+            self._respond(HTTPStatus.OK, self.service.state_backup_manifest())
+            return
+        if path == "/operations/preflight":
+            self._respond(HTTPStatus.OK, self.service.node_launch_preflight_report())
+            return
+        if path == "/privacy/redaction-policy":
+            self._respond(HTTPStatus.OK, self.service.privacy_redaction_policy_report())
+            return
+        if path == "/network/transport-readiness":
+            self._respond(HTTPStatus.OK, self.service.network_transport_readiness_report())
+            return
         if path == "/migration/policy":
             self._respond(HTTPStatus.OK, self.service.migration_policy())
             return
@@ -57,6 +90,31 @@ class NodeRequestHandler(BaseHTTPRequestHandler):
             return
         if path == "/migration/adversarial":
             self._respond(HTTPStatus.OK, self.service.migration_adversarial_simulation_report())
+            return
+        if path == "/migration/claim-batch-plan":
+            query = parse_qs(parsed.query)
+            source_network = query.get("source_network", [None])[0]
+            limit = int(query.get("limit", ["100"])[0])
+            self._respond(HTTPStatus.OK, self.service.migration_claim_batch_plan(source_network=source_network, limit=limit))
+            return
+        if path == "/migration/conversion-risk":
+            self._respond(HTTPStatus.OK, self.service.migration_conversion_risk_report())
+            return
+        if path == "/migration/proof-coverage":
+            self._respond(HTTPStatus.OK, self.service.migration_source_proof_coverage_report())
+            return
+        if path == "/migration/snapshot-attestations":
+            self._respond(HTTPStatus.OK, self.service.migration_snapshot_attestation_readiness())
+            return
+        if path == "/migration/dispute-packet":
+            query = parse_qs(parsed.query)
+            classical_address = query.get("classical_address", [""])[0]
+            try:
+                packet = self.service.migration_dispute_packet(classical_address)
+            except ValueError as error:
+                self._respond(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+                return
+            self._respond(HTTPStatus.OK, packet)
             return
         if path == "/migration/networks":
             self._respond(HTTPStatus.OK, self.service.migration_network_profiles())

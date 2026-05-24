@@ -278,3 +278,24 @@ This changelog preserves the implementation history that previously lived in the
 - Added crypto runtime hardening reports for the pinned ML-DSA/OQS backend path.
 - Added wallet-safe migration claim packages that bundle quotes, preflight checks, claim-intent hashes, and signing messages.
 - Added deterministic adversarial migration checks for blocked snapshots, pool exposure, duplicate claims, and canonical claim uniqueness.
+
+### Phase 67 - Project-Wide Readiness Surfaces
+
+- Added signature strategy and runtime performance reports so the node can prefer fast standardized lattice signatures while preserving hash-based fallback lanes.
+- Added transaction resource policy reporting for PQ signature payload sizes, fee-per-KiB inputs, and block/transaction size limits.
+- Added consensus/economics readiness reporting for validator policy, coinbase maturity, reward model, halving, and known economic gaps.
+- Added release provenance manifests and operator incident-response runbooks for release and operational readiness.
+
+### Phase 68 - Migration Operations And Recovery Planning
+
+- Added migration claim batch planning with pool-after-batch accounting and blocker explanations.
+- Added conversion-risk reporting across migration source networks and classical proof providers.
+- Added snapshot attestation readiness checks for trusted signers and reviewer quorum gaps.
+- Added peer transport readiness and state backup manifests for operator recovery planning.
+
+### Phase 69 - Protocol, Dispute, And Launch Preflight Surfaces
+
+- Added protocol conformance reporting for chain, peer, currency, migration, and object-version surfaces.
+- Added migration dispute packets and proof-coverage reporting so weak or contested source entries can be reviewed safely.
+- Added node launch preflight gates across operational, migration, crypto, transport, consensus, and backup status.
+- Added privacy redaction policy reporting for support bundles and operator evidence handling.

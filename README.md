@@ -88,6 +88,30 @@ The latest migration-hardening work adds five production-path control surfaces:
 - **Wallet claim packages:** wallets can request one package containing quote, preflight checks, claim intent hash, and exact messages to sign.
 - **Adversarial simulation:** operators can run deterministic checks for duplicate claims, blocked snapshots, pool exhaustion, and claim uniqueness.
 
+The newest project-wide hardening surfaces add:
+
+- **Fast signature strategy:** `crypto-strategy` ranks providers and treats ML-DSA/OQS as the fast standardized lattice lane when available.
+- **Runtime performance probes:** `crypto-performance` measures stateless provider keygen, signing, verification, and payload size.
+- **Transaction resource policy:** `tx-resource-policy` reports PQ signature payload limits and fee-metering inputs.
+- **Consensus/economics review:** `consensus-economics` highlights supply, reward, validator/miner, and fee-market design gaps.
+- **Release and operations posture:** `release-provenance` and `incident-runbook` expose artifacts and response steps needed before real deployments.
+
+The latest migration and operations pass adds:
+
+- **Batch migration planning:** `migration-claim-batch-plan` shows which sources can be claimed now, which are blocked, and how much pool capacity remains after a planned batch.
+- **Conversion risk review:** `migration-conversion-risk` summarizes source concentration by network/provider and flags pool exposure.
+- **Snapshot attestation readiness:** `migration-snapshot-attestations` checks signer presence, trusted signer policy, and reviewer quorum gaps.
+- **Transport readiness:** `network-transport-readiness` reports peer admission, allowlist, and encrypted-URL posture.
+- **Backup evidence:** `backup-manifest` hashes chain and wallet databases and records restore order for operators.
+
+The current project-wide completion pass adds:
+
+- **Protocol conformance:** `protocol-conformance` checks that chain id, peer frame version, object versions, currency policy, and migration policy are all machine-readable.
+- **Dispute packets:** `migration-dispute-packet` packages source, snapshot, quote, claim, and evidence hashes for a contested migration source.
+- **Proof coverage:** `migration-proof-coverage` shows weak migration entries by source network and classical provider.
+- **Launch preflight:** `node-preflight` combines operational, migration, crypto, transport, consensus, and backup gates.
+- **Privacy redaction:** `privacy-redaction-policy` defines what can go into support bundles and what must stay private.
+
 ## Architecture
 
 ```mermaid
@@ -225,6 +249,30 @@ flowchart LR
     Report --> Release
 ```
 
+## Signature Strategy Flow
+
+```mermaid
+flowchart TD
+    Providers["Provider Registry"]
+    Strategy["crypto-strategy"]
+    Perf["crypto-performance"]
+    Resource["tx-resource-policy"]
+    Consensus["consensus-economics"]
+    Release["release-provenance"]
+    Backup["backup-manifest"]
+    Preflight["node-preflight"]
+
+    Providers --> Strategy
+    Strategy --> Perf
+    Perf --> Resource
+    Resource --> Consensus
+    Consensus --> Release
+    Release --> Backup
+    Backup --> Preflight
+```
+
+Fast lattice-based signatures are the practical default direction for normal user wallets because they are stateless and much faster than conservative hash-based signatures in most deployments. The tradeoff is that lattice signatures usually have larger keys/signatures than classical ECC, so the chain must meter serialized transaction size, fee policy, and block capacity carefully. Hash-based XMSS/LMS/SPHINCS+ style providers remain important as fallback and specialist lanes, especially where conservative assumptions matter more than throughput.
+
 ## Native Currency: QBC
 
 QBC uses a fixed supply cap of 500,000,000 coins.
@@ -332,11 +380,22 @@ Core endpoints:
 - `GET /status`
 - `GET /metrics`
 - `GET /protocol`
+- `GET /protocol/conformance`
 - `GET /chain/summary`
 - `GET /currency`
 - `GET /currency/supply`
 - `GET /crypto/providers`
 - `GET /crypto/hardening`
+- `GET /crypto/strategy`
+- `GET /crypto/performance`
+- `GET /transactions/resource-policy`
+- `GET /consensus/economics`
+- `GET /release/provenance`
+- `GET /operations/incident-runbook`
+- `GET /operations/backup-manifest`
+- `GET /operations/preflight`
+- `GET /privacy/redaction-policy`
+- `GET /network/transport-readiness`
 - `GET /blocks?start_height=0`
 - `GET /blocks/{height}`
 - `GET /addresses/{address}/balance`
@@ -350,6 +409,11 @@ Migration endpoints:
 - `GET /migration/policy`
 - `GET /migration/governance`
 - `GET /migration/adversarial`
+- `GET /migration/claim-batch-plan`
+- `GET /migration/conversion-risk`
+- `GET /migration/proof-coverage`
+- `GET /migration/snapshot-attestations`
+- `GET /migration/dispute-packet`
 - `GET /migration/networks`
 - `GET /migration/report`
 - `GET /migration/integrity`
@@ -387,11 +451,27 @@ Peer endpoints:
 ```powershell
 qr-chain migration-networks
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db protocol
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db protocol-conformance
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db crypto-hardening
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db crypto-strategy
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db crypto-performance
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db tx-resource-policy
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db consensus-economics
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db release-provenance
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db incident-runbook
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db backup-manifest
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db node-preflight
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db privacy-redaction-policy
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db network-transport-readiness
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-governance
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-readiness
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-integrity
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-adversarial
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-claim-batch-plan
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-conversion-risk
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-proof-coverage
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-snapshot-attestations
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-dispute-packet --classical-address legacy-address
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db currency
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db currency-supply
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-source-export-normalize --input source-export.json --sign --output snapshot.json
@@ -444,6 +524,10 @@ Wallet and providers:
 - `QR_CHAIN_DEFAULT_SIGNATURE_PROVIDER`
 - `QR_CHAIN_PREFERRED_SIGNATURE_PROVIDERS`
 - `QR_CHAIN_ALLOWED_SIGNATURE_PROVIDERS`
+- `QR_CHAIN_PREFERRED_SIGNATURE_PROFILE`
+- `QR_CHAIN_TARGET_SIGNATURE_SIGN_MS`
+- `QR_CHAIN_MAX_SIGNATURE_PAYLOAD_BYTES`
+- `QR_CHAIN_MIN_FEE_PER_KIB`
 - `QR_CHAIN_MLDSA_BACKEND_MODULE`
 - `QR_CHAIN_MLDSA_OQS_MECHANISM`
 - `QR_CHAIN_WALLET_STATE_DB_PATH`
@@ -464,6 +548,11 @@ Migration:
 - `QR_CHAIN_MIGRATION_ALLOWED_CLASSICAL_PROVIDERS`
 - `QR_CHAIN_MIGRATION_TRUSTED_SNAPSHOT_SIGNERS`
 - `QR_CHAIN_MIGRATION_TRUSTED_SNAPSHOT_NODES`
+
+Consensus:
+
+- `QR_CHAIN_COINBASE_MATURITY_BLOCKS`
+- `QR_CHAIN_VALIDATOR_SET_POLICY`
 
 ## Run Tests
 

@@ -90,6 +90,12 @@ def _service_from_args(args: argparse.Namespace) -> NodeService:
             migration_trusted_snapshot_nodes=base.migration_trusted_snapshot_nodes,
             preferred_signature_providers=base.preferred_signature_providers,
             allowed_signature_providers=base.allowed_signature_providers,
+            preferred_signature_profile=base.preferred_signature_profile,
+            target_signature_sign_ms=base.target_signature_sign_ms,
+            max_signature_payload_bytes=base.max_signature_payload_bytes,
+            min_fee_per_kib=base.min_fee_per_kib,
+            coinbase_maturity_blocks=base.coinbase_maturity_blocks,
+            validator_set_policy=base.validator_set_policy,
         )
     )
 
@@ -108,6 +114,10 @@ def build_parser() -> argparse.ArgumentParser:
     protocol.add_argument("--output", default=None)
     protocol.set_defaults(handler=cmd_protocol)
 
+    protocol_conformance = subparsers.add_parser("protocol-conformance", help="Show protocol conformance checks")
+    protocol_conformance.add_argument("--output", default=None)
+    protocol_conformance.set_defaults(handler=cmd_protocol_conformance)
+
     migration_readiness = subparsers.add_parser("migration-readiness", help="Show migration-layer readiness gates")
     migration_readiness.add_argument("--output", default=None)
     migration_readiness.set_defaults(handler=cmd_migration_readiness)
@@ -116,6 +126,46 @@ def build_parser() -> argparse.ArgumentParser:
     crypto_hardening.add_argument("--output", default=None)
     crypto_hardening.set_defaults(handler=cmd_crypto_hardening)
 
+    crypto_strategy = subparsers.add_parser("crypto-strategy", help="Show signature provider strategy and fast-lattice posture")
+    crypto_strategy.add_argument("--output", default=None)
+    crypto_strategy.set_defaults(handler=cmd_crypto_strategy)
+
+    crypto_performance = subparsers.add_parser("crypto-performance", help="Measure available stateless signature providers")
+    crypto_performance.add_argument("--output", default=None)
+    crypto_performance.set_defaults(handler=cmd_crypto_performance)
+
+    tx_resource_policy = subparsers.add_parser("tx-resource-policy", help="Show transaction and signature payload resource policy")
+    tx_resource_policy.add_argument("--output", default=None)
+    tx_resource_policy.set_defaults(handler=cmd_tx_resource_policy)
+
+    consensus_economics = subparsers.add_parser("consensus-economics", help="Show consensus and economics readiness report")
+    consensus_economics.add_argument("--output", default=None)
+    consensus_economics.set_defaults(handler=cmd_consensus_economics)
+
+    release_provenance = subparsers.add_parser("release-provenance", help="Build a release provenance manifest")
+    release_provenance.add_argument("--output", default=None)
+    release_provenance.set_defaults(handler=cmd_release_provenance)
+
+    incident_runbook = subparsers.add_parser("incident-runbook", help="Show operator incident-response runbook")
+    incident_runbook.add_argument("--output", default=None)
+    incident_runbook.set_defaults(handler=cmd_incident_runbook)
+
+    backup_manifest = subparsers.add_parser("backup-manifest", help="Build a chain and wallet backup manifest")
+    backup_manifest.add_argument("--output", default=None)
+    backup_manifest.set_defaults(handler=cmd_backup_manifest)
+
+    node_preflight = subparsers.add_parser("node-preflight", help="Show launch preflight gates across node subsystems")
+    node_preflight.add_argument("--output", default=None)
+    node_preflight.set_defaults(handler=cmd_node_preflight)
+
+    redaction_policy = subparsers.add_parser("privacy-redaction-policy", help="Show support-bundle redaction policy")
+    redaction_policy.add_argument("--output", default=None)
+    redaction_policy.set_defaults(handler=cmd_privacy_redaction_policy)
+
+    network_transport = subparsers.add_parser("network-transport-readiness", help="Show peer transport hardening status")
+    network_transport.add_argument("--output", default=None)
+    network_transport.set_defaults(handler=cmd_network_transport_readiness)
+
     migration_governance = subparsers.add_parser("migration-governance", help="Show migration governance gates")
     migration_governance.add_argument("--output", default=None)
     migration_governance.set_defaults(handler=cmd_migration_governance)
@@ -123,6 +173,29 @@ def build_parser() -> argparse.ArgumentParser:
     migration_adversarial = subparsers.add_parser("migration-adversarial", help="Run deterministic migration adversarial checks")
     migration_adversarial.add_argument("--output", default=None)
     migration_adversarial.set_defaults(handler=cmd_migration_adversarial)
+
+    migration_batch = subparsers.add_parser("migration-claim-batch-plan", help="Plan a batch of claimable migration sources")
+    migration_batch.add_argument("--source-network", default=None)
+    migration_batch.add_argument("--limit", type=int, default=100)
+    migration_batch.add_argument("--output", default=None)
+    migration_batch.set_defaults(handler=cmd_migration_claim_batch_plan)
+
+    conversion_risk = subparsers.add_parser("migration-conversion-risk", help="Show migration conversion concentration and pool risk")
+    conversion_risk.add_argument("--output", default=None)
+    conversion_risk.set_defaults(handler=cmd_migration_conversion_risk)
+
+    proof_coverage = subparsers.add_parser("migration-proof-coverage", help="Show migration proof evidence coverage")
+    proof_coverage.add_argument("--output", default=None)
+    proof_coverage.set_defaults(handler=cmd_migration_proof_coverage)
+
+    dispute_packet = subparsers.add_parser("migration-dispute-packet", help="Build a dispute packet for a migration source")
+    dispute_packet.add_argument("--classical-address", required=True)
+    dispute_packet.add_argument("--output", default=None)
+    dispute_packet.set_defaults(handler=cmd_migration_dispute_packet)
+
+    snapshot_attestations = subparsers.add_parser("migration-snapshot-attestations", help="Show snapshot signer/quorum readiness")
+    snapshot_attestations.add_argument("--output", default=None)
+    snapshot_attestations.set_defaults(handler=cmd_migration_snapshot_attestations)
 
     supply = subparsers.add_parser("currency-supply", help="Show native currency supply accounting")
     supply.add_argument("--output", default=None)
@@ -303,6 +376,12 @@ def cmd_protocol(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_protocol_conformance(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    _write_json_output(service.protocol_conformance_report(), None if args.output is None else Path(args.output))
+    return 0
+
+
 def cmd_migration_readiness(args: argparse.Namespace) -> int:
     service = _service_from_args(args)
     _write_json_output(service.migration_readiness_report(), None if args.output is None else Path(args.output))
@@ -315,6 +394,66 @@ def cmd_crypto_hardening(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_crypto_strategy(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    _write_json_output(service.signature_strategy_report(), None if args.output is None else Path(args.output))
+    return 0
+
+
+def cmd_crypto_performance(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    _write_json_output(service.signature_performance_report(), None if args.output is None else Path(args.output))
+    return 0
+
+
+def cmd_tx_resource_policy(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    _write_json_output(service.transaction_resource_policy_report(), None if args.output is None else Path(args.output))
+    return 0
+
+
+def cmd_consensus_economics(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    _write_json_output(service.consensus_economics_report(), None if args.output is None else Path(args.output))
+    return 0
+
+
+def cmd_release_provenance(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    _write_json_output(service.release_provenance_manifest(), None if args.output is None else Path(args.output))
+    return 0
+
+
+def cmd_incident_runbook(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    _write_json_output(service.operator_incident_runbook(), None if args.output is None else Path(args.output))
+    return 0
+
+
+def cmd_backup_manifest(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    _write_json_output(service.state_backup_manifest(), None if args.output is None else Path(args.output))
+    return 0
+
+
+def cmd_node_preflight(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    _write_json_output(service.node_launch_preflight_report(), None if args.output is None else Path(args.output))
+    return 0
+
+
+def cmd_privacy_redaction_policy(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    _write_json_output(service.privacy_redaction_policy_report(), None if args.output is None else Path(args.output))
+    return 0
+
+
+def cmd_network_transport_readiness(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    _write_json_output(service.network_transport_readiness_report(), None if args.output is None else Path(args.output))
+    return 0
+
+
 def cmd_migration_governance(args: argparse.Namespace) -> int:
     service = _service_from_args(args)
     _write_json_output(service.migration_governance_report(), None if args.output is None else Path(args.output))
@@ -324,6 +463,42 @@ def cmd_migration_governance(args: argparse.Namespace) -> int:
 def cmd_migration_adversarial(args: argparse.Namespace) -> int:
     service = _service_from_args(args)
     _write_json_output(service.migration_adversarial_simulation_report(), None if args.output is None else Path(args.output))
+    return 0
+
+
+def cmd_migration_claim_batch_plan(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    _write_json_output(
+        service.migration_claim_batch_plan(source_network=args.source_network, limit=args.limit),
+        None if args.output is None else Path(args.output),
+    )
+    return 0
+
+
+def cmd_migration_conversion_risk(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    _write_json_output(service.migration_conversion_risk_report(), None if args.output is None else Path(args.output))
+    return 0
+
+
+def cmd_migration_proof_coverage(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    _write_json_output(service.migration_source_proof_coverage_report(), None if args.output is None else Path(args.output))
+    return 0
+
+
+def cmd_migration_dispute_packet(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    _write_json_output(
+        service.migration_dispute_packet(args.classical_address),
+        None if args.output is None else Path(args.output),
+    )
+    return 0
+
+
+def cmd_migration_snapshot_attestations(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    _write_json_output(service.migration_snapshot_attestation_readiness(), None if args.output is None else Path(args.output))
     return 0
 
 

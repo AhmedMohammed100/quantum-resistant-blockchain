@@ -622,6 +622,50 @@ class NodeService:
             migration_policy=self.migration_policy(),
         )
 
+    def protocol_conformance_report(self) -> dict[str, object]:
+        manifest = self.protocol_manifest()
+        checks = [
+            {
+                "name": "protocol_manifest_hash_present",
+                "passed": bool(manifest.get("protocol_manifest_hash")),
+                "detail": str(manifest.get("protocol_manifest_hash", "")),
+            },
+            {
+                "name": "chain_id_declared",
+                "passed": bool(manifest.get("chain_id")),
+                "detail": str(manifest.get("chain_id", "")),
+            },
+            {
+                "name": "peer_protocol_declared",
+                "passed": bool(manifest.get("object_versions", {}).get("peer_frame_protocol")),
+                "detail": str(manifest.get("object_versions", {}).get("peer_frame_protocol", "")),
+            },
+            {
+                "name": "currency_policy_declared",
+                "passed": bool(manifest.get("native_currency", {}).get("symbol")),
+                "detail": str(manifest.get("native_currency", {}).get("symbol", "")),
+            },
+            {
+                "name": "migration_policy_declared",
+                "passed": bool(manifest.get("migration", {}).get("conversion_policy")),
+                "detail": str(manifest.get("migration", {}).get("conversion_policy", "")),
+            },
+        ]
+        return {
+            "conformance_status": "conformant" if all(bool(item["passed"]) for item in checks) else "needs_review",
+            "checks": checks,
+            "object_versions": manifest.get("object_versions", {}),
+            "required_surfaces": [
+                "protocol manifest",
+                "chain-bound transactions",
+                "peer frame version",
+                "QBC monetary policy",
+                "migration policy",
+                "signature provider registry",
+            ],
+            "manifest": manifest,
+        }
+
     def migration_claim_quote(self, classical_address: str) -> dict[str, object]:
         source = self.store.migration_source(classical_address)
         if source is None:
@@ -726,6 +770,213 @@ class NodeService:
             "lifecycle_state": lifecycle_state,
             "quote": quote,
             "claim": claim or {},
+        }
+
+    def migration_dispute_packet(self, classical_address: str) -> dict[str, object]:
+        source = self.store.migration_source(classical_address)
+        if source is None:
+            raise ValueError("Migration source address is unknown.")
+        claim = self.store.migration_claim(classical_address)
+        quote = self.migration_claim_quote(classical_address)
+        snapshot = next(
+            (item for item in self.store.list_migration_snapshots() if item["snapshot_ref"] == source["snapshot_ref"]),
+            {},
+        )
+        packet = {
+            "packet_version": 1,
+            "chain_id": self.config.chain_id,
+            "classical_address": classical_address,
+            "source": source,
+            "snapshot": snapshot,
+            "claim": claim or {},
+            "quote": quote,
+            "evidence": {
+                "source_evidence": quote["evidence"],
+                "claim_intent_hash": quote["claim_intent_hash"],
+                "snapshot_ref": source.get("snapshot_ref", ""),
+                "snapshot_hash": source.get("snapshot_hash", ""),
+            },
+            "operator_actions": [
+                "verify source address ownership evidence outside the node",
+                "compare snapshot manifest and source export provenance",
+                "quarantine source or snapshot while dispute is open",
+                "publish final decision and reason before reactivating claims",
+            ],
+        }
+        packet["packet_hash"] = hashlib.sha256(json.dumps(packet, sort_keys=True).encode("utf-8")).hexdigest()
+        return packet
+
+    def migration_claim_batch_plan(
+        self,
+        *,
+        source_network: str | None = None,
+        limit: int = 100,
+    ) -> dict[str, object]:
+        sources = self.store.list_migration_sources()
+        if source_network:
+            sources = [item for item in sources if item["source_network"] == source_network]
+        planned: list[dict[str, object]] = []
+        blocked: list[dict[str, object]] = []
+        running_total = 0
+        pool_remaining = int(self.supply_snapshot()["migration_pool_remaining"])
+        for source in sorted(sources, key=lambda item: (str(item["source_network"]), str(item["classical_address"]))):
+            quote = self.migration_claim_quote(str(source["classical_address"]))
+            item = {
+                "classical_address": source["classical_address"],
+                "source_network": source["source_network"],
+                "provider_id": source["provider_id"],
+                "amount": int(source["amount"]),
+                "claim_intent_hash": quote["claim_intent_hash"],
+                "evidence_level": quote["evidence"]["level"],
+            }
+            if quote["claimable"] and len(planned) < limit and running_total + int(source["amount"]) <= pool_remaining:
+                running_total += int(source["amount"])
+                planned.append({**item, "pool_after_batch_item": pool_remaining - running_total})
+            else:
+                blockers = [check["name"] for check in quote["checks"] if not check["passed"]]
+                if quote["claimable"] and len(planned) >= limit:
+                    blockers.append("batch_limit_reached")
+                if quote["claimable"] and running_total + int(source["amount"]) > pool_remaining:
+                    blockers.append("batch_would_exceed_pool")
+                blocked.append({**item, "blockers": blockers, "warnings": quote["warnings"]})
+        return {
+            "source_network": source_network or "all",
+            "limit": limit,
+            "pool_remaining": pool_remaining,
+            "planned_claim_count": len(planned),
+            "planned_claim_amount": running_total,
+            "pool_after_planned_batch": pool_remaining - running_total,
+            "blocked_claim_count": len(blocked),
+            "planned": planned,
+            "blocked": blocked,
+        }
+
+    def migration_conversion_risk_report(self) -> dict[str, object]:
+        sources = self.store.list_migration_sources()
+        claims = {str(item["classical_address"]): item for item in self.store.list_migration_claims()}
+        by_network: dict[str, dict[str, object]] = {}
+        by_provider: dict[str, dict[str, object]] = {}
+        total_active_amount = 0
+        largest_source = {"classical_address": "", "amount": 0, "source_network": ""}
+        for source in sources:
+            amount = int(source["amount"])
+            if source.get("status") == "active" and str(source["classical_address"]) not in claims:
+                total_active_amount += amount
+            if amount > int(largest_source["amount"]):
+                largest_source = {
+                    "classical_address": str(source["classical_address"]),
+                    "amount": amount,
+                    "source_network": str(source["source_network"]),
+                }
+            for bucket, key in ((by_network, str(source["source_network"])), (by_provider, str(source["provider_id"]))):
+                summary = bucket.setdefault(
+                    key,
+                    {"source_count": 0, "active_unclaimed_count": 0, "claimed_count": 0, "total_amount": 0},
+                )
+                summary["source_count"] = int(summary["source_count"]) + 1
+                summary["total_amount"] = int(summary["total_amount"]) + amount
+                if str(source["classical_address"]) in claims:
+                    summary["claimed_count"] = int(summary["claimed_count"]) + 1
+                elif source.get("status") == "active":
+                    summary["active_unclaimed_count"] = int(summary["active_unclaimed_count"]) + 1
+        pool_remaining = int(self.supply_snapshot()["migration_pool_remaining"])
+        concentration_pct = 0.0
+        if total_active_amount > 0:
+            concentration_pct = round((int(largest_source["amount"]) / total_active_amount) * 100, 4)
+        risks = []
+        if total_active_amount > pool_remaining:
+            risks.append("active_unclaimed_sources_exceed_remaining_pool")
+        if concentration_pct >= 25:
+            risks.append("single_source_concentration_exceeds_25_percent")
+        return {
+            "conversion_policy": self.config.migration_conversion_policy,
+            "migration_pool_remaining": pool_remaining,
+            "active_unclaimed_amount": total_active_amount,
+            "pool_exposure_pct": 0.0 if pool_remaining == 0 else round((total_active_amount / pool_remaining) * 100, 4),
+            "largest_source": largest_source,
+            "largest_source_active_concentration_pct": concentration_pct,
+            "by_network": by_network,
+            "by_provider": by_provider,
+            "risks": risks,
+        }
+
+    def migration_source_proof_coverage_report(self) -> dict[str, object]:
+        sources = self.store.list_migration_sources()
+        by_network: dict[str, dict[str, int]] = {}
+        by_provider: dict[str, dict[str, int]] = {}
+        weak_sources: list[dict[str, object]] = []
+        for source in sources:
+            evidence = self._migration_source_evidence(source)
+            for bucket, key in ((by_network, str(source["source_network"])), (by_provider, str(source["provider_id"]))):
+                summary = bucket.setdefault(key, {"total": 0, "strong": 0, "moderate": 0, "weak": 0})
+                summary["total"] += 1
+                summary[str(evidence["level"])] += 1
+            if evidence["level"] == "weak":
+                weak_sources.append(
+                    {
+                        "classical_address": source["classical_address"],
+                        "source_network": source["source_network"],
+                        "provider_id": source["provider_id"],
+                        "missing": [
+                            name
+                            for name, present in [
+                                ("external_source_address", evidence["has_external_source_address"]),
+                                ("source_address_format", bool(evidence["source_address_format"])),
+                                ("snapshot_ref", bool(evidence["snapshot_ref"])),
+                            ]
+                            if not present
+                        ],
+                    }
+                )
+        return {
+            "coverage_status": "needs_review" if weak_sources else "covered",
+            "source_count": len(sources),
+            "weak_source_count": len(weak_sources),
+            "by_network": by_network,
+            "by_provider": by_provider,
+            "weak_sources": weak_sources[:100],
+            "recommended_next_actions": [
+                "require external source addresses for all public migration entries",
+                "require source address formats for BTC, ETH, RSA, and demo providers",
+                "reject or quarantine weak-evidence sources before public claims",
+            ],
+        }
+
+    def migration_snapshot_attestation_readiness(self) -> dict[str, object]:
+        snapshots = self.store.list_migration_snapshots()
+        trusted_signers = set(self.config.migration_trusted_snapshot_signers)
+        items: list[dict[str, object]] = []
+        for snapshot in snapshots:
+            signer = str(snapshot.get("signer_address", ""))
+            signer_count = 1 if signer else 0
+            trusted = not trusted_signers or signer in trusted_signers
+            ready = signer_count >= min(1, self.config.migration_snapshot_reviewer_quorum) and trusted
+            blockers = []
+            if not signer:
+                blockers.append("snapshot_unsigned")
+            if signer and not trusted:
+                blockers.append("snapshot_signer_untrusted")
+            if self.config.migration_snapshot_reviewer_quorum > 1:
+                blockers.append("multi_reviewer_attestation_storage_not_enabled")
+            items.append(
+                {
+                    "snapshot_ref": snapshot["snapshot_ref"],
+                    "status": snapshot["status"],
+                    "signer_address": signer,
+                    "observed_attestation_count": signer_count,
+                    "required_reviewer_quorum": self.config.migration_snapshot_reviewer_quorum,
+                    "ready": ready and not blockers,
+                    "blockers": blockers,
+                }
+            )
+        return {
+            "snapshot_count": len(snapshots),
+            "required_reviewer_quorum": self.config.migration_snapshot_reviewer_quorum,
+            "require_snapshot_signatures": self.config.migration_require_snapshot_signatures,
+            "ready_snapshot_count": sum(1 for item in items if item["ready"]),
+            "blocked_snapshot_count": sum(1 for item in items if not item["ready"]),
+            "snapshots": items,
+            "next_schema_step": "add append-only multi-reviewer snapshot attestations before enforcing quorum greater than one",
         }
 
     def migration_governance_report(self) -> dict[str, object]:
@@ -939,6 +1190,432 @@ class NodeService:
                 "run CI probes for ML-DSA-65 keygen, sign, verify, and disabled-mechanism errors",
             ],
         }
+
+    def signature_strategy_report(self) -> dict[str, object]:
+        providers = list_signature_provider_statuses()
+        policy = self.signature_provider_policy()
+        ranked: list[dict[str, object]] = []
+        for index, provider_id in enumerate(self.config.preferred_signature_providers):
+            status = next((item for item in providers if item["provider_id"] == provider_id), {})
+            family = str(status.get("algorithm_family", ""))
+            stateless = not bool(status.get("supports_stateful_signing", False))
+            standardized = provider_id == "mldsa65_oqs_v1" or "NIST" in str(status.get("standardization", ""))
+            if family == "ml-dsa":
+                lane = "fast_lattice_default"
+            elif stateless:
+                lane = "stateless_conservative_fallback"
+            else:
+                lane = "stateful_hash_specialist"
+            ranked.append(
+                {
+                    "rank": index + 1,
+                    "provider_id": provider_id,
+                    "available": bool(status.get("available", False)),
+                    "algorithm_family": family,
+                    "lane": lane,
+                    "stateless": stateless,
+                    "standardized": standardized,
+                    "operator_note": self._signature_strategy_note(lane),
+                }
+            )
+        return {
+            "profile": self.config.preferred_signature_profile,
+            "target_sign_ms": self.config.target_signature_sign_ms,
+            "recommended_provider": policy["recommended_signature_provider"],
+            "recommended_fast_lattice_provider": next(
+                (
+                    item["provider_id"]
+                    for item in ranked
+                    if item["lane"] == "fast_lattice_default" and item["available"]
+                ),
+                None,
+            ),
+            "ranked_providers": ranked,
+            "position": (
+                "Use standardized fast lattice signatures for normal wallet throughput, "
+                "while keeping hash-based providers for conservative fallback and specialized stateful deployments."
+            ),
+        }
+
+    @staticmethod
+    def _signature_strategy_note(lane: str) -> str:
+        notes = {
+            "fast_lattice_default": "Best fit for high-throughput default wallet signing when the pinned runtime is available.",
+            "stateless_conservative_fallback": "Useful fallback lane when a slower but stateless PQ provider is preferred.",
+            "stateful_hash_specialist": "Requires signer reservation discipline; avoid as the default consumer wallet path.",
+        }
+        return notes.get(lane, "Review provider before production use.")
+
+    def signature_performance_report(self) -> dict[str, object]:
+        results: list[dict[str, object]] = []
+        message = b"qbc-signature-performance-probe-v1"
+        for status in list_signature_provider_statuses():
+            provider_id = str(status["provider_id"])
+            family = str(status.get("algorithm_family", ""))
+            if not status.get("available", False):
+                results.append(
+                    {
+                        "provider_id": provider_id,
+                        "benchmark_status": "unavailable",
+                        "reason": str(status.get("error", "provider unavailable")),
+                    }
+                )
+                continue
+            if (
+                status.get("supports_stateful_signing", False)
+                or family in {"xmss", "lms"}
+                or provider_id in {"hash_lamport_v1", "xmss_merkle_lamport_v1"}
+            ):
+                results.append(
+                    {
+                        "provider_id": provider_id,
+                        "benchmark_status": "skipped_stateful",
+                        "reason": "live benchmark skips one-time or stateful reference signing material",
+                    }
+                )
+                continue
+            try:
+                provider = get_signature_provider(provider_id)
+                start = time.perf_counter()
+                keypair = provider.generate_keypair()
+                keygen_ms = (time.perf_counter() - start) * 1000
+                start = time.perf_counter()
+                public_key, signature = provider.sign(keypair, message)
+                sign_ms = (time.perf_counter() - start) * 1000
+                start = time.perf_counter()
+                verified = provider.verify(message, signature, public_key)
+                verify_ms = (time.perf_counter() - start) * 1000
+                signature_size = len(json.dumps(signature, sort_keys=True).encode("utf-8"))
+                public_key_size = len(json.dumps(public_key, sort_keys=True).encode("utf-8"))
+                results.append(
+                    {
+                        "provider_id": provider_id,
+                        "benchmark_status": "measured",
+                        "keygen_ms": round(keygen_ms, 3),
+                        "sign_ms": round(sign_ms, 3),
+                        "verify_ms": round(verify_ms, 3),
+                        "signature_payload_bytes": signature_size,
+                        "public_key_payload_bytes": public_key_size,
+                        "verified": verified,
+                        "meets_target_sign_ms": sign_ms <= self.config.target_signature_sign_ms,
+                    }
+                )
+            except Exception as error:
+                results.append(
+                    {
+                        "provider_id": provider_id,
+                        "benchmark_status": "error",
+                        "reason": str(error),
+                    }
+                )
+        measured = [item for item in results if item.get("benchmark_status") == "measured"]
+        fastest = min(measured, key=lambda item: float(item["sign_ms"])) if measured else None
+        return {
+            "performance_profile": self.config.preferred_signature_profile,
+            "target_sign_ms": self.config.target_signature_sign_ms,
+            "fastest_measured_provider": {} if fastest is None else fastest,
+            "results": results,
+        }
+
+    def transaction_resource_policy_report(self) -> dict[str, object]:
+        provider_payloads: list[dict[str, object]] = []
+        for status in list_signature_provider_statuses():
+            provider_payloads.append(
+                {
+                    "provider_id": status["provider_id"],
+                    "available": bool(status.get("available", False)),
+                    "supports_stateful_signing": bool(status.get("supports_stateful_signing", False)),
+                    "payload_policy": (
+                        "reserve_and_meter_stateful_signatures"
+                        if status.get("supports_stateful_signing", False)
+                        else "meter_serialized_signature_bytes"
+                    ),
+                }
+            )
+        checks = [
+            {
+                "name": "transaction_size_limit_configured",
+                "passed": self.config.max_transaction_size_bytes > 0,
+                "detail": str(self.config.max_transaction_size_bytes),
+            },
+            {
+                "name": "signature_payload_limit_configured",
+                "passed": self.config.max_signature_payload_bytes > 0,
+                "detail": str(self.config.max_signature_payload_bytes),
+            },
+            {
+                "name": "fee_per_kib_configured",
+                "passed": self.config.min_fee_per_kib >= 0,
+                "detail": str(self.config.min_fee_per_kib),
+            },
+        ]
+        return {
+            "resource_policy_status": "ready" if all(bool(item["passed"]) for item in checks) else "needs_review",
+            "checks": checks,
+            "limits": {
+                "max_transaction_size_bytes": self.config.max_transaction_size_bytes,
+                "max_signature_payload_bytes": self.config.max_signature_payload_bytes,
+                "max_transaction_inputs": self.config.max_transaction_inputs,
+                "max_transaction_outputs": self.config.max_transaction_outputs,
+                "min_fee_per_kib": self.config.min_fee_per_kib,
+            },
+            "provider_payloads": provider_payloads,
+            "next_consensus_step": "turn signature payload and fee-per-KiB reporting into block validation rules once final provider sizes are chosen",
+        }
+
+    def consensus_economics_report(self) -> dict[str, object]:
+        checks = [
+            {
+                "name": "supply_caps_enforced",
+                "passed": bool(self.supply_snapshot()["within_max_money"]),
+                "detail": str(self.config.max_money),
+            },
+            {
+                "name": "subsidy_halving_configured",
+                "passed": self.config.subsidy_halving_interval > 0,
+                "detail": str(self.config.subsidy_halving_interval),
+            },
+            {
+                "name": "validator_policy_declared",
+                "passed": bool(self.config.validator_set_policy),
+                "detail": self.config.validator_set_policy,
+            },
+            {
+                "name": "coinbase_maturity_declared",
+                "passed": self.config.coinbase_maturity_blocks >= 0,
+                "detail": str(self.config.coinbase_maturity_blocks),
+            },
+        ]
+        return {
+            "consensus_economics_status": "ready_for_design_review"
+            if all(bool(item["passed"]) for item in checks)
+            else "needs_review",
+            "checks": checks,
+            "current_model": {
+                "difficulty": self.config.difficulty,
+                "validator_set_policy": self.config.validator_set_policy,
+                "reward_recipient_policy": self.config.reward_recipient_policy,
+                "coinbase_maturity_blocks": self.config.coinbase_maturity_blocks,
+                "subsidy_halving_interval": self.config.subsidy_halving_interval,
+            },
+            "known_gaps": [
+                "final validator/miner admission and Sybil-resistance model",
+                "coinbase maturity enforcement if rewards become economically meaningful",
+                "difficulty adjustment or validator schedule beyond local development settings",
+                "fee market policy for large PQ signatures and migration bursts",
+            ],
+        }
+
+    def release_provenance_manifest(self) -> dict[str, object]:
+        protocol = self.protocol_manifest()
+        hardening = self.crypto_runtime_hardening_report()
+        manifest = {
+            "release_manifest_version": 1,
+            "generated_at": round(time.time(), 6),
+            "chain_id": self.config.chain_id,
+            "protocol_manifest_hash": protocol["protocol_manifest_hash"],
+            "currency_symbol": self.config.currency_symbol,
+            "default_signature_provider": self.config.default_signature_provider,
+            "recommended_signature_provider": hardening["provider_policy"]["recommended_signature_provider"],
+            "pinned_runtime": hardening["pinned_runtime"],
+            "required_artifacts": [
+                "README.md",
+                "CHANGELOG.md",
+                "requirements-oqs.txt",
+                "docs/OQS_RUNTIME.md",
+                "test report",
+                "signed release archive",
+                "SBOM",
+            ],
+        }
+        manifest["release_manifest_hash"] = hashlib.sha256(
+            json.dumps(manifest, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+        return manifest
+
+    def operator_incident_runbook(self) -> dict[str, object]:
+        return {
+            "runbook_version": 1,
+            "operator_posture": self.operational_status()["status"],
+            "migration_pause": {
+                "env": "QR_CHAIN_MIGRATION_EMERGENCY_PAUSE=true",
+                "effect": "new migration claims are rejected while review continues",
+            },
+            "incident_classes": [
+                {
+                    "name": "suspect_migration_snapshot",
+                    "first_actions": [
+                        "set snapshot status to quarantined",
+                        "run migration-integrity and migration-governance reports",
+                        "publish affected classical addresses and dispute window",
+                    ],
+                },
+                {
+                    "name": "pq_runtime_regression",
+                    "first_actions": [
+                        "run crypto-hardening and crypto-performance",
+                        "pin or roll back requirements-oqs.txt",
+                        "temporarily prefer a known-good provider through QR_CHAIN_PREFERRED_SIGNATURE_PROVIDERS",
+                    ],
+                },
+                {
+                    "name": "wallet_signer_recovery",
+                    "first_actions": [
+                        "run wallets/status",
+                        "inspect reservation ids and recovery notes",
+                        "recover only after confirming no ambiguous signature was broadcast",
+                    ],
+                },
+            ],
+        }
+
+    def node_launch_preflight_report(self) -> dict[str, object]:
+        reports = {
+            "operational": self.operational_status(),
+            "migration_readiness": self.migration_readiness_report(),
+            "crypto_hardening": self.crypto_runtime_hardening_report(),
+            "transport": self.network_transport_readiness_report(),
+            "consensus_economics": self.consensus_economics_report(),
+            "backup": self.state_backup_manifest(),
+        }
+        blockers = []
+        if reports["operational"]["status"] != "ok":
+            blockers.append("operational_status_not_ok")
+        if reports["migration_readiness"]["migration_layer_status"] != "operational":
+            blockers.append("migration_layer_not_operational")
+        if reports["crypto_hardening"]["hardening_status"] != "ready":
+            blockers.append("crypto_runtime_not_hardened")
+        if reports["transport"]["transport_status"] != "ready":
+            blockers.append("peer_transport_needs_hardening")
+        return {
+            "preflight_status": "ready" if not blockers else "blocked",
+            "blockers": blockers,
+            "reports": reports,
+            "launch_sequence": [
+                "run backup-manifest and store hashes",
+                "run crypto-hardening and crypto-performance",
+                "run migration-integrity, migration-governance, and migration-proof-coverage",
+                "run network-transport-readiness",
+                "only then start wider peer admission or public claim windows",
+            ],
+        }
+
+    def privacy_redaction_policy_report(self) -> dict[str, object]:
+        public_fields = [
+            "chain_id",
+            "block_hash",
+            "tx_id",
+            "destination_address",
+            "source_network",
+            "snapshot_ref",
+            "manifest_hash",
+        ]
+        sensitive_fields = [
+            "secret_key_hex",
+            "key_state_blob",
+            "classical_public_key",
+            "classical_signature",
+            "signature_hex",
+            "source_export_hash",
+            "source_provenance_hash",
+        ]
+        return {
+            "redaction_policy_version": 1,
+            "policy_status": "defined",
+            "public_fields": public_fields,
+            "sensitive_fields": sensitive_fields,
+            "operator_rules": [
+                "never publish wallet state database files",
+                "redact public keys and signatures from user-support tickets unless needed for verification",
+                "publish snapshot hashes and claim intent hashes instead of raw source exports by default",
+                "keep source export provenance artifacts in restricted operator storage",
+            ],
+            "safe_support_bundle": [
+                "protocol-conformance",
+                "migration-readiness",
+                "migration-conversion-risk",
+                "crypto-hardening",
+                "network-transport-readiness",
+            ],
+        }
+
+    def network_transport_readiness_report(self) -> dict[str, object]:
+        peers = self.list_peers()
+        http_peer_count = sum(1 for peer in peers if str(peer).startswith("http://"))
+        https_peer_count = sum(1 for peer in peers if str(peer).startswith("https://"))
+        checks = [
+            {
+                "name": "peer_admission_bounded",
+                "passed": self.config.max_admitted_peers > 0,
+                "detail": str(self.config.max_admitted_peers),
+            },
+            {
+                "name": "allowlist_available",
+                "passed": bool(self.config.peer_allowlist) or not peers,
+                "detail": str(len(self.config.peer_allowlist)),
+            },
+            {
+                "name": "denylist_supported",
+                "passed": True,
+                "detail": str(len(self.config.peer_denylist)),
+            },
+            {
+                "name": "encrypted_peer_urls_configured",
+                "passed": http_peer_count == 0,
+                "detail": f"http={http_peer_count}, https={https_peer_count}",
+            },
+        ]
+        return {
+            "transport_status": "ready" if all(bool(item["passed"]) for item in checks) else "needs_hardening",
+            "checks": checks,
+            "peers": {
+                "known": len(peers),
+                "admitted": self.store.peer_identity_count(status="admitted"),
+                "max_admitted": self.config.max_admitted_peers,
+                "sessions": self.store.peer_session_counts(),
+                "http_peer_count": http_peer_count,
+                "https_peer_count": https_peer_count,
+            },
+            "next_transport_steps": [
+                "move peer URLs to authenticated TLS or a signed noise-style transport",
+                "enforce allowlists for controlled validator or migration-operator networks",
+                "add peer scoring and rate-limit penalties for malformed frames",
+            ],
+        }
+
+    def state_backup_manifest(self) -> dict[str, object]:
+        paths = {
+            "chain_db": self.config.db_path,
+            "wallet_state_db": self.config.wallet_state_db_path,
+        }
+        files: dict[str, dict[str, object]] = {}
+        for name, path in paths.items():
+            resolved = Path(path)
+            if not resolved.exists():
+                files[name] = {"path": str(resolved), "exists": False}
+                continue
+            data = resolved.read_bytes()
+            files[name] = {
+                "path": str(resolved),
+                "exists": True,
+                "size_bytes": len(data),
+                "sha256": hashlib.sha256(data).hexdigest(),
+            }
+        manifest = {
+            "backup_manifest_version": 1,
+            "generated_at": round(time.time(), 6),
+            "chain_id": self.config.chain_id,
+            "node_id": self.config.node_id,
+            "files": files,
+            "restore_order": [
+                "stop node process",
+                "restore chain_db",
+                "restore wallet_state_db",
+                "run health, crypto-hardening, migration-integrity, and migration-readiness checks",
+            ],
+        }
+        manifest["backup_manifest_hash"] = hashlib.sha256(json.dumps(manifest, sort_keys=True).encode("utf-8")).hexdigest()
+        return manifest
 
     def signature_provider_policy(self) -> dict[str, object]:
         provider_statuses = {item["provider_id"]: item for item in list_signature_provider_statuses()}
