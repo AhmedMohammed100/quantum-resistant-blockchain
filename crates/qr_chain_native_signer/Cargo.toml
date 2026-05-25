@@ -1,0 +1,21 @@
+[package]
+name = "qr_chain_native_signer"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Native signing and verification boundary for Quantum-Resistant Blockchain"
+
+[lib]
+name = "_native"
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = ["python"]
+python = ["dep:pyo3"]
+deterministic-test-backend = []
+liboqs = []
+
+[dependencies]
+pyo3 = { version = "0.22", features = ["extension-module"], optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

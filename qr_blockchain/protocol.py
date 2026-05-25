@@ -83,7 +83,7 @@ def protocol_manifest(
             "allocation_plan": currency.get("allocation_plan", {}),
         },
         "object_versions": {
-            "block_version": 2,
+            "block_version": 3,
             "transaction_version": 1,
             "migration_snapshot_version": 1,
             "source_ingestion_version": 1,
@@ -98,6 +98,10 @@ def protocol_manifest(
             "peer_summary_response",
             "peer_blocks_request",
             "peer_blocks_response",
+            "peer_transaction_gossip",
+            "peer_transaction_gossip_ack",
+            "peer_block_gossip",
+            "peer_block_gossip_ack",
         ],
         "migration": {
             "conversion_policy": migration_policy["conversion_policy"],

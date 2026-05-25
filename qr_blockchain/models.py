@@ -142,6 +142,7 @@ class Block:
     timestamp: float = field(default_factory=lambda: round(time.time(), 6))
     nonce: int = 0
     block_hash: str = ""
+    state_root: str = ""
 
     def compute_hash(self) -> str:
         payload = {
@@ -155,6 +156,8 @@ class Block:
             "timestamp": self.timestamp,
             "nonce": self.nonce,
         }
+        if self.version >= 3:
+            payload["state_root"] = self.state_root
         return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
 
     def mine(self) -> None:
@@ -178,6 +181,7 @@ class Block:
             "timestamp": self.timestamp,
             "nonce": self.nonce,
             "block_hash": self.block_hash,
+            "state_root": self.state_root,
         }
 
     @staticmethod
@@ -193,4 +197,5 @@ class Block:
             timestamp=float(data.get("timestamp", round(time.time(), 6))),
             nonce=int(data.get("nonce", 0)),
             block_hash=str(data.get("block_hash", "")),
+            state_root=str(data.get("state_root", "")),
         )

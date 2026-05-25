@@ -30,6 +30,11 @@ python -m qr_blockchain currency
 python -m qr_blockchain currency-supply
 python -m qr_blockchain migration-networks
 python -m qr_blockchain migration-report
+python -m qr_blockchain signer-consensus-boundary
+python -m qr_blockchain crypto-native-boundary
+python -m qr_blockchain verification-parallelism
+python -m qr_blockchain tx-state-model
+python -m qr_blockchain migration-finality-fraud
 ```
 
 The node starts an HTTP API on `127.0.0.1:8080` by default. Runtime state is stored under `data/` unless overridden with environment variables.
@@ -71,8 +76,11 @@ The project now has two classes of PQ signing providers:
 
 - **Reference providers:** in-repo software providers used for development and deterministic tests, including `xmss_merkle_lamport_v1`.
 - **External library providers:** provider boundaries that load a real cryptographic runtime when installed.
+- **Native boundary providers:** Rust/C-oriented package boundaries used to move signing and verification out of Python orchestration.
 
 The first standardized stateless external target is `mldsa65_oqs_v1`, backed by Open Quantum Safe `liboqs` through the Python `oqs` bindings. It targets `ML-DSA-65`, the NIST FIPS 204 family formerly known through the CRYSTALS-Dilithium process. `Dilithium3` is treated as a compatibility alias for the same intended security level, but the preferred protocol-facing name is ML-DSA.
+
+The first native Rust package boundary is `crates/qr_chain_native_signer`, exposed to Python through the `qr_chain_native_signer` package and registered as `native_test_pq_v1`. Its current deterministic backend is only for integration testing and ABI stabilization. Production signing must use the compiled Rust extension with a vetted PQ runtime such as liboqs or another audited implementation.
 
 The existing XMSS, LMS/HSS, and SPHINCS+ provider boundaries remain available for hash-based and stateless PQ evolution. A node should treat a provider as usable only when `/crypto/providers` reports it as available.
 
@@ -112,28 +120,72 @@ The current project-wide completion pass adds:
 - **Launch preflight:** `node-preflight` combines operational, migration, crypto, transport, consensus, and backup gates.
 - **Privacy redaction:** `privacy-redaction-policy` defines what can go into support bundles and what must stay private.
 
+The newest architecture separation pass adds:
+
+- **Signer/consensus boundary:** `Wallet` now delegates private-key operations to `LocalWalletSigner`, while `NodeService` remains responsible for validation, fork choice, policy, and storage.
+- **Native crypto boundary:** `crypto-native-boundary` lists the Rust/C package targets needed for production signing and verification workers.
+- **Native verification path:** consensus transaction checks now use `qr_blockchain.verification.verify_transaction_inputs`, which submits native-provider signature batches to the Rust extension when available.
+- **Batch verification posture:** `verification-parallelism` keeps algorithm-specific cryptographic batch shortcuts gated behind review, while enabling a Rust worker pool for independent native-provider checks and Python fallback for other providers.
+- **Migration-safe signing:** destination attestations and wallet transfers use the same signer backend, preserving stateful reservation discipline.
+- **State and finality gates:** `tx-state-model`, `validator-networking`, `migration-finality-fraud`, and `adversarial-performance` expose the next production gaps as machine-readable service reports.
+
+The current consensus and fraud-hardening pass adds:
+
+- **Versioned UTXO state roots:** newly mined version-3 blocks commit to the post-block UTXO root while preserving version-2 hash compatibility.
+- **State-root activation:** `state-root-policy` exposes the configured activation height and nodes reject missing roots after that height.
+- **Coinbase maturity:** reward outputs can be held behind `QR_CHAIN_COINBASE_MATURITY_BLOCKS` before they are spendable.
+- **Peer scoring:** authenticated sync records peer success/failure counts and score deltas for validator networking review.
+- **Persistent challenge lifecycle:** migration disputes now move through open, evidence-submitted, resolved-valid, resolved-fraud, or expired states, with claim unlock/revocation rules.
+- **Authenticated gossip:** peer networking includes transaction/block gossip endpoints, relay helpers, bad-block penalties, and peer-diversity readiness checks.
+- **Load/chaos harness:** `load-chaos` runs scripted multi-node scenarios for mempool floods, fork storms, migration disputes, signer interruptions, and verification throughput.
+- **Adversarial coverage:** tests now cover state roots, maturity enforcement, dispute quarantine, multi-input verification, gossip penalties, and load/chaos harness execution.
+
+The native signer pass adds:
+
+- **Rust crate boundary:** `crates/qr_chain_native_signer` defines the first native signer crate with PyO3 and optional `liboqs` feature targets.
+- **Python package bridge:** `qr_chain_native_signer` loads a compiled `_native` extension when available and otherwise exposes a deterministic test backend.
+- **Provider registration:** `native_test_pq_v1` is wired through the normal signature provider registry for wallet/API/test integration.
+- **Production guardrail:** native extension mode fails with a precise dependency error when the Rust extension has not been built.
+
+The current native build pass adds:
+
+- **Rust toolchain path:** the Windows MSVC Rust toolchain is now the expected local build target for native signer work.
+- **Compiled extension support:** the deterministic Rust PyO3 extension can be built with Cargo and loaded as `qr_chain_native_signer._native`.
+- **liboqs Rust targets:** Rust source now includes ML-DSA, Falcon, and SPHINCS+ liboqs entry points behind the `liboqs` feature.
+- **Controlled liboqs FFI:** the `oqs-sys` Windows binding issue is bypassed with a small Rust FFI layer linked to the known-good local `liboqs 0.14.0` runtime.
+- **Native PQ smoke path:** ML-DSA-65, Falcon-512, and SPHINCS+-SHAKE-128f-simple now sign and verify through the Rust extension when built with `liboqs`.
+- **Rust verification pool:** native-provider transaction input checks can now be submitted as batches to the Rust extension, which fans verification work across native worker threads and returns per-input pass/fail results.
+
 ## Architecture
 
 ```mermaid
 flowchart TD
-    Wallet["Wallet / Signer"]
+    Wallet["Wallet Facade"]
+    Signer["Wallet Signer Boundary"]
     CLI["Operator CLI"]
     API["HTTP API"]
     Service["NodeService"]
+    Verify["Consensus Verification Pool"]
+    State["Transaction State Model"]
     Store["SQLite Chain Store"]
     WalletStore["Protected Wallet State Store"]
     Crypto["Signature Provider Registry"]
     Migration["Migration Snapshot + Claim Engine"]
     Peer["Authenticated Peer Protocol"]
 
+    Wallet --> Signer
+    Signer --> WalletStore
+    Signer --> Crypto
     Wallet --> Service
     CLI --> Service
     API --> Service
+    Service --> Verify
+    Service --> State
     Service --> Store
-    Service --> WalletStore
     Service --> Crypto
     Service --> Migration
     Service --> Peer
+    Verify --> Crypto
     Peer --> API
 ```
 
@@ -144,8 +196,10 @@ flowchart LR
     subgraph Node["QBC Node"]
         API["API Router"]
         Auth["Node Identity + Peer Auth"]
+        Signer["Wallet Signer Boundary"]
         Mempool["Mempool Policy"]
         Validator["Block + Tx Validator"]
+        VerifyPool["Verification Worker Pool"]
         ForkChoice["Fork Choice"]
         Currency["QBC Supply Policy"]
         Storage["SQLite Blocks / UTXOs / Peers"]
@@ -155,13 +209,43 @@ flowchart LR
 
     API --> Auth
     API --> Mempool
+    API --> Signer
     Mempool --> Validator
+    Validator --> VerifyPool
     Validator --> Currency
-    Validator --> Providers
+    VerifyPool --> Providers
     Validator --> Storage
     ForkChoice --> Storage
     WalletState --> Providers
+    Signer --> WalletState
+    Signer --> Providers
     Auth --> Providers
+```
+
+### Load And Chaos Harness
+
+```mermaid
+flowchart LR
+    Harness["load-chaos Harness"]
+    Nodes["Isolated Multi-Node SQLite Topology"]
+    Mempool["Mempool Flood"]
+    Forks["Fork Storm"]
+    Disputes["Migration Challenge Lifecycle"]
+    Signer["Signer Crash / Release"]
+    Verify["Verification Throughput"]
+    Report["Deterministic JSON Report"]
+
+    Harness --> Nodes
+    Nodes --> Mempool
+    Nodes --> Forks
+    Nodes --> Disputes
+    Nodes --> Signer
+    Nodes --> Verify
+    Mempool --> Report
+    Forks --> Report
+    Disputes --> Report
+    Signer --> Report
+    Verify --> Report
 ```
 
 ## Migration Flow
@@ -217,17 +301,22 @@ flowchart TD
 ```mermaid
 sequenceDiagram
     participant Wallet
+    participant Signer as LocalWalletSigner
     participant Store as Wallet State Store
     participant Provider as PQ Provider
     participant Node as Node Validator
+    participant Verify as Verification Pool
 
-    Wallet->>Store: Reserve signing material
-    Store-->>Wallet: Reservation id and key state
-    Wallet->>Provider: Sign transaction payload
-    Provider-->>Wallet: Public key, signature, next state
-    Wallet->>Store: Complete reservation with updated state
+    Wallet->>Signer: Request signature for address and payload
+    Signer->>Store: Reserve signing material
+    Store-->>Signer: Reservation id and key state
+    Signer->>Provider: Sign transaction payload
+    Provider-->>Signer: Public key, signature, next state
+    Signer->>Store: Complete reservation with updated state
+    Signer-->>Wallet: Public key and signature
     Wallet->>Node: Submit signed transaction
-    Node->>Provider: Verify signature through provider registry
+    Node->>Verify: Verify transaction inputs
+    Verify->>Provider: Verify signatures through provider registry
     Node-->>Wallet: Accept or reject
 ```
 
@@ -388,8 +477,18 @@ Core endpoints:
 - `GET /crypto/hardening`
 - `GET /crypto/strategy`
 - `GET /crypto/performance`
+- `GET /crypto/native-boundary`
+- `GET /architecture/signer-consensus`
+- `GET /consensus/verification-parallelism`
+- `GET /consensus/state-root-policy`
+- `GET /transactions/state-model`
 - `GET /transactions/resource-policy`
 - `GET /consensus/economics`
+- `GET /network/validator-readiness`
+- `GET /network/peer-diversity`
+- `GET /migration/finality-fraud`
+- `GET /testing/adversarial-performance`
+- `GET /testing/load-chaos`
 - `GET /release/provenance`
 - `GET /operations/incident-runbook`
 - `GET /operations/backup-manifest`
@@ -414,6 +513,7 @@ Migration endpoints:
 - `GET /migration/proof-coverage`
 - `GET /migration/snapshot-attestations`
 - `GET /migration/dispute-packet`
+- `GET /migration/disputes`
 - `GET /migration/networks`
 - `GET /migration/report`
 - `GET /migration/integrity`
@@ -439,12 +539,17 @@ Migration endpoints:
 - `POST /migration/claims/preflight`
 - `POST /migration/claims/quote`
 - `POST /migration/claims/package`
+- `POST /migration/disputes`
+- `POST /migration/disputes/evidence`
+- `POST /migration/disputes/resolve`
 
 Peer endpoints:
 
 - `POST /peer/handshake`
 - `POST /peer/summary`
 - `POST /peer/blocks`
+- `POST /peer/gossip/transaction`
+- `POST /peer/gossip/block`
 
 ## Operator CLI
 
@@ -455,8 +560,18 @@ qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db pro
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db crypto-hardening
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db crypto-strategy
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db crypto-performance
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db crypto-native-boundary
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db signer-consensus-boundary
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db verification-parallelism
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db state-root-policy
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db tx-state-model
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db tx-resource-policy
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db consensus-economics
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db validator-networking
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db peer-diversity
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-finality-fraud
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db adversarial-performance
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db load-chaos --scenario all
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db release-provenance
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db incident-runbook
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db backup-manifest
@@ -472,6 +587,10 @@ qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db mig
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-proof-coverage
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-snapshot-attestations
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-dispute-packet --classical-address legacy-address
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-disputes
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-dispute-open --classical-address legacy-address --reason "conflicting proof"
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-dispute-evidence --dispute-id dispute-id --evidence-json "{\"source_export_hash\":\"...\"}"
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-dispute-resolve --dispute-id dispute-id --outcome resolved_valid --resolution-note "review accepted"
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db currency
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db currency-supply
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-source-export-normalize --input source-export.json --sign --output snapshot.json
@@ -566,7 +685,7 @@ python -m unittest discover -s tests -v
 - Build reproducible Bitcoin/Ethereum source extraction pipelines for migration snapshots.
 - Add stronger peer transport with encryption, rate limits, and peer scoring.
 - Define validator/miner participation, governance, and reward distribution rules for QBC.
-- Add long-running load, soak, chaos, and adversarial network tests.
+- Expand load/chaos harnesses into long-running soak jobs with network latency, partitions, restart loops, and larger PQ verification batches.
 - Add hardware-backed or isolated signer custody options.
 - Produce public protocol specs for transaction format, migration claims, peer frames, and snapshot artifacts.
 - Prepare signed releases, deployment guides, and migration operator playbooks.

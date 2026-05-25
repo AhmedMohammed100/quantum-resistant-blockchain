@@ -87,14 +87,25 @@ class OperatorCliTests(unittest.TestCase):
             ("crypto-hardening", "hardening_status"),
             ("crypto-strategy", "profile"),
             ("crypto-performance", "performance_profile"),
+            ("crypto-native-boundary", "native_crypto_status"),
+            ("signer-consensus-boundary", "architecture_status"),
+            ("verification-parallelism", "verification_boundary"),
+            ("tx-state-model", "state_model_status"),
+            ("state-root-policy", "activation_height"),
             ("tx-resource-policy", "resource_policy_status"),
             ("consensus-economics", "consensus_economics_status"),
+            ("validator-networking", "validator_networking_status"),
+            ("peer-diversity", "minimum_diversity"),
+            ("migration-finality-fraud", "migration_finality_status"),
+            ("adversarial-performance", "readiness_status"),
+            ("load-chaos", "harness_version"),
             ("release-provenance", "release_manifest_hash"),
             ("incident-runbook", "runbook_version"),
             ("backup-manifest", "backup_manifest_hash"),
             ("network-transport-readiness", "transport_status"),
             ("migration-claim-batch-plan", "planned_claim_count"),
             ("migration-conversion-risk", "conversion_policy"),
+            ("migration-disputes", "dispute_count"),
             ("migration-snapshot-attestations", "snapshot_count"),
             ("migration-adversarial", "status"),
             ("protocol-conformance", "conformance_status"),
@@ -184,6 +195,37 @@ class OperatorCliTests(unittest.TestCase):
             )
         self.assertEqual(status_exit, 0)
         self.assertEqual(json.loads(status_buffer.getvalue())["lifecycle_state"], "claimable")
+
+    def test_cli_opens_migration_dispute(self) -> None:
+        classical_address = self.demo_address("dispute-open-cli")
+        self.service.seed_migration_source(
+            classical_address=classical_address,
+            provider_id="classical_claim_demo_v1",
+            source_network="legacy-demo-ledger",
+            amount=12,
+            snapshot_ref="dispute-open-cli",
+        )
+        buffer = io.StringIO()
+
+        with redirect_stdout(buffer):
+            exit_code = main(
+                [
+                    "--db-path",
+                    str(self.db_path),
+                    "--wallet-state-db-path",
+                    str(self.wallet_state_db_path),
+                    "migration-dispute-open",
+                    "--classical-address",
+                    classical_address,
+                    "--reason",
+                    "conflicting proof",
+                ]
+            )
+
+        payload = json.loads(buffer.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(payload["status"], "open")
+        self.assertEqual(self.service.store.migration_source(classical_address)["status"], "quarantined")
 
     def test_cli_exports_and_validates_signed_snapshot(self) -> None:
         self.service.seed_migration_source(

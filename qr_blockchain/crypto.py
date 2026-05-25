@@ -575,6 +575,18 @@ register_signature_provider(LamportSignatureProvider())
 register_signature_provider(XMSSMerkleLamportSignatureProvider())
 register_signature_provider(
     ExternalModuleSignatureProvider(
+        provider_id="native_test_pq_v1",
+        algorithm_family="native-boundary-test",
+        module_env_var="QR_CHAIN_NATIVE_SIGNER_BACKEND_MODULE",
+        default_module_path="qr_chain_native_signer",
+        notes=(
+            "Rust-native signer boundary with a deterministic test backend and optional liboqs feature target. "
+            "The deterministic mode is for integration only and must not secure production funds."
+        ),
+    )
+)
+register_signature_provider(
+    ExternalModuleSignatureProvider(
         provider_id="mldsa65_oqs_v1",
         algorithm_family="ml-dsa",
         module_env_var="QR_CHAIN_MLDSA_BACKEND_MODULE",

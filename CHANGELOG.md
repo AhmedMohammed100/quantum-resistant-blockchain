@@ -4,6 +4,60 @@ This changelog preserves the implementation history that previously lived in the
 
 ## Historical Implementation Phases
 
+### Phase 76 - Load And Chaos Harness
+
+- Added `qr_blockchain.chaos`, a deterministic scripted multi-node harness for mempool floods, fork storms, migration challenge disputes, signer crash/release behavior, and verification throughput.
+- Added `load-chaos` CLI and `/testing/load-chaos` API surfaces with configurable scenario, node count, mempool transaction count, migration claim count, and verification batch size.
+- Added harness coverage that exercises real `NodeService`, wallet signing, fork choice, migration dispute lifecycle, mempool policy, and verification worker paths against isolated SQLite databases.
+- Updated README protocol docs with the load/chaos harness surface and visual flow while preserving the current public-facing structure and diagrams.
+
+### Phase 75 - State Roots, Challenge Lifecycle, And Gossip Scoring
+
+- Added explicit state-root activation policy, including configured activation height, required block version, and rejection of missing roots after activation.
+- Added migration-claim reorg coverage to ensure canonical state roots and claimed-source indexes are rebuilt when fork choice moves to a competing branch.
+- Extended migration disputes into a lifecycle: `open`, `evidence_submitted`, `resolved_valid`, `resolved_fraud`, and `expired`.
+- Added claim-unlock behavior for `resolved_valid` and `expired` disputes, while `resolved_fraud` revokes the affected migration source.
+- Added authenticated transaction/block gossip handlers, relay helpers, bad-block/invalid-gossip peer penalties, and peer-diversity readiness checks.
+
+### Phase 74 - Native Verification Worker Pool
+
+- Added a Rust-backed native verification batch API that accepts transaction-input verification jobs and returns per-input pass/fail results.
+- Routed `native_test_pq_v1` consensus verification through the Rust extension when available, with fail-closed native errors and Python fallback when the extension is not installed.
+- Kept address derivation and ownership prechecks in Python policy code while moving signature verification work for native providers into Rust worker threads.
+- Added native batch verification smoke coverage and a multi-input transaction test that confirms the consensus verifier uses the Rust worker pool.
+- Updated verification readiness reporting and README protocol docs to describe the native worker-pool boundary.
+
+### Phase 70 - Signer Separation And Verification Boundaries
+
+- Moved wallet signing out of `NodeService` into `qr_blockchain.signer`, introduced a `SignerBackend` protocol and `LocalWalletSigner`, and kept the public `Wallet` facade compatible.
+- Added `qr_blockchain.verification` as the consensus-side signature verification boundary with safe worker-level parallelism for multi-input transactions.
+- Added native Rust/C crypto target reporting through `crypto-native-boundary`, plus signer/consensus and verification-parallelism API/CLI surfaces.
+- Added transaction state-model, validator-networking, migration-finality/fraud, and adversarial-performance readiness reports to cover the full critical-stage path.
+- Updated README architecture and PQ signing diagrams to show the signer boundary, native runtime path, and verification worker pool.
+
+### Phase 71 - State Roots, Maturity, Peer Scoring, And Disputes
+
+- Added version-3 block UTXO state roots for newly mined blocks while keeping version-2 hash compatibility.
+- Enforced configured coinbase maturity before reward outputs can be spent.
+- Added authenticated peer sync scoring with success/failure counters for validator-networking hardening.
+- Added persistent migration dispute records, dispute listing/opening API/CLI commands, challenge deadlines, and automatic source quarantine.
+- Added focused tests for state roots, coinbase maturity, dispute quarantine, CLI dispute opening, and multi-input verification.
+
+### Phase 72 - Native Rust Signer Boundary
+
+- Added `crates/qr_chain_native_signer`, a Rust crate boundary with PyO3 exports, a deterministic test backend, and an optional `liboqs` feature target.
+- Added the `qr_chain_native_signer` Python package bridge that loads a compiled `_native` extension in native mode and otherwise exposes an explicit deterministic test backend.
+- Registered `native_test_pq_v1` through the signature provider registry so wallets and tests can exercise the native-provider contract.
+- Added precise dependency failure behavior when native extension mode is requested before the Rust extension is built.
+
+### Phase 73 - Native Build And liboqs Wiring
+
+- Installed and repaired the Windows MSVC Rust toolchain path for local native signer builds.
+- Built the deterministic PyO3 Rust extension and verified Python can load `qr_chain_native_signer._native`.
+- Added Rust liboqs entry points for ML-DSA, Falcon, and SPHINCS+ key generation, signing, and verification behind the `liboqs` feature.
+- Replaced the failing `oqs-sys` Windows binding path with a small controlled FFI layer linked against the local `liboqs 0.14.0` runtime.
+- Verified ML-DSA-65, Falcon-512, and SPHINCS+-SHAKE-128f-simple native Rust extension signing and verification.
+
 ### Phase 1 - Service Architecture
 
 - Added persistent SQLite-backed chain state, structured node configuration, a service layer, a JSON HTTP API, and automated persistence/transaction tests.

@@ -61,6 +61,11 @@ class NodeConfig:
     peer_session_ttl_seconds: int = 900
     peer_protocol_version: str = "qr-peer-v1"
     max_peer_blocks_per_request: int = 128
+    state_root_activation_height: int = 0
+    gossip_fanout: int = 8
+    peer_bad_block_penalty: int = -25
+    peer_invalid_frame_penalty: int = -10
+    min_peer_diversity: int = 2
     migration_claim_start_height: int = 1
     migration_claim_end_height: int = 0
     migration_dual_control_start_height: int = 0
@@ -167,6 +172,11 @@ class NodeConfig:
             peer_session_ttl_seconds=int(os.getenv("QR_CHAIN_PEER_SESSION_TTL_SECONDS", "900")),
             peer_protocol_version=os.getenv("QR_CHAIN_PEER_PROTOCOL_VERSION", "qr-peer-v1"),
             max_peer_blocks_per_request=int(os.getenv("QR_CHAIN_MAX_PEER_BLOCKS_PER_REQUEST", "128")),
+            state_root_activation_height=int(os.getenv("QR_CHAIN_STATE_ROOT_ACTIVATION_HEIGHT", "0")),
+            gossip_fanout=int(os.getenv("QR_CHAIN_GOSSIP_FANOUT", "8")),
+            peer_bad_block_penalty=int(os.getenv("QR_CHAIN_PEER_BAD_BLOCK_PENALTY", "-25")),
+            peer_invalid_frame_penalty=int(os.getenv("QR_CHAIN_PEER_INVALID_FRAME_PENALTY", "-10")),
+            min_peer_diversity=int(os.getenv("QR_CHAIN_MIN_PEER_DIVERSITY", "2")),
             migration_claim_start_height=int(os.getenv("QR_CHAIN_MIGRATION_CLAIM_START_HEIGHT", "1")),
             migration_claim_end_height=int(os.getenv("QR_CHAIN_MIGRATION_CLAIM_END_HEIGHT", "0")),
             migration_dual_control_start_height=int(os.getenv("QR_CHAIN_MIGRATION_DUAL_CONTROL_START_HEIGHT", "0")),

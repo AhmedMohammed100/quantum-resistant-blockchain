@@ -6,6 +6,7 @@ import shutil
 import unittest
 
 from qr_blockchain import NodeConfig, NodeService, Wallet
+from qr_blockchain.chaos import run_load_chaos_harness
 from qr_blockchain.models import Block, Transaction, TxInput, TxOutput
 from qr_blockchain.protocol import build_peer_frame, frame_digest, parse_peer_frame
 
@@ -205,6 +206,37 @@ class AdversarialAndPropertyTests(unittest.TestCase):
         status = service.signature_provider_statuses()
         self.assertIn("wallet_reservation_status", status)
         self.assertIsInstance(status["wallet_reservation_status"], dict)
+
+    def test_load_chaos_harness_runs_all_scripted_scenarios(self) -> None:
+        root = Path("test_runtime") / self._testMethodName
+        if root.exists():
+            shutil.rmtree(root)
+        root.mkdir(parents=True, exist_ok=True)
+        self.addCleanup(lambda: shutil.rmtree(root, ignore_errors=True))
+
+        report = run_load_chaos_harness(
+            base_config=NodeConfig(
+                db_path=root / "base_chain.db",
+                wallet_state_db_path=root / "base_wallet.db",
+                difficulty=1,
+                mining_reward=10,
+                max_pending_transactions=16,
+            ),
+            scenario="all",
+            node_count=3,
+            mempool_transactions=6,
+            migration_claims=5,
+            verification_batch_size=5,
+            work_dir=root / "harness",
+        )
+
+        self.assertTrue(report["passed"], report)
+        self.assertEqual(report["scenario_count"], 5)
+        self.assertIn("mempool_flood", report["results"])
+        self.assertIn("fork_storm", report["results"])
+        self.assertIn("migration_disputes", report["results"])
+        self.assertIn("signer_crash", report["results"])
+        self.assertIn("verification_throughput", report["results"])
 
 
 if __name__ == "__main__":

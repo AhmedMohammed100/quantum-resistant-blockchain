@@ -8,6 +8,7 @@ from pathlib import Path
 import sqlite3
 import secrets
 import time
+from urllib.parse import urlparse
 
 from .auth import NodeIdentityManager, request_claims_digest, verify_signed_envelope
 from .config import NodeConfig
@@ -25,7 +26,8 @@ from .migration import (
     get_classical_claim_verifier,
     list_classical_claim_verifier_statuses,
 )
-from .models import Block, Transaction, TxInput, TxOutput
+from .models import Block, Transaction, TxInput, TxOutput, canonical_json
+from .native_crypto import native_crypto_boundary_report
 from .network import fetch_json, normalize_peer_url, with_path
 from .protocol import build_peer_frame, parse_peer_frame, protocol_manifest
 from .snapshot import (
@@ -44,6 +46,7 @@ from .source_ingestion import (
     validate_ingestion_manifest,
 )
 from .storage import SQLiteChainStore
+from .verification import verify_transaction_inputs
 from .wallet_store import SQLiteWalletStateStore
 
 
@@ -116,9 +119,10 @@ class NodeService:
             miner="genesis",
             difficulty=1,
             chain_id=self.config.chain_id,
-            version=2,
+            version=3,
             timestamp=0.0,
         )
+        block.state_root = self._state_root_after_block({}, block)
         block.mine()
         self.store.store_block(block)
         self.store.apply_best_chain(block.block_hash)
@@ -130,6 +134,7 @@ class NodeService:
             transaction,
             self.store.all_utxos(),
             effective_height=self.store.block_count(),
+            utxo_metadata=self._utxo_origin_metadata_for_head(self.store.best_head_hash()),
         )
         self._check_pending_double_spends(transaction)
         try:
@@ -161,8 +166,9 @@ class NodeService:
             miner=miner_address,
             difficulty=self.config.difficulty,
             chain_id=self.config.chain_id,
-            version=2,
+            version=3,
         )
+        block.state_root = self._state_root_after_block(self.store.utxos_for_head(str(latest["block_hash"])), block)
         block.mine()
         self.import_block(block)
         return block
@@ -184,6 +190,7 @@ class NodeService:
             raise ValueError("Block does not satisfy proof-of-work difficulty.")
         if block.version < 2:
             raise ValueError("Unsupported block version.")
+        self._enforce_state_root_activation(block)
         if not block.transactions:
             raise ValueError("Block must include at least one transaction.")
         if self.store.has_block(block.block_hash):
@@ -198,6 +205,8 @@ class NodeService:
                 raise ValueError("Genesis block contains a transaction for a different chain.")
             for transaction in block.transactions:
                 self._validate_transaction_against_view(transaction, {}, effective_height=0)
+            if block.version >= 3 and block.state_root != self._state_root_after_block({}, block):
+                raise ValueError("Block state root mismatch.")
             return
 
         parent_row = self.store.block_row(block.previous_hash)
@@ -211,6 +220,7 @@ class NodeService:
             raise ValueError("First block transaction must be the reward transaction.")
 
         utxo_view = self.store.utxos_for_head(block.previous_hash)
+        utxo_metadata = self._utxo_origin_metadata_for_head(block.previous_hash)
         claimed_view = self.store.claimed_classical_addresses_for_head(block.previous_hash)
         spent_in_block: set[tuple[str, int]] = set()
         claimed_in_block: set[str] = set()
@@ -222,8 +232,15 @@ class NodeService:
                 utxo_view,
                 effective_height=block.index,
                 claimed_classical_addresses=claimed_view | claimed_in_block,
+                utxo_metadata=utxo_metadata,
             )
             if index == 0:
+                for output_index, output in enumerate(transaction.outputs):
+                    utxo_view[(transaction.tx_id, output_index)] = output
+                    utxo_metadata[(transaction.tx_id, output_index)] = {
+                        "height": block.index,
+                        "coinbase": True,
+                    }
                 continue
             fee_total += transaction.fee
             if transaction.kind == "migration_claim":
@@ -233,6 +250,10 @@ class NodeService:
                 claimed_in_block.add(classical_address)
                 for output_index, output in enumerate(transaction.outputs):
                     utxo_view[(transaction.tx_id, output_index)] = output
+                    utxo_metadata[(transaction.tx_id, output_index)] = {
+                        "height": block.index,
+                        "coinbase": False,
+                    }
                 continue
             for tx_input in transaction.inputs:
                 key = (tx_input.prev_tx_id, tx_input.output_index)
@@ -240,65 +261,161 @@ class NodeService:
                     raise ValueError("Block contains a double spend.")
                 spent_in_block.add(key)
                 utxo_view.pop(key, None)
+                utxo_metadata.pop(key, None)
             for output_index, output in enumerate(transaction.outputs):
                 utxo_view[(transaction.tx_id, output_index)] = output
+                utxo_metadata[(transaction.tx_id, output_index)] = {
+                    "height": block.index,
+                    "coinbase": False,
+                }
 
         reward_transaction = block.transactions[0]
         expected_reward = self.currency_policy().subsidy_at_height(block.index) + fee_total
         actual_reward = sum(output.amount for output in reward_transaction.outputs)
         if actual_reward != expected_reward:
             raise ValueError("Reward transaction amount is invalid.")
+        if block.version >= 3 and block.state_root != self.state_root_for_utxos(utxo_view):
+            raise ValueError("Block state root mismatch.")
         parent_path = self.store.path_to_root(block.previous_hash)
         self._validate_supply_limits(self._supply_for_blocks([*parent_path, block]))
 
     def sync_with_peer(self, peer_url: str) -> int:
         normalized = normalize_peer_url(peer_url)
         session = self.ensure_peer_admission(normalized)
-        summary = fetch_json(
-            with_path(normalized, "/peer/summary"),
-            method="POST",
-            payload=self._build_peer_request_frame(
-                message_type="peer_summary_request",
-                payload={},
-                auth=self.build_peer_session_envelope(
-                    "peer_summary_v2",
-                    normalized,
-                    session["session_id"],
-                    "/peer/summary",
+        try:
+            summary = fetch_json(
+                with_path(normalized, "/peer/summary"),
+                method="POST",
+                payload=self._build_peer_request_frame(
+                    message_type="peer_summary_request",
+                    payload={},
+                    auth=self.build_peer_session_envelope(
+                        "peer_summary_v2",
+                        normalized,
+                        session["session_id"],
+                        "/peer/summary",
+                    ),
                 ),
-            ),
-        )
-        summary_payload = self._parse_peer_response_frame(summary, "peer_summary_response")
-        remote_height = int(summary_payload.get("height", 0))
-        local_height = self.store.block_count()
-        imported = 0
-        if remote_height <= local_height:
+            )
+            summary_payload = self._parse_peer_response_frame(summary, "peer_summary_response")
+            remote_height = int(summary_payload.get("height", 0))
+            local_height = self.store.block_count()
+            imported = 0
+            if remote_height > local_height:
+                response = fetch_json(
+                    with_path(normalized, "/peer/blocks"),
+                    method="POST",
+                    payload=self._build_peer_request_frame(
+                        message_type="peer_blocks_request",
+                        payload={"start_height": local_height},
+                        auth=self.build_peer_session_envelope(
+                            "peer_blocks_v2",
+                            normalized,
+                            session["session_id"],
+                            "/peer/blocks",
+                            {"start_height": local_height},
+                        ),
+                    ),
+                )
+                response_payload = self._parse_peer_response_frame(response, "peer_blocks_response")
+                for item in response_payload.get("blocks", []):
+                    block = Block.from_dict(item)
+                    self.import_block(block)
+                    imported += 1
+
             self.store.add_peer(normalized)
+            self.store.record_peer_sync_result(str(session["node_id"]), success=True, score_delta=max(1, imported))
             return imported
+        except Exception:
+            self.store.record_peer_sync_result(str(session["node_id"]), success=False, score_delta=-5)
+            raise
 
-        response = fetch_json(
-            with_path(normalized, "/peer/blocks"),
-            method="POST",
-            payload=self._build_peer_request_frame(
-                message_type="peer_blocks_request",
-                payload={"start_height": local_height},
-                auth=self.build_peer_session_envelope(
-                    "peer_blocks_v2",
-                    normalized,
-                    session["session_id"],
-                    "/peer/blocks",
-                    {"start_height": local_height},
-                ),
-            ),
+    def relay_pending_transaction(self, transaction: Transaction, *, exclude_peer: str = "") -> dict[str, object]:
+        if not transaction.tx_id:
+            transaction.finalize()
+        payload = {"transaction": json.loads(transaction.serialize_with_id())}
+        return self._relay_gossip(
+            path="/peer/gossip/transaction",
+            message_type="peer_transaction_gossip",
+            purpose="peer_transaction_gossip_v1",
+            payload=payload,
+            exclude_peer=exclude_peer,
         )
-        response_payload = self._parse_peer_response_frame(response, "peer_blocks_response")
-        for item in response_payload.get("blocks", []):
-            block = Block.from_dict(item)
-            self.import_block(block)
-            imported += 1
 
-        self.store.add_peer(normalized)
-        return imported
+    def relay_block(self, block: Block, *, exclude_peer: str = "") -> dict[str, object]:
+        return self._relay_gossip(
+            path="/peer/gossip/block",
+            message_type="peer_block_gossip",
+            purpose="peer_block_gossip_v1",
+            payload={"block": block.to_dict()},
+            exclude_peer=exclude_peer,
+        )
+
+    def receive_authenticated_transaction_gossip(
+        self,
+        envelope: dict[str, object],
+        transaction_payload: dict[str, object],
+    ) -> dict[str, object]:
+        peer_identity = self._authenticate_peer_envelope(
+            envelope,
+            expected_purpose="peer_transaction_gossip_v1",
+            request_path="/peer/gossip/transaction",
+            request_claims={"transaction": transaction_payload},
+        )
+        try:
+            transaction = Transaction.from_dict(transaction_payload)
+            self.submit_transaction(transaction)
+        except ValueError as error:
+            self.record_peer_penalty(
+                str(peer_identity["node_id"]),
+                reason=f"invalid transaction gossip: {error}",
+                score_delta=self.config.peer_invalid_frame_penalty,
+            )
+            raise
+        self.store.record_peer_sync_result(str(peer_identity["node_id"]), success=True, score_delta=1)
+        return self._build_peer_response_frame(
+            message_type="peer_transaction_gossip_ack",
+            payload={"accepted": True, "tx_id": transaction.tx_id},
+        )
+
+    def receive_authenticated_block_gossip(
+        self,
+        envelope: dict[str, object],
+        block_payload: dict[str, object],
+    ) -> dict[str, object]:
+        peer_identity = self._authenticate_peer_envelope(
+            envelope,
+            expected_purpose="peer_block_gossip_v1",
+            request_path="/peer/gossip/block",
+            request_claims={"block": block_payload},
+        )
+        try:
+            block = Block.from_dict(block_payload)
+            self.import_block(block)
+        except ValueError as error:
+            self.record_peer_penalty(
+                str(peer_identity["node_id"]),
+                reason=f"invalid block gossip: {error}",
+                score_delta=self.config.peer_bad_block_penalty,
+            )
+            raise
+        self.store.record_peer_sync_result(str(peer_identity["node_id"]), success=True, score_delta=2)
+        return self._build_peer_response_frame(
+            message_type="peer_block_gossip_ack",
+            payload={"accepted": True, "block_hash": block.block_hash, "height": block.index},
+        )
+
+    def record_peer_penalty(self, node_id: str, *, reason: str, score_delta: int | None = None) -> dict[str, object]:
+        delta = self.config.peer_invalid_frame_penalty if score_delta is None else score_delta
+        self.store.record_peer_sync_result(node_id, success=False, score_delta=delta)
+        peer = self.store.peer_identity_by_node_id(node_id) or {}
+        return {
+            "node_id": node_id,
+            "reason": reason,
+            "score_delta": delta,
+            "score": peer.get("score", 0),
+            "failure_count": peer.get("failure_count", 0),
+        }
 
     def sync_with_peers(self) -> dict[str, int]:
         results: dict[str, int] = {}
@@ -449,6 +566,23 @@ class NodeService:
         stored.update(normalize_peer_url(peer) for peer in self.config.peers)
         return sorted(stored)
 
+    def peer_diversity_report(self) -> dict[str, object]:
+        peers = self.store.list_peer_identities()
+        admitted = [peer for peer in peers if str(peer.get("status", "")) == "admitted"]
+        diversity_groups: dict[str, int] = {}
+        for peer in admitted:
+            key = self._peer_diversity_key(str(peer.get("url", "")))
+            diversity_groups[key] = diversity_groups.get(key, 0) + 1
+        distinct_groups = len(diversity_groups)
+        minimum = self.config.min_peer_diversity
+        return {
+            "minimum_diversity": minimum,
+            "distinct_groups": distinct_groups,
+            "admitted_peer_count": len(admitted),
+            "diversity_groups": diversity_groups,
+            "passed": minimum <= 0 or distinct_groups >= minimum,
+        }
+
     def get_blocks_from_height(self, start_height: int) -> list[Block]:
         return self.store.blocks_from_height(start_height)
 
@@ -477,6 +611,53 @@ class NodeService:
 
     def list_utxos(self, addresses: list[str]) -> list[tuple[str, int, TxOutput]]:
         return self.store.list_utxos(addresses)
+
+    @staticmethod
+    def state_root_for_utxos(utxos: dict[tuple[str, int], TxOutput]) -> str:
+        payload = [
+            {
+                "tx_id": tx_id,
+                "output_index": output_index,
+                "recipient": output.recipient,
+                "amount": output.amount,
+            }
+            for (tx_id, output_index), output in sorted(utxos.items())
+        ]
+        return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
+
+    def _state_root_after_block(self, parent_utxos: dict[tuple[str, int], TxOutput], block: Block) -> str:
+        projected = dict(parent_utxos)
+        for transaction in block.transactions:
+            for tx_input in transaction.inputs:
+                projected.pop((tx_input.prev_tx_id, tx_input.output_index), None)
+            for output_index, output in enumerate(transaction.outputs):
+                projected[(transaction.tx_id, output_index)] = output
+        return self.state_root_for_utxos(projected)
+
+    def state_root_policy(self) -> dict[str, object]:
+        return {
+            "activation_height": self.config.state_root_activation_height,
+            "required_version": 3,
+            "current_height": self.store.block_count(),
+            "current_best_state_root": self.state_root_for_utxos(self.store.all_utxos()),
+            "rule": "blocks at or above activation height must be version >= 3 and include a non-empty post-state UTXO root",
+        }
+
+    def _utxo_origin_metadata_for_head(self, block_hash: str | None) -> dict[tuple[str, int], dict[str, object]]:
+        if block_hash is None:
+            return {}
+        origins: dict[tuple[str, int], dict[str, object]] = {}
+        for block in self.store.path_to_root(block_hash):
+            for transaction_index, transaction in enumerate(block.transactions):
+                for tx_input in transaction.inputs:
+                    origins.pop((tx_input.prev_tx_id, tx_input.output_index), None)
+                is_coinbase = block.index > 0 and transaction_index == 0 and not transaction.inputs
+                for output_index, _ in enumerate(transaction.outputs):
+                    origins[(transaction.tx_id, output_index)] = {
+                        "height": block.index,
+                        "coinbase": is_coinbase,
+                    }
+        return origins
 
     def chain_summary(self) -> dict[str, object]:
         summary = self.store.summary()
@@ -667,6 +848,7 @@ class NodeService:
         }
 
     def migration_claim_quote(self, classical_address: str) -> dict[str, object]:
+        self.expire_migration_disputes()
         source = self.store.migration_source(classical_address)
         if source is None:
             raise ValueError("Migration source address is unknown.")
@@ -675,8 +857,13 @@ class NodeService:
         pool_remaining = int(supply["migration_pool_remaining"])
         already_claimed = self.store.migration_claim(classical_address) is not None
         evidence = self._migration_source_evidence(source)
+        disputes = self.store.list_migration_disputes(classical_address)
+        blocking_disputes = [
+            item for item in disputes if item["status"] in {"open", "evidence_submitted", "resolved_fraud"}
+        ]
         checks = [
             {"name": "source_active", "passed": source.get("status") == "active"},
+            {"name": "no_blocking_dispute", "passed": not blocking_disputes},
             {"name": "migration_not_paused", "passed": not self.config.migration_emergency_pause},
             {"name": "not_claimed", "passed": not already_claimed},
             {"name": "pool_capacity_available", "passed": amount <= pool_remaining},
@@ -721,6 +908,11 @@ class NodeService:
             if evidence["level"] == "weak"
             else [],
             "evidence": evidence,
+            "dispute_lifecycle": {
+                "blocking_dispute_count": len(blocking_disputes),
+                "latest_status": str(disputes[0]["status"]) if disputes else "",
+                "unlock_statuses": ["resolved_valid", "expired"],
+            },
             "source": source,
         }
 
@@ -805,6 +997,136 @@ class NodeService:
         }
         packet["packet_hash"] = hashlib.sha256(json.dumps(packet, sort_keys=True).encode("utf-8")).hexdigest()
         return packet
+
+    def open_migration_dispute(
+        self,
+        classical_address: str,
+        *,
+        reason: str,
+        evidence_hash: str = "",
+    ) -> dict[str, object]:
+        packet = self.migration_dispute_packet(classical_address)
+        opened_at = round(time.time(), 6)
+        dispute_id = hashlib.sha256(
+            canonical_json(
+                {
+                    "classical_address": classical_address,
+                    "packet_hash": packet["packet_hash"],
+                    "reason": reason,
+                    "opened_at": opened_at,
+                }
+            ).encode("utf-8")
+        ).hexdigest()
+        challenge_deadline_height = self.store.block_count() + self.config.migration_dispute_window_blocks
+        final_evidence_hash = evidence_hash or str(packet["packet_hash"])
+        self.store.open_migration_dispute(
+            dispute_id=dispute_id,
+            classical_address=classical_address,
+            opened_at=opened_at,
+            challenge_deadline_height=challenge_deadline_height,
+            reason=reason,
+            evidence_hash=final_evidence_hash,
+        )
+        self.set_migration_source_status(classical_address, status="quarantined", reason=f"open dispute: {reason}")
+        return {
+            "dispute_id": dispute_id,
+            "classical_address": classical_address,
+            "status": "open",
+            "challenge_deadline_height": challenge_deadline_height,
+            "evidence_hash": final_evidence_hash,
+            "packet_hash": packet["packet_hash"],
+        }
+
+    def submit_migration_dispute_evidence(
+        self,
+        dispute_id: str,
+        *,
+        evidence: dict[str, object],
+        evidence_hash: str = "",
+    ) -> dict[str, object]:
+        dispute = self._migration_dispute_by_id(dispute_id)
+        if dispute["status"] not in {"open", "evidence_submitted"}:
+            raise ValueError("Evidence can only be submitted while a dispute is open.")
+        if self.store.block_count() > int(dispute["challenge_deadline_height"]):
+            raise ValueError("Dispute challenge window has expired.")
+        final_hash = evidence_hash or hashlib.sha256(canonical_json(evidence).encode("utf-8")).hexdigest()
+        self.store.submit_migration_dispute_evidence(dispute_id, evidence_hash=final_hash, evidence=evidence)
+        updated = self._migration_dispute_by_id(dispute_id)
+        self.set_migration_source_status(
+            str(updated["classical_address"]),
+            status="quarantined",
+            reason=f"evidence submitted for dispute {dispute_id}",
+        )
+        return updated
+
+    def resolve_migration_dispute(
+        self,
+        dispute_id: str,
+        *,
+        outcome: str,
+        resolution_note: str,
+    ) -> dict[str, object]:
+        if outcome not in {"resolved_valid", "resolved_fraud"}:
+            raise ValueError("Dispute outcome must be resolved_valid or resolved_fraud.")
+        dispute = self._migration_dispute_by_id(dispute_id)
+        if dispute["status"] not in {"open", "evidence_submitted"}:
+            raise ValueError("Only open or evidence-submitted disputes can be resolved.")
+        self.store.resolve_migration_dispute(dispute_id, status=outcome, resolution_note=resolution_note)
+        updated = self._migration_dispute_by_id(dispute_id)
+        if outcome == "resolved_valid":
+            self.set_migration_source_status(
+                str(updated["classical_address"]),
+                status="active",
+                reason=f"dispute {dispute_id} resolved valid",
+            )
+        else:
+            self.set_migration_source_status(
+                str(updated["classical_address"]),
+                status="revoked",
+                reason=f"dispute {dispute_id} resolved fraud: {resolution_note}",
+            )
+        return updated
+
+    def expire_migration_disputes(self) -> dict[str, object]:
+        current_height = self.store.block_count()
+        before = [
+            item
+            for item in self.store.list_migration_disputes()
+            if item["status"] in {"open", "evidence_submitted"} and int(item["challenge_deadline_height"]) < current_height
+        ]
+        expired_count = self.store.expire_migration_disputes(current_height)
+        for item in before:
+            self.set_migration_source_status(
+                str(item["classical_address"]),
+                status="active",
+                reason=f"dispute {item['dispute_id']} expired; claim unlocked",
+            )
+        return {
+            "expired_count": expired_count,
+            "current_height": current_height,
+            "unlocked_classical_addresses": [item["classical_address"] for item in before],
+        }
+
+    def migration_disputes(self, classical_address: str | None = None) -> dict[str, object]:
+        self.expire_migration_disputes()
+        disputes = self.store.list_migration_disputes(classical_address)
+        open_disputes = [item for item in disputes if item["status"] == "open"]
+        evidence_submitted = [item for item in disputes if item["status"] == "evidence_submitted"]
+        resolved_valid = [item for item in disputes if item["status"] == "resolved_valid"]
+        resolved_fraud = [item for item in disputes if item["status"] == "resolved_fraud"]
+        expired = [item for item in disputes if item["status"] == "expired"]
+        return {
+            "dispute_count": len(disputes),
+            "open_dispute_count": len(open_disputes),
+            "evidence_submitted_count": len(evidence_submitted),
+            "resolved_valid_count": len(resolved_valid),
+            "resolved_fraud_count": len(resolved_fraud),
+            "expired_count": len(expired),
+            "current_height": self.store.block_count(),
+            "claim_unlock_statuses": ["resolved_valid", "expired"],
+            "claim_blocking_statuses": ["open", "evidence_submitted", "resolved_fraud"],
+            "disputes": disputes,
+        }
 
     def migration_claim_batch_plan(
         self,
@@ -1317,6 +1639,59 @@ class NodeService:
             "results": results,
         }
 
+    def signer_consensus_separation_report(self) -> dict[str, object]:
+        return {
+            "architecture_status": "separated_boundary",
+            "consensus_node_responsibilities": [
+                "validate transaction hashes and chain id",
+                "verify PQ signatures against referenced UTXO owners",
+                "enforce mempool, migration, supply, and fork-choice rules",
+                "build, import, and select blocks",
+            ],
+            "wallet_signer_responsibilities": [
+                "own private key material",
+                "reserve stateful signing material before use",
+                "construct wallet-originated transfer and migration claim signatures",
+                "complete or fail signer reservations with audit state",
+            ],
+            "module_boundaries": {
+                "consensus_service": "qr_blockchain.service.NodeService",
+                "wallet_signer": "qr_blockchain.signer.LocalWalletSigner",
+                "wallet_facade": "qr_blockchain.signer.Wallet",
+                "verification_pool": "qr_blockchain.verification.verify_transaction_inputs",
+            },
+            "production_next": [
+                "move signer backend behind a local IPC or RPC service",
+                "bind native Rust/C PQ workers behind the signer interface",
+                "deny node APIs direct access to wallet key databases in validator deployments",
+            ],
+        }
+
+    def native_crypto_runtime_boundary_report(self) -> dict[str, object]:
+        report = native_crypto_boundary_report()
+        report["current_python_role"] = "orchestration_policy_api_tests"
+        report["production_signing_role"] = "native_rust_or_c_backend"
+        return report
+
+    def parallel_verification_report(self) -> dict[str, object]:
+        cpu_count = os.cpu_count() or 1
+        pending = self.store.pending_transactions()
+        total_inputs = sum(len(transaction.inputs) for transaction in pending)
+        return {
+            "verification_boundary": "qr_blockchain.verification.verify_transaction_inputs",
+            "parallelism_status": "native_worker_pool_enabled_for_native_provider",
+            "worker_model": "rust_native_batch_when_available_with_python_fallback",
+            "native_batch_provider": "native_test_pq_v1",
+            "cpu_count": cpu_count,
+            "recommended_workers": max(1, min(cpu_count, 8)),
+            "pending_transactions": len(pending),
+            "pending_inputs": total_inputs,
+            "batch_verification_note": (
+                "Rust-backed batch verification is enabled for the native provider boundary; "
+                "non-native providers continue through provider-specific Python verification until each has a native contract."
+            ),
+        }
+
     def transaction_resource_policy_report(self) -> dict[str, object]:
         provider_payloads: list[dict[str, object]] = []
         for status in list_signature_provider_statuses():
@@ -1405,6 +1780,164 @@ class NodeService:
                 "fee market policy for large PQ signatures and migration bursts",
             ],
         }
+
+    def transaction_state_model_report(self) -> dict[str, object]:
+        return {
+            "state_model_status": "utxo_deterministic_v1",
+            "execution_model": "ordered_utxo_transactions_with_migration_claim_mints",
+            "state_roots": self.state_root_policy(),
+            "replay_protection": [
+                "transaction signing payload includes chain_id",
+                "transaction id commits to inputs, outputs, metadata, fee, timestamp, and signature scheme",
+                "mempool rejects duplicate tx ids and pending double spends",
+            ],
+            "fee_and_value_rules": [
+                "transfer outputs plus fee must not exceed referenced inputs",
+                "migration claims mint only from configured source entries and capped migration pool",
+                "coinbase reward must equal height subsidy plus included fees",
+                f"coinbase outputs require {self.config.coinbase_maturity_blocks} maturity blocks before spend",
+            ],
+            "next_required_work": [
+                "define canonical script/account extension rules before adding smart execution",
+                "add fee market and dust policy beyond minimum flat fee",
+                "publish state-root activation height in signed network upgrade metadata before public testnet",
+            ],
+        }
+
+    def validator_networking_readiness_report(self) -> dict[str, object]:
+        peers = self.store.list_peer_identities()
+        admitted = [peer for peer in peers if str(peer.get("status", "")) == "admitted"]
+        diversity = self.peer_diversity_report()
+        return {
+            "validator_networking_status": (
+                "authenticated_gossip_with_diversity_checks"
+                if diversity["passed"]
+                else "authenticated_gossip_needs_peer_diversity"
+            ),
+            "peer_protocol_version": self.config.peer_protocol_version,
+            "configured_peer_count": len(self.config.peers),
+            "stored_peer_count": len(peers),
+            "admitted_peer_count": len(admitted),
+            "gossip": {
+                "fanout": self.config.gossip_fanout,
+                "transaction_relay": "/peer/gossip/transaction",
+                "block_relay": "/peer/gossip/block",
+                "bad_block_penalty": self.config.peer_bad_block_penalty,
+                "invalid_frame_penalty": self.config.peer_invalid_frame_penalty,
+            },
+            "anti_eclipse": diversity,
+            "peer_scores": [
+                {
+                    "node_id": peer["node_id"],
+                    "url": peer["url"],
+                    "score": peer.get("score", 0),
+                    "success_count": peer.get("success_count", 0),
+                    "failure_count": peer.get("failure_count", 0),
+                }
+                for peer in peers
+            ],
+            "controls": [
+                "signed peer handshakes",
+                "session-bound request authentication",
+                "nonce replay protection",
+                "allowlist and denylist admission policy",
+                "framed peer summary and block requests",
+                "authenticated transaction and block gossip relay",
+                "peer sync success/failure scoring",
+                "bad block and invalid transaction gossip penalties",
+                "minimum peer diversity readiness gate",
+            ],
+            "production_gaps": [
+                "encrypted transport should be mandatory outside localhost/private lab networks",
+                "gossip fanout and peer scoring need production calibration",
+                "eclipse-resistance and block propagation latency need soak testing",
+            ],
+        }
+
+    def migration_finality_fraud_report(self) -> dict[str, object]:
+        dispute_summary = self.migration_disputes()
+        return {
+            "migration_finality_status": "challenge_lifecycle_with_claim_unlock_rules",
+            "claim_window": {
+                "start_height": self.config.migration_claim_start_height,
+                "end_height": self.config.migration_claim_end_height,
+                "deprecation_height": self.config.migration_claim_end_height,
+            },
+            "dual_control_window": {
+                "start_height": self.config.migration_dual_control_start_height,
+                "end_height": self.config.migration_dual_control_end_height,
+            },
+            "disputes": {
+                "open_dispute_count": dispute_summary["open_dispute_count"],
+                "evidence_submitted_count": dispute_summary["evidence_submitted_count"],
+                "resolved_valid_count": dispute_summary["resolved_valid_count"],
+                "resolved_fraud_count": dispute_summary["resolved_fraud_count"],
+                "expired_count": dispute_summary["expired_count"],
+                "dispute_count": dispute_summary["dispute_count"],
+                "window_blocks": self.config.migration_dispute_window_blocks,
+            },
+            "fraud_controls": [
+                "classical ownership proof verification",
+                "source-network binding validation",
+                "snapshot active/quarantine/revocation status",
+                "duplicate claim rejection across best-chain and mempool views",
+                "dispute packet generation with source, snapshot, quote, and evidence hashes",
+                "open and evidence-submitted disputes quarantine affected sources",
+                "resolved-valid and expired disputes unlock claims",
+                "resolved-fraud disputes revoke sources",
+            ],
+            "production_gaps": [
+                "define on-chain challenge transaction type",
+                "define claim reversal or escrow behavior for fraud found after claim inclusion",
+                "publish external snapshot signer quorum policy before public migration",
+            ],
+        }
+
+    def adversarial_performance_readiness_report(self) -> dict[str, object]:
+        return {
+            "readiness_status": "test_harness_present_needs_long_running_soak",
+            "implemented_surfaces": [
+                "unit tests for malformed frames, tampering, wallet recovery, migration claims, and supply caps",
+                "migration load tests",
+                "signature performance probes",
+                "parallel verification boundary for independent input signatures",
+                "operator adversarial migration simulation report",
+                "coinbase maturity regression tests",
+                "persistent migration dispute quarantine tests",
+            ],
+            "required_soak_scenarios": [
+                "multi-node fork storms with migration claims in competing branches",
+                "mempool flood with oversized PQ signatures and low-fee transactions",
+                "signer crash/restart loops during stateful XMSS/LMS-style signing",
+                "snapshot quarantine/revocation during active claim batches",
+                "long-running ML-DSA/OQS signing and verification latency baselines",
+            ],
+            "parallelization_policy": {
+                "safe_now": "parallelize independent signature verification across worker threads",
+                "gated": "true cryptographic batch verification requires per-algorithm audit and test vectors",
+                "stateful_signing_warning": "parallel signing must serialize reservations for XMSS/LMS-style keys",
+            },
+        }
+
+    def load_chaos_harness_report(
+        self,
+        *,
+        scenario: str = "all",
+        node_count: int = 3,
+        mempool_transactions: int = 8,
+        migration_claims: int = 6,
+        verification_batch_size: int = 8,
+    ) -> dict[str, object]:
+        from .chaos import run_load_chaos_harness
+
+        return run_load_chaos_harness(
+            base_config=self.config,
+            scenario=scenario,
+            node_count=node_count,
+            mempool_transactions=mempool_transactions,
+            migration_claims=migration_claims,
+            verification_batch_size=verification_batch_size,
+        )
 
     def release_provenance_manifest(self) -> dict[str, object]:
         protocol = self.protocol_manifest()
@@ -2643,6 +3176,7 @@ class NodeService:
         *,
         effective_height: int | None = None,
         claimed_classical_addresses: set[str] | None = None,
+        utxo_metadata: dict[tuple[str, int], dict[str, object]] | None = None,
     ) -> None:
         if not transaction.tx_id:
             transaction.finalize()
@@ -2668,27 +3202,29 @@ class NodeService:
             )
             return
 
-        provider = get_signature_verifier(transaction.signature_scheme)
         if not transaction.inputs:
             return
 
-        seen_inputs: set[tuple[str, int]] = set()
-        signing_payload = transaction.signing_payload()
-        total_input = 0
+        verification = verify_transaction_inputs(transaction, utxo_view)
+        if not verification.verified:
+            failure = verification.failure
+            if "public key does not match" in failure:
+                raise ValueError("Input public key does not match the referenced address.")
+            if "signature verification failed" in failure:
+                raise ValueError("Quantum signature verification failed.")
+            raise ValueError(failure)
 
+        total_input = 0
         for tx_input in transaction.inputs:
             key = (tx_input.prev_tx_id, tx_input.output_index)
-            if key in seen_inputs:
-                raise ValueError("Transaction cannot spend the same UTXO twice.")
-            seen_inputs.add(key)
-
-            previous_output = utxo_view.get(key)
-            if previous_output is None:
-                raise ValueError(f"Unknown UTXO reference: {key}.")
-            if provider.address_from_public_key(tx_input.public_key) != previous_output.recipient:
-                raise ValueError("Input public key does not match the referenced address.")
-            if not provider.verify(signing_payload, tx_input.signature, tx_input.public_key):
-                raise ValueError("Quantum signature verification failed.")
+            metadata = (utxo_metadata or {}).get(key, {})
+            if metadata.get("coinbase", False):
+                origin_height = int(metadata.get("height", 0))
+                maturity_height = origin_height + self.config.coinbase_maturity_blocks
+                current_height = self.store.block_count() if effective_height is None else effective_height
+                if current_height < maturity_height:
+                    raise ValueError("Coinbase output has not reached configured maturity.")
+            previous_output = utxo_view[key]
             total_input += previous_output.amount
 
         total_output = sum(output.amount for output in transaction.outputs)
@@ -2759,6 +3295,82 @@ class NodeService:
 
         if should_switch:
             self.store.apply_best_chain(candidate_head_hash)
+
+    def _enforce_state_root_activation(self, block: Block) -> None:
+        if block.index < self.config.state_root_activation_height:
+            return
+        if block.version < 3:
+            raise ValueError("Block version is below the configured state-root activation rule.")
+        if not block.state_root:
+            raise ValueError("Block is missing the required state root.")
+
+    def _migration_dispute_by_id(self, dispute_id: str) -> dict[str, object]:
+        for dispute in self.store.list_migration_disputes():
+            if dispute["dispute_id"] == dispute_id:
+                return dispute
+        raise ValueError("Migration dispute is unknown.")
+
+    def _relay_gossip(
+        self,
+        *,
+        path: str,
+        message_type: str,
+        purpose: str,
+        payload: dict[str, object],
+        exclude_peer: str = "",
+    ) -> dict[str, object]:
+        exclude = normalize_peer_url(exclude_peer) if exclude_peer else ""
+        targets = [peer for peer in self.list_peers() if peer != exclude][: max(0, self.config.gossip_fanout)]
+        delivered: list[dict[str, object]] = []
+        failed: list[dict[str, object]] = []
+        for peer_url in targets:
+            try:
+                session = self.ensure_peer_admission(peer_url)
+                response = fetch_json(
+                    with_path(peer_url, path),
+                    method="POST",
+                    payload=self._build_peer_request_frame(
+                        message_type=message_type,
+                        payload=payload,
+                        auth=self.build_peer_session_envelope(
+                            purpose,
+                            peer_url,
+                            str(session["session_id"]),
+                            path,
+                            payload,
+                        ),
+                    ),
+                )
+                response_payload = self._parse_peer_response_frame(response, f"{message_type}_ack")
+                delivered.append({"peer_url": peer_url, "response": response_payload})
+                self.store.record_peer_sync_result(str(session["node_id"]), success=True, score_delta=1)
+            except Exception as error:
+                failed.append({"peer_url": peer_url, "error": str(error)})
+                record = self.store.peer_identity_by_url(peer_url)
+                if record is not None:
+                    self.store.record_peer_sync_result(
+                        str(record["node_id"]),
+                        success=False,
+                        score_delta=self.config.peer_invalid_frame_penalty,
+                    )
+        return {
+            "target_count": len(targets),
+            "delivered_count": len(delivered),
+            "failed_count": len(failed),
+            "delivered": delivered,
+            "failed": failed,
+        }
+
+    @staticmethod
+    def _peer_diversity_key(peer_url: str) -> str:
+        parsed = urlparse(peer_url)
+        host = (parsed.hostname or peer_url).lower()
+        if host in {"127.0.0.1", "localhost", "::1"}:
+            return host
+        parts = [part for part in host.split(".") if part]
+        if len(parts) >= 2:
+            return ".".join(parts[-2:])
+        return host
 
     def _enforce_peer_admission_policy(
         self,
@@ -3047,224 +3659,3 @@ class NodeService:
             self.config.migration_dual_control_start_height,
             self.config.migration_dual_control_end_height,
         )
-
-
-class Wallet:
-    def __init__(
-        self,
-        label: str,
-        signature_provider: str = "xmss_merkle_lamport_v1",
-        state_db_path: Path | None = None,
-        custody_mode: str = "auto",
-        custody_scope: str = "current_user",
-        reservation_ttl_seconds: int = 60,
-    ):
-        self.label = label
-        self.signature_provider = signature_provider
-        self._provider = get_signature_provider(signature_provider)
-        self._owner_id = f"wallet:{label}:{os.getpid()}:{secrets.token_hex(8)}"
-        self._state_store = (
-            None
-            if state_db_path is None
-            else SQLiteWalletStateStore(
-                Path(state_db_path),
-                custody_config=WalletCustodyConfig(
-                    mode=custody_mode,
-                    scope=custody_scope,
-                ),
-                reservation_ttl_seconds=reservation_ttl_seconds,
-            )
-        )
-        self._keys: dict[str, object] = {}
-        self._load_persisted_keys()
-
-    def _load_persisted_keys(self) -> None:
-        if self._state_store is None:
-            return
-        for address, payload in self._state_store.load_wallet_keys(self.label, self.signature_provider):
-            self._keys[address] = self._provider.deserialize_keypair(payload)
-
-    def _persist_key(self, address: str) -> None:
-        if self._state_store is None:
-            return
-        keypair = self._keys[address]
-        key_state = self._provider.serialize_keypair(keypair)
-        self._state_store.save_wallet_key(self.label, address, self.signature_provider, key_state)
-
-    def _reserve_key_usage(self, address: str) -> tuple[object, object, str | None]:
-        if self._state_store is None:
-            keypair = self._keys[address]
-            reservation = self._provider.reserve_signing_material(keypair)
-            return keypair, reservation, None
-
-        def reserve_fn(current_state: object) -> tuple[object, object]:
-            keypair = self._provider.deserialize_keypair(current_state)
-            reservation = self._provider.reserve_signing_material(keypair)
-            return self._provider.serialize_keypair(keypair), reservation
-
-        next_state, reservation, reservation_id = self._state_store.reserve_wallet_key_state(
-            self.label,
-            address,
-            self.signature_provider,
-            reserve_fn,
-            owner_id=self._owner_id,
-        )
-        keypair = self._provider.deserialize_keypair(next_state)
-        self._keys[address] = keypair
-        return keypair, reservation, reservation_id
-
-    def create_address(self) -> str:
-        keypair = self._provider.generate_keypair()
-        address = self._provider.derive_address(keypair)
-        self._keys[address] = keypair
-        self._persist_key(address)
-        return address
-
-    def addresses(self) -> list[str]:
-        return list(self._keys.keys())
-
-    def balance(self, service: NodeService) -> int:
-        return service.balance_for_addresses(self.addresses())
-
-    def create_transaction(self, service: NodeService, recipient: str, amount: int, fee: int = 1) -> Transaction:
-        if amount <= 0:
-            raise ValueError("Amount must be positive.")
-        if fee < 0:
-            raise ValueError("Fee cannot be negative.")
-
-        selected, total_input = service.select_inputs(self.addresses(), amount + fee)
-        inputs = [TxInput(prev_tx_id=tx_id, output_index=output_index) for tx_id, output_index, _ in selected]
-        outputs = [TxOutput(recipient=recipient, amount=amount)]
-
-        change = total_input - amount - fee
-        if change > 0:
-            outputs.append(TxOutput(recipient=self.create_address(), amount=change))
-
-        transaction = Transaction(
-            inputs=inputs,
-            outputs=outputs,
-            chain_id=service.config.chain_id,
-            signature_scheme=self._provider.metadata.scheme_id,
-            fee=fee,
-        )
-        signing_payload = transaction.signing_payload()
-        for tx_input, (_, _, previous_output) in zip(transaction.inputs, selected):
-            address = previous_output.recipient
-            keypair, reservation, reservation_id = self._reserve_key_usage(address)
-            try:
-                if reservation is not None:
-                    tx_input.public_key, tx_input.signature = self._provider.sign_with_reservation(
-                        keypair, signing_payload, reservation
-                    )
-                    if self._state_store is not None and reservation_id is not None:
-                        self._state_store.complete_wallet_key_reservation(
-                            self.label,
-                            address,
-                            self.signature_provider,
-                            reservation_id,
-                            self._provider.serialize_keypair(keypair),
-                            owner_id=self._owner_id,
-                        )
-                    else:
-                        self._persist_key(address)
-                else:
-                    tx_input.public_key, tx_input.signature = self._provider.sign(keypair, signing_payload)
-                    self._persist_key(address)
-            except Exception as error:
-                if self._state_store is not None and reservation_id is not None:
-                    self._state_store.fail_wallet_key_reservation(
-                        self.label,
-                        address,
-                        self.signature_provider,
-                        reservation_id,
-                        owner_id=self._owner_id,
-                        error_message=str(error),
-                    )
-                raise
-        transaction.finalize()
-        return transaction
-
-    def create_migration_claim(
-        self,
-        service: NodeService,
-        *,
-        classical_address: str,
-        classical_provider_id: str,
-        classical_public_key: object,
-        classical_signature: object,
-        source_network: str,
-        snapshot_ref: str = "",
-        destination_address: str | None = None,
-        timestamp: float | None = None,
-    ) -> Transaction:
-        source = service.store.migration_source(classical_address)
-        if source is None:
-            raise ValueError("Migration source address is unknown.")
-        if source["provider_id"] != classical_provider_id:
-            raise ValueError("Migration source provider does not match the requested claim provider.")
-        if source["source_network"] != source_network:
-            raise ValueError("Migration source network does not match the requested claim network.")
-        target_address = destination_address or self.create_address()
-        if target_address not in self._keys:
-            raise ValueError("Destination address is not controlled by this wallet.")
-        transaction = service.build_migration_claim_draft(
-            destination_address=target_address,
-            classical_address=classical_address,
-            classical_provider_id=classical_provider_id,
-            source_network=source_network,
-            snapshot_ref=snapshot_ref or str(source.get("snapshot_ref", "")),
-            classical_public_key=classical_public_key,
-            timestamp=timestamp,
-        )
-        transaction.metadata["classical_signature"] = classical_signature
-        if service._migration_dual_control_required(service.store.block_count()):
-            transaction.metadata["destination_attestation"] = self._build_destination_attestation(
-                service,
-                target_address,
-                transaction,
-            )
-        transaction.finalize()
-        return transaction
-
-    def _build_destination_attestation(
-        self,
-        service: NodeService,
-        address: str,
-        transaction: Transaction,
-    ) -> dict[str, object]:
-        keypair, reservation, reservation_id = self._reserve_key_usage(address)
-        message = destination_acceptance_message_bytes(transaction.migration_claim_payload())
-        try:
-            if reservation is not None:
-                public_key, signature = self._provider.sign_with_reservation(keypair, message, reservation)
-                if self._state_store is not None and reservation_id is not None:
-                    self._state_store.complete_wallet_key_reservation(
-                        self.label,
-                        address,
-                        self.signature_provider,
-                        reservation_id,
-                        self._provider.serialize_keypair(keypair),
-                        owner_id=self._owner_id,
-                    )
-                else:
-                    self._persist_key(address)
-            else:
-                public_key, signature = self._provider.sign(keypair, message)
-                self._persist_key(address)
-        except Exception as error:
-            if self._state_store is not None and reservation_id is not None:
-                self._state_store.fail_wallet_key_reservation(
-                    self.label,
-                    address,
-                    self.signature_provider,
-                    reservation_id,
-                    owner_id=self._owner_id,
-                    error_message=str(error),
-                )
-            raise
-        return {
-            "address": address,
-            "signature_scheme": self._provider.metadata.scheme_id,
-            "public_key": public_key,
-            "signature": signature,
-        }

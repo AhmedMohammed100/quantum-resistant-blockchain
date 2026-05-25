@@ -2,3 +2,5 @@ __pycache__/
 *.py[cod]
 test_runtime/
 data/
+crates/**/target/
+*.pyd

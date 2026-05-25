@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import sqlite3
+import time
 
 from .models import Block, Transaction, TxOutput
 
@@ -70,7 +71,10 @@ class SQLiteChainStore:
                     public_key_json TEXT NOT NULL,
                     status TEXT NOT NULL,
                     admitted_at REAL NOT NULL,
-                    last_seen REAL NOT NULL
+                    last_seen REAL NOT NULL,
+                    score INTEGER NOT NULL DEFAULT 0,
+                    success_count INTEGER NOT NULL DEFAULT 0,
+                    failure_count INTEGER NOT NULL DEFAULT 0
                 );
                 CREATE TABLE IF NOT EXISTS peer_nonces (
                     node_id TEXT NOT NULL,
@@ -127,6 +131,19 @@ class SQLiteChainStore:
                     tx_id TEXT NOT NULL,
                     claimed_at REAL NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS migration_disputes (
+                    dispute_id TEXT PRIMARY KEY,
+                    classical_address TEXT NOT NULL,
+                    opened_at REAL NOT NULL,
+                    challenge_deadline_height INTEGER NOT NULL,
+                    status TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    evidence_hash TEXT NOT NULL,
+                    evidence_json TEXT NOT NULL DEFAULT '{}',
+                    evidence_submitted_at REAL NOT NULL DEFAULT 0,
+                    resolution_note TEXT NOT NULL DEFAULT '',
+                    resolved_at REAL NOT NULL DEFAULT 0
+                );
                 """
             )
             columns = {
@@ -177,6 +194,26 @@ class SQLiteChainStore:
                 connection.execute("ALTER TABLE migration_snapshots ADD COLUMN status_reason TEXT NOT NULL DEFAULT ''")
             if "reviewed_at" not in migration_snapshot_columns:
                 connection.execute("ALTER TABLE migration_snapshots ADD COLUMN reviewed_at REAL NOT NULL DEFAULT 0")
+            peer_identity_columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(peer_identities)").fetchall()
+            }
+            if "score" not in peer_identity_columns:
+                connection.execute("ALTER TABLE peer_identities ADD COLUMN score INTEGER NOT NULL DEFAULT 0")
+            if "success_count" not in peer_identity_columns:
+                connection.execute("ALTER TABLE peer_identities ADD COLUMN success_count INTEGER NOT NULL DEFAULT 0")
+            if "failure_count" not in peer_identity_columns:
+                connection.execute("ALTER TABLE peer_identities ADD COLUMN failure_count INTEGER NOT NULL DEFAULT 0")
+            migration_dispute_columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(migration_disputes)").fetchall()
+            }
+            if "evidence_json" not in migration_dispute_columns:
+                connection.execute("ALTER TABLE migration_disputes ADD COLUMN evidence_json TEXT NOT NULL DEFAULT '{}'")
+            if "evidence_submitted_at" not in migration_dispute_columns:
+                connection.execute(
+                    "ALTER TABLE migration_disputes ADD COLUMN evidence_submitted_at REAL NOT NULL DEFAULT 0"
+                )
 
     def latest_block(self) -> sqlite3.Row | None:
         best_hash = self.best_head_hash()
@@ -972,6 +1009,137 @@ class SQLiteChainStore:
             rows = connection.execute("SELECT url FROM peers ORDER BY url ASC").fetchall()
         return [str(row["url"]) for row in rows]
 
+    def list_peer_identities(self) -> list[dict[str, object]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT node_id, url, address, signature_scheme, public_key_json, status, admitted_at, last_seen,
+                       score, success_count, failure_count
+                FROM peer_identities
+                ORDER BY url ASC
+                """
+            ).fetchall()
+        return [
+            {
+                "node_id": str(row["node_id"]),
+                "url": str(row["url"]),
+                "address": str(row["address"]),
+                "signature_scheme": str(row["signature_scheme"]),
+                "public_key": json.loads(row["public_key_json"]),
+                "status": str(row["status"]),
+                "admitted_at": float(row["admitted_at"]),
+                "last_seen": float(row["last_seen"]),
+                "score": int(row["score"]),
+                "success_count": int(row["success_count"]),
+                "failure_count": int(row["failure_count"]),
+            }
+            for row in rows
+        ]
+
+    def open_migration_dispute(
+        self,
+        *,
+        dispute_id: str,
+        classical_address: str,
+        opened_at: float,
+        challenge_deadline_height: int,
+        reason: str,
+        evidence_hash: str,
+    ) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO migration_disputes (
+                    dispute_id, classical_address, opened_at, challenge_deadline_height,
+                    status, reason, evidence_hash
+                )
+                VALUES (?, ?, ?, ?, 'open', ?, ?)
+                """,
+                (dispute_id, classical_address, opened_at, challenge_deadline_height, reason, evidence_hash),
+            )
+
+    def resolve_migration_dispute(self, dispute_id: str, *, status: str, resolution_note: str) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE migration_disputes
+                SET status = ?, resolution_note = ?, resolved_at = ?
+                WHERE dispute_id = ?
+                """,
+                (status, resolution_note, time.time(), dispute_id),
+            )
+
+    def submit_migration_dispute_evidence(
+        self,
+        dispute_id: str,
+        *,
+        evidence_hash: str,
+        evidence: dict[str, object],
+    ) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE migration_disputes
+                SET status = 'evidence_submitted',
+                    evidence_hash = ?,
+                    evidence_json = ?,
+                    evidence_submitted_at = ?
+                WHERE dispute_id = ?
+                """,
+                (
+                    evidence_hash,
+                    json.dumps(evidence, sort_keys=True, separators=(",", ":")),
+                    time.time(),
+                    dispute_id,
+                ),
+            )
+
+    def expire_migration_disputes(self, current_height: int) -> int:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE migration_disputes
+                SET status = 'expired',
+                    resolution_note = 'challenge window expired without fraud resolution',
+                    resolved_at = ?
+                WHERE status IN ('open', 'evidence_submitted')
+                  AND challenge_deadline_height < ?
+                """,
+                (time.time(), current_height),
+            )
+            return int(cursor.rowcount)
+
+    def list_migration_disputes(self, classical_address: str | None = None) -> list[dict[str, object]]:
+        query = """
+            SELECT dispute_id, classical_address, opened_at, challenge_deadline_height,
+                   status, reason, evidence_hash, evidence_json, evidence_submitted_at,
+                   resolution_note, resolved_at
+            FROM migration_disputes
+        """
+        params: tuple[object, ...] = ()
+        if classical_address is not None:
+            query += " WHERE classical_address = ?"
+            params = (classical_address,)
+        query += " ORDER BY opened_at DESC"
+        with self._connect() as connection:
+            rows = connection.execute(query, params).fetchall()
+        return [
+            {
+                "dispute_id": str(row["dispute_id"]),
+                "classical_address": str(row["classical_address"]),
+                "opened_at": float(row["opened_at"]),
+                "challenge_deadline_height": int(row["challenge_deadline_height"]),
+                "status": str(row["status"]),
+                "reason": str(row["reason"]),
+                "evidence_hash": str(row["evidence_hash"]),
+                "evidence": json.loads(str(row["evidence_json"] or "{}")),
+                "evidence_submitted_at": float(row["evidence_submitted_at"]),
+                "resolution_note": str(row["resolution_note"]),
+                "resolved_at": float(row["resolved_at"]),
+            }
+            for row in rows
+        ]
+
     def upsert_peer_identity(
         self,
         *,
@@ -1016,7 +1184,8 @@ class SQLiteChainStore:
         with self._connect() as connection:
             row = connection.execute(
                 """
-                SELECT node_id, url, address, signature_scheme, public_key_json, status, admitted_at, last_seen
+                SELECT node_id, url, address, signature_scheme, public_key_json, status, admitted_at, last_seen,
+                       score, success_count, failure_count
                 FROM peer_identities
                 WHERE url = ?
                 """,
@@ -1033,13 +1202,17 @@ class SQLiteChainStore:
             "status": str(row["status"]),
             "admitted_at": float(row["admitted_at"]),
             "last_seen": float(row["last_seen"]),
+            "score": int(row["score"]),
+            "success_count": int(row["success_count"]),
+            "failure_count": int(row["failure_count"]),
         }
 
     def peer_identity_by_node_id(self, node_id: str) -> dict[str, object] | None:
         with self._connect() as connection:
             row = connection.execute(
                 """
-                SELECT node_id, url, address, signature_scheme, public_key_json, status, admitted_at, last_seen
+                SELECT node_id, url, address, signature_scheme, public_key_json, status, admitted_at, last_seen,
+                       score, success_count, failure_count
                 FROM peer_identities
                 WHERE node_id = ?
                 """,
@@ -1056,7 +1229,35 @@ class SQLiteChainStore:
             "status": str(row["status"]),
             "admitted_at": float(row["admitted_at"]),
             "last_seen": float(row["last_seen"]),
+            "score": int(row["score"]),
+            "success_count": int(row["success_count"]),
+            "failure_count": int(row["failure_count"]),
         }
+
+    def record_peer_sync_result(self, node_id: str, *, success: bool, score_delta: int) -> None:
+        with self._connect() as connection:
+            if success:
+                connection.execute(
+                    """
+                    UPDATE peer_identities
+                    SET score = score + ?,
+                        success_count = success_count + 1,
+                        last_seen = ?
+                    WHERE node_id = ?
+                    """,
+                    (score_delta, time.time(), node_id),
+                )
+            else:
+                connection.execute(
+                    """
+                    UPDATE peer_identities
+                    SET score = score + ?,
+                        failure_count = failure_count + 1,
+                        last_seen = ?
+                    WHERE node_id = ?
+                    """,
+                    (score_delta, time.time(), node_id),
+                )
 
     def mark_peer_nonce(self, node_id: str, nonce: str, seen_at: float) -> None:
         with self._connect() as connection:

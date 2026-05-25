@@ -77,6 +77,11 @@ def _service_from_args(args: argparse.Namespace) -> NodeService:
             peer_session_ttl_seconds=base.peer_session_ttl_seconds,
             peer_protocol_version=base.peer_protocol_version,
             max_peer_blocks_per_request=base.max_peer_blocks_per_request,
+            state_root_activation_height=base.state_root_activation_height,
+            gossip_fanout=base.gossip_fanout,
+            peer_bad_block_penalty=base.peer_bad_block_penalty,
+            peer_invalid_frame_penalty=base.peer_invalid_frame_penalty,
+            min_peer_diversity=base.min_peer_diversity,
             migration_claim_start_height=base.migration_claim_start_height,
             migration_claim_end_height=base.migration_claim_end_height,
             migration_dual_control_start_height=base.migration_dual_control_start_height,
@@ -134,6 +139,29 @@ def build_parser() -> argparse.ArgumentParser:
     crypto_performance.add_argument("--output", default=None)
     crypto_performance.set_defaults(handler=cmd_crypto_performance)
 
+    native_boundary = subparsers.add_parser("crypto-native-boundary", help="Show native Rust/C crypto boundary targets")
+    native_boundary.add_argument("--output", default=None)
+    native_boundary.set_defaults(handler=cmd_crypto_native_boundary)
+
+    signer_consensus = subparsers.add_parser("signer-consensus-boundary", help="Show wallet signer and consensus separation")
+    signer_consensus.add_argument("--output", default=None)
+    signer_consensus.set_defaults(handler=cmd_signer_consensus_boundary)
+
+    verification_parallelism = subparsers.add_parser(
+        "verification-parallelism",
+        help="Show consensus signature verification worker posture",
+    )
+    verification_parallelism.add_argument("--output", default=None)
+    verification_parallelism.set_defaults(handler=cmd_verification_parallelism)
+
+    tx_state_model = subparsers.add_parser("tx-state-model", help="Show deterministic transaction execution and state model")
+    tx_state_model.add_argument("--output", default=None)
+    tx_state_model.set_defaults(handler=cmd_tx_state_model)
+
+    state_root_policy = subparsers.add_parser("state-root-policy", help="Show state-root activation rules")
+    state_root_policy.add_argument("--output", default=None)
+    state_root_policy.set_defaults(handler=cmd_state_root_policy)
+
     tx_resource_policy = subparsers.add_parser("tx-resource-policy", help="Show transaction and signature payload resource policy")
     tx_resource_policy.add_argument("--output", default=None)
     tx_resource_policy.set_defaults(handler=cmd_tx_resource_policy)
@@ -141,6 +169,34 @@ def build_parser() -> argparse.ArgumentParser:
     consensus_economics = subparsers.add_parser("consensus-economics", help="Show consensus and economics readiness report")
     consensus_economics.add_argument("--output", default=None)
     consensus_economics.set_defaults(handler=cmd_consensus_economics)
+
+    validator_networking = subparsers.add_parser("validator-networking", help="Show validator peer-networking readiness")
+    validator_networking.add_argument("--output", default=None)
+    validator_networking.set_defaults(handler=cmd_validator_networking)
+
+    peer_diversity = subparsers.add_parser("peer-diversity", help="Show anti-eclipse peer diversity status")
+    peer_diversity.add_argument("--output", default=None)
+    peer_diversity.set_defaults(handler=cmd_peer_diversity)
+
+    migration_finality = subparsers.add_parser("migration-finality-fraud", help="Show migration finality and fraud controls")
+    migration_finality.add_argument("--output", default=None)
+    migration_finality.set_defaults(handler=cmd_migration_finality_fraud)
+
+    adversarial_performance = subparsers.add_parser(
+        "adversarial-performance",
+        help="Show adversarial and performance hardening readiness",
+    )
+    adversarial_performance.add_argument("--output", default=None)
+    adversarial_performance.set_defaults(handler=cmd_adversarial_performance)
+
+    load_chaos = subparsers.add_parser("load-chaos", help="Run deterministic multi-node load and chaos scenarios")
+    load_chaos.add_argument("--scenario", default="all")
+    load_chaos.add_argument("--node-count", type=int, default=3)
+    load_chaos.add_argument("--mempool-transactions", type=int, default=8)
+    load_chaos.add_argument("--migration-claims", type=int, default=6)
+    load_chaos.add_argument("--verification-batch-size", type=int, default=8)
+    load_chaos.add_argument("--output", default=None)
+    load_chaos.set_defaults(handler=cmd_load_chaos)
 
     release_provenance = subparsers.add_parser("release-provenance", help="Build a release provenance manifest")
     release_provenance.add_argument("--output", default=None)
@@ -192,6 +248,32 @@ def build_parser() -> argparse.ArgumentParser:
     dispute_packet.add_argument("--classical-address", required=True)
     dispute_packet.add_argument("--output", default=None)
     dispute_packet.set_defaults(handler=cmd_migration_dispute_packet)
+
+    disputes = subparsers.add_parser("migration-disputes", help="List migration disputes")
+    disputes.add_argument("--classical-address", default=None)
+    disputes.add_argument("--output", default=None)
+    disputes.set_defaults(handler=cmd_migration_disputes)
+
+    dispute_open = subparsers.add_parser("migration-dispute-open", help="Open and quarantine a disputed migration source")
+    dispute_open.add_argument("--classical-address", required=True)
+    dispute_open.add_argument("--reason", required=True)
+    dispute_open.add_argument("--evidence-hash", default="")
+    dispute_open.add_argument("--output", default=None)
+    dispute_open.set_defaults(handler=cmd_migration_dispute_open)
+
+    dispute_evidence = subparsers.add_parser("migration-dispute-evidence", help="Submit evidence for an open migration dispute")
+    dispute_evidence.add_argument("--dispute-id", required=True)
+    dispute_evidence.add_argument("--evidence-hash", default="")
+    dispute_evidence.add_argument("--evidence-json", default="{}")
+    dispute_evidence.add_argument("--output", default=None)
+    dispute_evidence.set_defaults(handler=cmd_migration_dispute_evidence)
+
+    dispute_resolve = subparsers.add_parser("migration-dispute-resolve", help="Resolve a migration dispute")
+    dispute_resolve.add_argument("--dispute-id", required=True)
+    dispute_resolve.add_argument("--outcome", choices=["resolved_valid", "resolved_fraud"], required=True)
+    dispute_resolve.add_argument("--resolution-note", required=True)
+    dispute_resolve.add_argument("--output", default=None)
+    dispute_resolve.set_defaults(handler=cmd_migration_dispute_resolve)
 
     snapshot_attestations = subparsers.add_parser("migration-snapshot-attestations", help="Show snapshot signer/quorum readiness")
     snapshot_attestations.add_argument("--output", default=None)
@@ -406,6 +488,36 @@ def cmd_crypto_performance(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_crypto_native_boundary(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    _write_json_output(service.native_crypto_runtime_boundary_report(), None if args.output is None else Path(args.output))
+    return 0
+
+
+def cmd_signer_consensus_boundary(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    _write_json_output(service.signer_consensus_separation_report(), None if args.output is None else Path(args.output))
+    return 0
+
+
+def cmd_verification_parallelism(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    _write_json_output(service.parallel_verification_report(), None if args.output is None else Path(args.output))
+    return 0
+
+
+def cmd_tx_state_model(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    _write_json_output(service.transaction_state_model_report(), None if args.output is None else Path(args.output))
+    return 0
+
+
+def cmd_state_root_policy(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    _write_json_output(service.state_root_policy(), None if args.output is None else Path(args.output))
+    return 0
+
+
 def cmd_tx_resource_policy(args: argparse.Namespace) -> int:
     service = _service_from_args(args)
     _write_json_output(service.transaction_resource_policy_report(), None if args.output is None else Path(args.output))
@@ -415,6 +527,45 @@ def cmd_tx_resource_policy(args: argparse.Namespace) -> int:
 def cmd_consensus_economics(args: argparse.Namespace) -> int:
     service = _service_from_args(args)
     _write_json_output(service.consensus_economics_report(), None if args.output is None else Path(args.output))
+    return 0
+
+
+def cmd_validator_networking(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    _write_json_output(service.validator_networking_readiness_report(), None if args.output is None else Path(args.output))
+    return 0
+
+
+def cmd_peer_diversity(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    _write_json_output(service.peer_diversity_report(), None if args.output is None else Path(args.output))
+    return 0
+
+
+def cmd_migration_finality_fraud(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    _write_json_output(service.migration_finality_fraud_report(), None if args.output is None else Path(args.output))
+    return 0
+
+
+def cmd_adversarial_performance(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    _write_json_output(service.adversarial_performance_readiness_report(), None if args.output is None else Path(args.output))
+    return 0
+
+
+def cmd_load_chaos(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    _write_json_output(
+        service.load_chaos_harness_report(
+            scenario=args.scenario,
+            node_count=args.node_count,
+            mempool_transactions=args.mempool_transactions,
+            migration_claims=args.migration_claims,
+            verification_batch_size=args.verification_batch_size,
+        ),
+        None if args.output is None else Path(args.output),
+    )
     return 0
 
 
@@ -491,6 +642,57 @@ def cmd_migration_dispute_packet(args: argparse.Namespace) -> int:
     service = _service_from_args(args)
     _write_json_output(
         service.migration_dispute_packet(args.classical_address),
+        None if args.output is None else Path(args.output),
+    )
+    return 0
+
+
+def cmd_migration_disputes(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    _write_json_output(
+        service.migration_disputes(args.classical_address),
+        None if args.output is None else Path(args.output),
+    )
+    return 0
+
+
+def cmd_migration_dispute_open(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    _write_json_output(
+        service.open_migration_dispute(
+            args.classical_address,
+            reason=args.reason,
+            evidence_hash=args.evidence_hash,
+        ),
+        None if args.output is None else Path(args.output),
+    )
+    return 0
+
+
+def cmd_migration_dispute_evidence(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    evidence = json.loads(args.evidence_json)
+    if not isinstance(evidence, dict):
+        raise ValueError("--evidence-json must decode to an object")
+    _write_json_output(
+        service.submit_migration_dispute_evidence(
+            args.dispute_id,
+            evidence=evidence,
+            evidence_hash=args.evidence_hash,
+        ),
+        None if args.output is None else Path(args.output),
+    )
+    return 0
+
+
+def cmd_migration_dispute_resolve(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    _write_json_output(
+        service.resolve_migration_dispute(
+            args.dispute_id,
+            outcome=args.outcome,
+            resolution_note=args.resolution_note,
+        ),
         None if args.output is None else Path(args.output),
     )
     return 0

@@ -58,11 +58,50 @@ class NodeRequestHandler(BaseHTTPRequestHandler):
         if path == "/crypto/performance":
             self._respond(HTTPStatus.OK, self.service.signature_performance_report())
             return
+        if path == "/crypto/native-boundary":
+            self._respond(HTTPStatus.OK, self.service.native_crypto_runtime_boundary_report())
+            return
+        if path == "/architecture/signer-consensus":
+            self._respond(HTTPStatus.OK, self.service.signer_consensus_separation_report())
+            return
+        if path == "/consensus/verification-parallelism":
+            self._respond(HTTPStatus.OK, self.service.parallel_verification_report())
+            return
+        if path == "/transactions/state-model":
+            self._respond(HTTPStatus.OK, self.service.transaction_state_model_report())
+            return
+        if path == "/consensus/state-root-policy":
+            self._respond(HTTPStatus.OK, self.service.state_root_policy())
+            return
         if path == "/transactions/resource-policy":
             self._respond(HTTPStatus.OK, self.service.transaction_resource_policy_report())
             return
         if path == "/consensus/economics":
             self._respond(HTTPStatus.OK, self.service.consensus_economics_report())
+            return
+        if path == "/network/validator-readiness":
+            self._respond(HTTPStatus.OK, self.service.validator_networking_readiness_report())
+            return
+        if path == "/migration/finality-fraud":
+            self._respond(HTTPStatus.OK, self.service.migration_finality_fraud_report())
+            return
+        if path == "/testing/adversarial-performance":
+            self._respond(HTTPStatus.OK, self.service.adversarial_performance_readiness_report())
+            return
+        if path == "/testing/load-chaos":
+            query = parse_qs(parsed.query)
+            try:
+                report = self.service.load_chaos_harness_report(
+                    scenario=query.get("scenario", ["all"])[0],
+                    node_count=int(query.get("node_count", ["3"])[0]),
+                    mempool_transactions=int(query.get("mempool_transactions", ["8"])[0]),
+                    migration_claims=int(query.get("migration_claims", ["6"])[0]),
+                    verification_batch_size=int(query.get("verification_batch_size", ["8"])[0]),
+                )
+            except ValueError as error:
+                self._respond(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+                return
+            self._respond(HTTPStatus.OK, report)
             return
         if path == "/release/provenance":
             self._respond(HTTPStatus.OK, self.service.release_provenance_manifest())
@@ -115,6 +154,14 @@ class NodeRequestHandler(BaseHTTPRequestHandler):
                 self._respond(HTTPStatus.BAD_REQUEST, {"error": str(error)})
                 return
             self._respond(HTTPStatus.OK, packet)
+            return
+        if path == "/migration/disputes":
+            query = parse_qs(parsed.query)
+            classical_address = query.get("classical_address", [None])[0]
+            self._respond(HTTPStatus.OK, self.service.migration_disputes(classical_address))
+            return
+        if path == "/network/peer-diversity":
+            self._respond(HTTPStatus.OK, self.service.peer_diversity_report())
             return
         if path == "/migration/networks":
             self._respond(HTTPStatus.OK, self.service.migration_network_profiles())
@@ -291,6 +338,63 @@ class NodeRequestHandler(BaseHTTPRequestHandler):
                 self._respond(HTTPStatus.BAD_REQUEST, {"error": str(error)})
                 return
             self._respond(HTTPStatus.CREATED, source)
+            return
+
+        if path == "/migration/disputes":
+            classical_address = str(payload.get("classical_address", ""))
+            reason = str(payload.get("reason", ""))
+            if not classical_address or not reason:
+                self._respond(HTTPStatus.BAD_REQUEST, {"error": "classical_address and reason are required"})
+                return
+            try:
+                dispute = self.service.open_migration_dispute(
+                    classical_address,
+                    reason=reason,
+                    evidence_hash=str(payload.get("evidence_hash", "")),
+                )
+            except ValueError as error:
+                self._respond(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+                return
+            self._respond(HTTPStatus.CREATED, dispute)
+            return
+
+        if path == "/migration/disputes/evidence":
+            dispute_id = str(payload.get("dispute_id", ""))
+            if not dispute_id:
+                self._respond(HTTPStatus.BAD_REQUEST, {"error": "dispute_id is required"})
+                return
+            try:
+                evidence = payload.get("evidence", {})
+                if not isinstance(evidence, dict):
+                    raise ValueError("evidence must be an object")
+                dispute = self.service.submit_migration_dispute_evidence(
+                    dispute_id,
+                    evidence=evidence,
+                    evidence_hash=str(payload.get("evidence_hash", "")),
+                )
+            except ValueError as error:
+                self._respond(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+                return
+            self._respond(HTTPStatus.OK, dispute)
+            return
+
+        if path == "/migration/disputes/resolve":
+            dispute_id = str(payload.get("dispute_id", ""))
+            outcome = str(payload.get("outcome", ""))
+            note = str(payload.get("resolution_note", ""))
+            if not dispute_id or not outcome or not note:
+                self._respond(HTTPStatus.BAD_REQUEST, {"error": "dispute_id, outcome, and resolution_note are required"})
+                return
+            try:
+                dispute = self.service.resolve_migration_dispute(
+                    dispute_id,
+                    outcome=outcome,
+                    resolution_note=note,
+                )
+            except ValueError as error:
+                self._respond(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+                return
+            self._respond(HTTPStatus.OK, dispute)
             return
 
         if path == "/migration/snapshots/export":
@@ -543,6 +647,40 @@ class NodeRequestHandler(BaseHTTPRequestHandler):
                 )
                 start_height = int(frame_payload.get("start_height", 0))
                 response = self.service.authenticated_blocks(auth, start_height)
+            except ValueError as error:
+                self._respond(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+                return
+            self._respond(HTTPStatus.OK, response)
+            return
+
+        if path == "/peer/gossip/transaction":
+            try:
+                frame_payload, auth = parse_peer_frame(
+                    payload,
+                    expected_protocol_version=self.service.config.peer_protocol_version,
+                    expected_message_type="peer_transaction_gossip",
+                )
+                transaction_payload = frame_payload.get("transaction", {})
+                if not isinstance(transaction_payload, dict):
+                    raise ValueError("Transaction gossip payload is invalid.")
+                response = self.service.receive_authenticated_transaction_gossip(auth, transaction_payload)
+            except ValueError as error:
+                self._respond(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+                return
+            self._respond(HTTPStatus.OK, response)
+            return
+
+        if path == "/peer/gossip/block":
+            try:
+                frame_payload, auth = parse_peer_frame(
+                    payload,
+                    expected_protocol_version=self.service.config.peer_protocol_version,
+                    expected_message_type="peer_block_gossip",
+                )
+                block_payload = frame_payload.get("block", {})
+                if not isinstance(block_payload, dict):
+                    raise ValueError("Block gossip payload is invalid.")
+                response = self.service.receive_authenticated_block_gossip(auth, block_payload)
             except ValueError as error:
                 self._respond(HTTPStatus.BAD_REQUEST, {"error": str(error)})
                 return

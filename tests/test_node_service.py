@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -20,8 +21,9 @@ from qr_blockchain.migration import (
     build_demo_classical_claim_public_key,
     classical_claim_message_bytes,
 )
-from qr_blockchain.models import Transaction, TxOutput
+from qr_blockchain.models import Block, Transaction, TxOutput
 from qr_blockchain.protocol import build_peer_frame
+from qr_blockchain.verification import verify_transaction_inputs
 import qr_chain_classical_migration_backend_secp256k1 as secp_backend
 
 
@@ -168,6 +170,31 @@ class NodeServiceTests(unittest.TestCase):
         self.assertIn("results", performance)
         self.assertEqual(performance["target_sign_ms"], service.config.target_signature_sign_ms)
 
+    def test_signer_consensus_native_and_parallel_reports(self) -> None:
+        service, _ = self.make_service()
+
+        separation = service.signer_consensus_separation_report()
+        native = service.native_crypto_runtime_boundary_report()
+        parallel = service.parallel_verification_report()
+        state_model = service.transaction_state_model_report()
+        validator_network = service.validator_networking_readiness_report()
+        migration_finality = service.migration_finality_fraud_report()
+        adversarial_performance = service.adversarial_performance_readiness_report()
+
+        self.assertEqual(separation["architecture_status"], "separated_boundary")
+        self.assertEqual(separation["module_boundaries"]["wallet_signer"], "qr_blockchain.signer.LocalWalletSigner")
+        self.assertEqual(native["current_python_role"], "orchestration_policy_api_tests")
+        self.assertIn("targets", native)
+        self.assertEqual(parallel["parallelism_status"], "native_worker_pool_enabled_for_native_provider")
+        self.assertIn("batch_verification_note", parallel)
+        self.assertEqual(state_model["state_model_status"], "utxo_deterministic_v1")
+        self.assertIn(
+            validator_network["validator_networking_status"],
+            {"authenticated_gossip_with_diversity_checks", "authenticated_gossip_needs_peer_diversity"},
+        )
+        self.assertEqual(migration_finality["migration_finality_status"], "challenge_lifecycle_with_claim_unlock_rules")
+        self.assertIn("parallelization_policy", adversarial_performance)
+
     def test_resource_consensus_release_and_incident_reports(self) -> None:
         service, _ = self.make_service()
 
@@ -248,6 +275,90 @@ class NodeServiceTests(unittest.TestCase):
         self.assertTrue(backup["backup_manifest_hash"])
         self.assertTrue(backup["files"]["chain_db"]["exists"])
         self.assertEqual(backup["files"]["chain_db"]["path"], str(db_path))
+
+    def test_open_migration_dispute_quarantines_source(self) -> None:
+        service, _ = self.make_service()
+        classical_address = build_demo_classical_claim_address(build_demo_classical_claim_public_key("open-dispute"))
+        service.seed_migration_source(
+            classical_address=classical_address,
+            provider_id="classical_claim_demo_v1",
+            source_network="legacy-demo-ledger",
+            amount=8,
+            snapshot_ref="disputed-snapshot",
+        )
+
+        dispute = service.open_migration_dispute(classical_address, reason="conflicting external ownership proof")
+        disputes = service.migration_disputes(classical_address)
+        source = service.store.migration_source(classical_address)
+
+        self.assertEqual(dispute["status"], "open")
+        self.assertEqual(disputes["open_dispute_count"], 1)
+        self.assertEqual(source["status"], "quarantined")
+        self.assertIn("open dispute", source["status_reason"])
+
+    def test_migration_dispute_lifecycle_blocks_unlocks_and_revokes_claims(self) -> None:
+        service, _ = self.make_service()
+        classical_address = build_demo_classical_claim_address(build_demo_classical_claim_public_key("lifecycle"))
+        service.seed_migration_source(
+            classical_address=classical_address,
+            provider_id="classical_claim_demo_v1",
+            source_network="legacy-demo-ledger",
+            amount=8,
+            snapshot_ref="lifecycle-snapshot",
+        )
+
+        opened = service.open_migration_dispute(classical_address, reason="conflicting source export")
+        self.assertFalse(service.migration_claim_quote(classical_address)["claimable"])
+        evidence = service.submit_migration_dispute_evidence(
+            opened["dispute_id"],
+            evidence={"source_export_hash": "abc"},
+        )
+        self.assertEqual(evidence["status"], "evidence_submitted")
+        resolved = service.resolve_migration_dispute(
+            opened["dispute_id"],
+            outcome="resolved_valid",
+            resolution_note="operator review accepted original source",
+        )
+        self.assertEqual(resolved["status"], "resolved_valid")
+        self.assertTrue(service.migration_claim_quote(classical_address)["claimable"])
+
+        fraud_address = build_demo_classical_claim_address(build_demo_classical_claim_public_key("fraud"))
+        service.seed_migration_source(
+            classical_address=fraud_address,
+            provider_id="classical_claim_demo_v1",
+            source_network="legacy-demo-ledger",
+            amount=5,
+            snapshot_ref="fraud-snapshot",
+        )
+        fraud = service.open_migration_dispute(fraud_address, reason="forged ownership")
+        service.resolve_migration_dispute(
+            fraud["dispute_id"],
+            outcome="resolved_fraud",
+            resolution_note="source signature failed review",
+        )
+        self.assertEqual(service.store.migration_source(fraud_address)["status"], "revoked")
+        self.assertFalse(service.migration_claim_quote(fraud_address)["claimable"])
+
+    def test_expired_migration_dispute_unlocks_claim_after_challenge_window(self) -> None:
+        service, _ = self.make_service()
+        service.config = replace(service.config, migration_dispute_window_blocks=0)
+        classical_address = build_demo_classical_claim_address(build_demo_classical_claim_public_key("expired"))
+        service.seed_migration_source(
+            classical_address=classical_address,
+            provider_id="classical_claim_demo_v1",
+            source_network="legacy-demo-ledger",
+            amount=5,
+            snapshot_ref="expired-snapshot",
+        )
+        service.create_genesis_block({"bootstrap": 1})
+        opened = service.open_migration_dispute(classical_address, reason="temporary review")
+        service.mine_pending_transactions("miner")
+
+        expired = service.expire_migration_disputes()
+
+        self.assertEqual(expired["expired_count"], 1)
+        self.assertEqual(service._migration_dispute_by_id(opened["dispute_id"])["status"], "expired")
+        self.assertTrue(service.migration_claim_quote(classical_address)["claimable"])
 
     def test_migration_governance_report_tracks_disputes_and_pause(self) -> None:
         service, _ = self.make_service()
@@ -429,6 +540,143 @@ class NodeServiceTests(unittest.TestCase):
         self.assertEqual(service.balance_for_address(bob_receive), 30)
         self.assertEqual(service.balance_for_address(miner_address), 12)
         self.assertEqual(alice.balance(service), 3)
+
+    def test_native_provider_multi_input_verification_uses_rust_worker_pool_when_built(self) -> None:
+        if importlib.util.find_spec("qr_chain_native_signer._native") is None:
+            self.skipTest("Rust native signer extension is not built.")
+        service, _ = self.make_service()
+
+        with patch.dict(
+            os.environ,
+            {
+                "QR_CHAIN_NATIVE_SIGNER_MODE": "extension",
+                "QR_CHAIN_NATIVE_SIGNER_USE_LIBOQS": "false",
+            },
+            clear=False,
+        ):
+            alice = Wallet("Alice", signature_provider="native_test_pq_v1")
+            bob = Wallet("Bob", signature_provider="native_test_pq_v1")
+            alice_first = alice.create_address()
+            alice_second = alice.create_address()
+            service.create_genesis_block({alice_first: 12, alice_second: 12})
+
+            transaction = alice.create_transaction(service, bob.create_address(), amount=20, fee=1)
+            verification = verify_transaction_inputs(transaction, service.store.all_utxos(), max_workers=2)
+
+        self.assertTrue(verification.verified, verification.failure)
+        self.assertEqual(verification.checked_inputs, 2)
+        self.assertEqual(verification.mode, "native_rust_batch")
+
+    def test_version3_blocks_commit_state_root_and_coinbase_maturity(self) -> None:
+        temp_root = Path("test_runtime") / self._testMethodName
+        if temp_root.exists():
+            shutil.rmtree(temp_root)
+        temp_root.mkdir(parents=True)
+        self.addCleanup(lambda: shutil.rmtree(temp_root, ignore_errors=True))
+        config = replace(self.make_config(temp_root / "chain.db"), coinbase_maturity_blocks=2)
+        service = NodeService(config)
+        miner = Wallet("Miner")
+        bob = Wallet("Bob")
+
+        service.create_genesis_block({"bootstrap": 1})
+        miner_address = miner.create_address()
+        reward_block = service.mine_pending_transactions(miner_address)
+        self.assertEqual(reward_block.version, 3)
+        self.assertTrue(reward_block.state_root)
+
+        spend_reward = miner.create_transaction(service, bob.create_address(), amount=1, fee=1)
+        with self.assertRaisesRegex(ValueError, "Coinbase output has not reached configured maturity"):
+            service.submit_transaction(spend_reward)
+
+        service.mine_pending_transactions(miner_address)
+        service.submit_transaction(spend_reward)
+        self.assertEqual(service.store.pending_transaction_count(), 1)
+
+    def test_rejects_missing_state_root_after_activation_height(self) -> None:
+        service, _ = self.make_service()
+        service.config = replace(service.config, state_root_activation_height=1)
+        service.create_genesis_block({"bootstrap": 1})
+        latest = service.store.latest_block()
+        assert latest is not None
+        reward = Transaction(
+            inputs=[],
+            outputs=[TxOutput(recipient="miner", amount=service.currency_policy().subsidy_at_height(1))],
+            chain_id=service.config.chain_id,
+            signature_scheme=service.config.default_signature_provider,
+            fee=0,
+        )
+        reward.finalize()
+        missing_root = Block(
+            index=1,
+            previous_hash=str(latest["block_hash"]),
+            transactions=[reward],
+            miner="miner",
+            difficulty=service.config.difficulty,
+            chain_id=service.config.chain_id,
+            version=3,
+            state_root="",
+        )
+        missing_root.mine()
+
+        with self.assertRaisesRegex(ValueError, "missing the required state root"):
+            service.import_block(missing_root)
+
+    def test_migration_claim_reorg_rebuilds_state_root_and_claim_index(self) -> None:
+        source, _ = self.make_service()
+        target = self.make_additional_service("target")
+        pq_wallet = Wallet("PQWallet")
+        miner = Wallet("Miner")
+        classical_public_key = build_demo_classical_claim_public_key("state-root-reorg")
+        classical_address = build_demo_classical_claim_address(classical_public_key)
+
+        for service in (source, target):
+            service.create_genesis_block({"bootstrap": 1})
+            service.seed_migration_source(
+                classical_address=classical_address,
+                provider_id="classical_claim_demo_v1",
+                source_network="legacy-demo-ledger",
+                amount=9,
+                snapshot_ref="state-root-reorg",
+            )
+
+        preview = target.build_migration_claim_draft(
+            destination_address=pq_wallet.create_address(),
+            classical_address=classical_address,
+            classical_provider_id="classical_claim_demo_v1",
+            source_network="legacy-demo-ledger",
+            snapshot_ref="state-root-reorg",
+            classical_public_key=classical_public_key,
+        )
+        classical_signature = build_demo_classical_claim_proof(
+            classical_public_key,
+            classical_claim_message_bytes(preview.migration_claim_payload()),
+        )
+        claim = pq_wallet.create_migration_claim(
+            target,
+            classical_address=classical_address,
+            classical_provider_id="classical_claim_demo_v1",
+            classical_public_key=classical_public_key,
+            classical_signature=classical_signature,
+            source_network="legacy-demo-ledger",
+            snapshot_ref="state-root-reorg",
+            destination_address=preview.outputs[0].recipient,
+            timestamp=preview.timestamp,
+        )
+        target.submit_transaction(claim)
+        target.mine_pending_transactions(miner.create_address())
+        self.assertIsNotNone(target.store.migration_claim(classical_address))
+
+        source_miner = miner.create_address()
+        first = source.mine_pending_transactions(source_miner)
+        second = source.mine_pending_transactions(source_miner)
+        target.import_block(first)
+        target.import_block(second)
+
+        best = target.get_block(2)
+        assert best is not None
+        self.assertIsNone(target.store.migration_claim(classical_address))
+        self.assertEqual(best.block_hash, second.block_hash)
+        self.assertEqual(best.state_root, target.state_root_for_utxos(target.store.all_utxos()))
 
     def test_rejects_pending_double_spend(self) -> None:
         service, _ = self.make_service()
@@ -1110,6 +1358,84 @@ class NodeServiceTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "payload binding"):
             target.authenticated_blocks(envelope, start_height=0)
+
+    def test_authenticated_gossip_accepts_transactions_and_penalizes_bad_blocks(self) -> None:
+        source = self.make_additional_service("source")
+        target = self.make_additional_service("target")
+        alice = Wallet("Alice")
+        bob = Wallet("Bob")
+
+        funding = alice.create_address()
+        source.create_genesis_block({funding: 25})
+        target.create_genesis_block({funding: 25})
+        response = target.accept_peer_handshake(
+            source.build_signed_envelope("peer_handshake_v2", {"target_url": target.config.advertised_url})
+        )
+        session_id = str(response["payload"]["session_id"])
+
+        transaction = alice.create_transaction(source, bob.create_address(), amount=10, fee=1)
+        transaction_payload = json.loads(transaction.serialize_with_id())
+        tx_envelope = source.build_peer_session_envelope(
+            "peer_transaction_gossip_v1",
+            target.config.advertised_url,
+            session_id,
+            "/peer/gossip/transaction",
+            {"transaction": transaction_payload},
+        )
+        tx_response = target.receive_authenticated_transaction_gossip(tx_envelope, transaction_payload)
+        self.assertEqual(tx_response["payload"]["tx_id"], transaction.tx_id)
+        self.assertEqual(target.store.pending_transaction_count(), 1)
+
+        bad_block = source.mine_pending_transactions("miner")
+        bad_block.state_root = "bad-root"
+        bad_block.block_hash = bad_block.compute_hash()
+        while not bad_block.block_hash.startswith("0" * bad_block.difficulty):
+            bad_block.nonce += 1
+            bad_block.block_hash = bad_block.compute_hash()
+        bad_payload = bad_block.to_dict()
+        bad_envelope = source.build_peer_session_envelope(
+            "peer_block_gossip_v1",
+            target.config.advertised_url,
+            session_id,
+            "/peer/gossip/block",
+            {"block": bad_payload},
+        )
+        with self.assertRaisesRegex(ValueError, "state root mismatch"):
+            target.receive_authenticated_block_gossip(bad_envelope, bad_payload)
+
+        peer = target.store.peer_identity_by_node_id(source.config.node_id)
+        assert peer is not None
+        self.assertLess(peer["score"], 0)
+        self.assertGreaterEqual(peer["failure_count"], 1)
+
+    def test_peer_diversity_report_flags_eclipse_risk(self) -> None:
+        service, _ = self.make_service()
+        service.config = replace(service.config, min_peer_diversity=2)
+        service.store.upsert_peer_identity(
+            node_id="node-a",
+            url="http://one.example.com:8080",
+            address="addr-a",
+            signature_scheme="hash_lamport_v1",
+            public_key={},
+            status="admitted",
+            admitted_at=1.0,
+            last_seen=1.0,
+        )
+        service.store.upsert_peer_identity(
+            node_id="node-b",
+            url="http://two.example.com:8080",
+            address="addr-b",
+            signature_scheme="hash_lamport_v1",
+            public_key={},
+            status="admitted",
+            admitted_at=1.0,
+            last_seen=1.0,
+        )
+
+        report = service.peer_diversity_report()
+
+        self.assertFalse(report["passed"])
+        self.assertEqual(report["distinct_groups"], 1)
 
     def test_wallet_defaults_to_xmss_style_scheme(self) -> None:
         service, _ = self.make_service()

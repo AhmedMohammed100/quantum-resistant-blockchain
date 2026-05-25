@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import importlib.util
 import sys
 import types
 import unittest
@@ -33,11 +34,13 @@ class SignatureProviderRegistryTests(unittest.TestCase):
 
         self.assertIn("hash_lamport_v1", providers)
         self.assertIn("xmss_merkle_lamport_v1", providers)
+        self.assertIn("native_test_pq_v1", providers)
         self.assertIn("mldsa65_oqs_v1", providers)
         self.assertIn("xmss_nist_v1", providers)
         self.assertIn("lms_nist_v1", providers)
         self.assertIn("sphincsplus_v1", providers)
         self.assertEqual(providers["xmss_nist_v1"].status, "adapter_ready")
+        self.assertEqual(providers["native_test_pq_v1"].implementation, "external_module_adapter")
         self.assertEqual(providers["mldsa65_oqs_v1"].algorithm_family, "ml-dsa")
         self.assertEqual(providers["lms_nist_v1"].implementation, "external_module_adapter")
         self.assertEqual(providers["sphincsplus_v1"].implementation, "external_module_adapter")
@@ -45,6 +48,97 @@ class SignatureProviderRegistryTests(unittest.TestCase):
     def test_resolves_verifier_by_scheme_id(self) -> None:
         verifier = get_signature_verifier("xmss_merkle_lamport_v1")
         self.assertEqual(verifier.metadata.provider_id, "xmss_merkle_lamport_v1")
+
+    def test_native_rust_boundary_deterministic_backend_round_trips(self) -> None:
+        provider = get_signature_provider("native_test_pq_v1")
+
+        keypair = provider.generate_keypair()
+        public_key, signature = provider.sign(keypair, b"native-boundary")
+
+        self.assertEqual(provider.derive_address(keypair), provider.address_from_public_key(public_key))
+        self.assertTrue(provider.verify(b"native-boundary", signature, public_key))
+        self.assertFalse(provider.verify(b"tampered", signature, public_key))
+        self.assertEqual(provider.serialize_keypair(keypair)["backend"], "qr_chain_native_signer")
+
+    def test_native_rust_boundary_reports_native_mode_dependency_state(self) -> None:
+        provider = get_signature_provider("native_test_pq_v1")
+        with patch.dict(
+            os.environ,
+            {
+                "QR_CHAIN_NATIVE_SIGNER_MODE": "extension",
+                "QR_CHAIN_NATIVE_SIGNER_USE_LIBOQS": "true",
+            },
+            clear=False,
+        ):
+            if importlib.util.find_spec("qr_chain_native_signer._native") is None:
+                with self.assertRaisesRegex(ValueError, "qr_chain_native_signer._native is not installed"):
+                    provider.generate_keypair()
+            else:
+                keypair = provider.generate_keypair()
+                self.assertEqual(keypair["mode"], "liboqs")
+
+    def test_native_rust_boundary_liboqs_extension_smoke(self) -> None:
+        if importlib.util.find_spec("qr_chain_native_signer._native") is None:
+            self.skipTest("Rust native signer extension is not built.")
+        provider = get_signature_provider("native_test_pq_v1")
+        for algorithm in ["ML-DSA-65", "Falcon-512", "SPHINCS+-SHAKE-128f-simple"]:
+            with self.subTest(algorithm=algorithm):
+                with patch.dict(
+                    os.environ,
+                    {
+                        "QR_CHAIN_NATIVE_SIGNER_MODE": "extension",
+                        "QR_CHAIN_NATIVE_SIGNER_USE_LIBOQS": "true",
+                        "QR_CHAIN_NATIVE_SIGNER_ALGORITHM": algorithm,
+                        "LIBOQS_DIR": str(os.path.expanduser("~")) + "\\_oqs",
+                    },
+                    clear=False,
+                ):
+                    try:
+                        keypair = provider.generate_keypair()
+                    except RuntimeError as error:
+                        self.skipTest(f"liboqs native extension is unavailable: {error}")
+                    public_key, signature = provider.sign(keypair, b"native-liboqs-smoke")
+                    self.assertTrue(provider.verify(b"native-liboqs-smoke", signature, public_key))
+                    self.assertFalse(provider.verify(b"tampered", signature, public_key))
+
+    def test_native_rust_batch_verification_extension_smoke(self) -> None:
+        if importlib.util.find_spec("qr_chain_native_signer._native") is None:
+            self.skipTest("Rust native signer extension is not built.")
+        provider = get_signature_provider("native_test_pq_v1")
+        with patch.dict(
+            os.environ,
+            {
+                "QR_CHAIN_NATIVE_SIGNER_MODE": "extension",
+                "QR_CHAIN_NATIVE_SIGNER_USE_LIBOQS": "false",
+            },
+            clear=False,
+        ):
+            import qr_chain_native_signer
+
+            keypair = provider.generate_keypair()
+            public_key, signature = provider.sign(keypair, b"native-batch")
+            result = qr_chain_native_signer.verify_batch(
+                [
+                    {
+                        "input_index": 0,
+                        "message": b"native-batch",
+                        "public_key": public_key,
+                        "signature": signature,
+                    },
+                    {
+                        "input_index": 1,
+                        "message": b"tampered",
+                        "public_key": public_key,
+                        "signature": signature,
+                    },
+                ],
+                max_workers=2,
+            )
+
+        self.assertEqual(result["worker"], "rust_native_batch_v1")
+        self.assertEqual(result["checked_inputs"], 2)
+        self.assertTrue(result["results"][0]["verified"])
+        self.assertFalse(result["results"][1]["verified"])
 
     def test_planned_provider_boundary_raises_cleanly(self) -> None:
         provider = get_signature_provider("sphincsplus_v1")
