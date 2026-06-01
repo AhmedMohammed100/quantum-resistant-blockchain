@@ -50,6 +50,7 @@ def _service_from_args(args: argparse.Namespace) -> NodeService:
             public_goods_allocation_cap=base.public_goods_allocation_cap,
             migration_conversion_policy=base.migration_conversion_policy,
             reward_recipient_policy=base.reward_recipient_policy,
+            deployment_mode=base.deployment_mode,
             host=base.host,
             port=base.port,
             chain_id=base.chain_id,
@@ -213,6 +214,17 @@ def build_parser() -> argparse.ArgumentParser:
     node_preflight = subparsers.add_parser("node-preflight", help="Show launch preflight gates across node subsystems")
     node_preflight.add_argument("--output", default=None)
     node_preflight.set_defaults(handler=cmd_node_preflight)
+
+    hardening_audit = subparsers.add_parser("hardening-audit", help="Show consolidated hardening audit gates")
+    hardening_audit.add_argument("--output", default=None)
+    hardening_audit.set_defaults(handler=cmd_hardening_audit)
+
+    production_config = subparsers.add_parser(
+        "production-config",
+        help="Show production configuration safety gates",
+    )
+    production_config.add_argument("--output", default=None)
+    production_config.set_defaults(handler=cmd_production_config)
 
     redaction_policy = subparsers.add_parser("privacy-redaction-policy", help="Show support-bundle redaction policy")
     redaction_policy.add_argument("--output", default=None)
@@ -590,6 +602,18 @@ def cmd_backup_manifest(args: argparse.Namespace) -> int:
 def cmd_node_preflight(args: argparse.Namespace) -> int:
     service = _service_from_args(args)
     _write_json_output(service.node_launch_preflight_report(), None if args.output is None else Path(args.output))
+    return 0
+
+
+def cmd_hardening_audit(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    _write_json_output(service.hardening_audit_report(), None if args.output is None else Path(args.output))
+    return 0
+
+
+def cmd_production_config(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    _write_json_output(service.production_configuration_report(), None if args.output is None else Path(args.output))
     return 0
 
 

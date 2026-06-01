@@ -27,6 +27,7 @@ class NodeConfigTests(unittest.TestCase):
             "QR_CHAIN_PUBLIC_GOODS_ALLOCATION_CAP": "1000000000000",
             "QR_CHAIN_MIGRATION_CONVERSION_POLICY": "test_capped_pool",
             "QR_CHAIN_REWARD_RECIPIENT_POLICY": "test_validator_split",
+            "QR_CHAIN_DEPLOYMENT_MODE": "production",
             "QR_CHAIN_HOST": "0.0.0.0",
             "QR_CHAIN_PORT": "9000",
             "QR_CHAIN_ID": "qr-chain-testnet",
@@ -92,6 +93,7 @@ class NodeConfigTests(unittest.TestCase):
         self.assertEqual(config.public_goods_allocation_cap, 1000000000000)
         self.assertEqual(config.migration_conversion_policy, "test_capped_pool")
         self.assertEqual(config.reward_recipient_policy, "test_validator_split")
+        self.assertEqual(config.deployment_mode, "production")
         self.assertEqual(config.host, "0.0.0.0")
         self.assertEqual(config.port, 9000)
         self.assertEqual(config.chain_id, "qr-chain-testnet")

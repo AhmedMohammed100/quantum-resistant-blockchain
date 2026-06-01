@@ -396,6 +396,10 @@ The current security model is based on layered controls:
 - **Governance pause and disputes:** operators can pause migration claims and expose dispute/reviewer windows through service reports.
 - **Provenance-bound snapshots:** source exports carry deterministic provenance hashes and source-chain anchors before import.
 - **Supply caps:** validation rejects blocks or claims that exceed configured QBC caps.
+- **Invariant tripwires:** the service can replay canonical UTXO state, activated state roots, migration-claim uniqueness, supply caps, and signer-recovery status through `security_invariant_report()`.
+- **Consolidated hardening audit:** `hardening-audit` and `/operations/hardening-audit` combine invariants, production config, preflight, migration, crypto, transport, consensus, adversarial, and backup gates into one hashed operator report.
+- **Production configuration gates:** `production-config` and `/operations/production-config` flag unsafe public-mode settings such as plaintext custody, demo providers, unsigned migration snapshots, and unbounded peer admission.
+- **Self-verifying ingestion manifests:** migration source-export manifests are checked against normalized records, provenance hashes, snapshot roots, and their own manifest hash before approval/import.
 
 ## Threat Model
 
@@ -408,6 +412,8 @@ The project currently focuses on these threats:
 - Duplicate migration claims, blocked-source claims, and claims outside configured windows.
 - Forks or reorgs that try to produce inconsistent UTXO, migration, or supply state.
 - Mempool flooding through oversized, malformed, low-fee, or duplicate transactions.
+- Authenticated gossip attempts that carry invalid transactions or blocks after a peer has been admitted.
+- Expired or interrupted stateful signer reservations that could otherwise reuse one-time PQ signing material.
 
 Out of scope until later production hardening:
 
@@ -428,6 +434,7 @@ Ready today:
 - Provider adapter development.
 - Multi-node authenticated sync experiments.
 - QBC economics and supply-policy validation.
+- Focused adversarial invariant checks for state roots, canonical UTXO replay, signer recovery, migration dispute finality, and authenticated gossip failure paths.
 
 Not ready yet:
 
@@ -493,6 +500,8 @@ Core endpoints:
 - `GET /operations/incident-runbook`
 - `GET /operations/backup-manifest`
 - `GET /operations/preflight`
+- `GET /operations/hardening-audit`
+- `GET /operations/production-config`
 - `GET /privacy/redaction-policy`
 - `GET /network/transport-readiness`
 - `GET /blocks?start_height=0`
@@ -576,6 +585,8 @@ qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db rel
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db incident-runbook
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db backup-manifest
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db node-preflight
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db hardening-audit
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db production-config
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db privacy-redaction-policy
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db network-transport-readiness
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-governance

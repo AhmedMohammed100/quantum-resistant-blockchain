@@ -115,6 +115,12 @@ class NodeRequestHandler(BaseHTTPRequestHandler):
         if path == "/operations/preflight":
             self._respond(HTTPStatus.OK, self.service.node_launch_preflight_report())
             return
+        if path == "/operations/hardening-audit":
+            self._respond(HTTPStatus.OK, self.service.hardening_audit_report())
+            return
+        if path == "/operations/production-config":
+            self._respond(HTTPStatus.OK, self.service.production_configuration_report())
+            return
         if path == "/privacy/redaction-policy":
             self._respond(HTTPStatus.OK, self.service.privacy_redaction_policy_report())
             return

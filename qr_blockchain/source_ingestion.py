@@ -25,6 +25,27 @@ def _merkle_root(items: list[dict[str, object]], *, empty_message: str) -> str:
     return current[0]
 
 
+def _canonical_source_export_hash(
+    *,
+    source_network: str,
+    snapshot_ref: str,
+    provider_id: str,
+    generated_at: float,
+    normalized_records: list[dict[str, object]],
+) -> str:
+    return hashlib.sha256(
+        canonical_json(
+            {
+                "source_network": source_network,
+                "snapshot_ref": snapshot_ref,
+                "provider_id": provider_id,
+                "generated_at": generated_at,
+                "records": sorted(normalized_records, key=lambda item: canonical_json(item)),
+            }
+        ).encode("utf-8")
+    ).hexdigest()
+
+
 def normalize_source_export(payload: dict[str, object]) -> dict[str, object]:
     source_network = str(payload.get("source_network", ""))
     snapshot_ref = str(payload.get("snapshot_ref", ""))
@@ -78,7 +99,8 @@ def normalize_source_export(payload: dict[str, object]) -> dict[str, object]:
         if public_key is None:
             warnings.append(
                 {
-                    "record_index": index,
+                    "classical_address": classical_address,
+                    "source_address": str(binding["source_address"]),
                     "kind": "missing_public_key",
                     "message": "Record relies on a precomputed canonical classical_address.",
                 }
@@ -131,21 +153,17 @@ def normalize_source_export(payload: dict[str, object]) -> dict[str, object]:
         "record_count": len(normalized_records),
         "total_amount": sum(int(record["amount"]) for record in normalized_records),
         "records_root": _merkle_root(normalized_records, empty_message="Source export must include records."),
-        "source_export_hash": hashlib.sha256(
-            canonical_json(
-                {
-                    "source_network": source_network,
-                    "snapshot_ref": snapshot_ref,
-                    "provider_id": provider_id,
-                    "generated_at": generated_at,
-                    "records": sorted(normalized_records, key=lambda item: canonical_json(item)),
-                }
-            ).encode("utf-8")
-        ).hexdigest(),
+        "source_export_hash": _canonical_source_export_hash(
+            source_network=source_network,
+            snapshot_ref=snapshot_ref,
+            provider_id=provider_id,
+            generated_at=generated_at,
+            normalized_records=normalized_records,
+        ),
         "snapshot_manifest_hash": bundle.manifest_hash,
         "snapshot_entries_root": bundle.entries_root(),
         "source_provenance_hash": provenance["source_provenance_hash"],
-        "warnings": warnings,
+        "warnings": sorted(warnings, key=lambda item: canonical_json(item)),
     }
     manifest["ingestion_manifest_hash"] = hashlib.sha256(canonical_json(manifest).encode("utf-8")).hexdigest()
     return {
@@ -185,8 +203,14 @@ def build_source_export_provenance(
         },
         "record_count": len(normalized_records),
         "records_root": records_root,
-        "source_export_hash": hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest(),
     }
+    provenance["source_export_hash"] = _canonical_source_export_hash(
+        source_network=source_network,
+        snapshot_ref=snapshot_ref,
+        provider_id=provider_id,
+        generated_at=float(payload.get("generated_at", 0.0)),
+        normalized_records=normalized_records,
+    )
     provenance["source_provenance_hash"] = hashlib.sha256(canonical_json(provenance).encode("utf-8")).hexdigest()
     return provenance
 
@@ -212,6 +236,8 @@ def normalize_source_export_batch(payloads: list[dict[str, object]]) -> dict[str
                 "index": index,
                 "bundle": bundle.to_dict(),  # type: ignore[union-attr]
                 "ingestion_manifest": manifest,
+                "source_provenance": normalized["source_provenance"],
+                "normalized_records": normalized["normalized_records"],
             }
         )
     batch_manifest = {
@@ -266,11 +292,47 @@ def validate_ingestion_manifest(normalized_payload: dict[str, object]) -> dict[s
     bundle_payload = normalized_payload.get("bundle", normalized_payload)
     bundle = validate_snapshot_bundle(MigrationSnapshotBundle.from_dict(dict(bundle_payload)))
     manifest = dict(normalized_payload.get("ingestion_manifest", {}))
+    normalized_records = [
+        dict(item)
+        for item in normalized_payload.get("normalized_records", [])
+        if isinstance(item, dict)
+    ]
+    source_provenance = (
+        dict(normalized_payload.get("source_provenance", {}))
+        if isinstance(normalized_payload.get("source_provenance"), dict)
+        else {}
+    )
+    manifest_without_hash = dict(manifest)
+    observed_manifest_hash = str(manifest_without_hash.pop("ingestion_manifest_hash", ""))
+    recomputed_manifest_hash = hashlib.sha256(canonical_json(manifest_without_hash).encode("utf-8")).hexdigest()
+    recomputed_records_root = (
+        _merkle_root(normalized_records, empty_message="Source export must include records.")
+        if normalized_records
+        else ""
+    )
+    recomputed_source_export_hash = (
+        _canonical_source_export_hash(
+            source_network=bundle.source_network,
+            snapshot_ref=bundle.snapshot_ref,
+            provider_id=str(manifest.get("provider_id", "")),
+            generated_at=bundle.generated_at,
+            normalized_records=normalized_records,
+        )
+        if normalized_records
+        else ""
+    )
+    provenance_without_hash = dict(source_provenance)
+    observed_provenance_hash = str(provenance_without_hash.pop("source_provenance_hash", ""))
+    recomputed_provenance_hash = (
+        hashlib.sha256(canonical_json(provenance_without_hash).encode("utf-8")).hexdigest()
+        if provenance_without_hash
+        else ""
+    )
     expected_manifest = {
         "ingestion_version": 1,
         "source_network": bundle.source_network,
         "snapshot_ref": bundle.snapshot_ref,
-        "provider_id": "",
+        "provider_id": str(manifest.get("provider_id", "")),
         "generated_at": bundle.generated_at,
         "record_count": len(bundle.entries),
         "total_amount": sum(entry.amount for entry in bundle.entries),
@@ -291,6 +353,18 @@ def validate_ingestion_manifest(normalized_payload: dict[str, object]) -> dict[s
             "passed": manifest.get("snapshot_entries_root") == expected_manifest["snapshot_entries_root"],
         },
         {
+            "name": "source_network_matches",
+            "passed": manifest.get("source_network") == expected_manifest["source_network"],
+        },
+        {
+            "name": "snapshot_ref_matches",
+            "passed": manifest.get("snapshot_ref") == expected_manifest["snapshot_ref"],
+        },
+        {
+            "name": "generated_at_matches",
+            "passed": float(manifest.get("generated_at", -1)) == expected_manifest["generated_at"],
+        },
+        {
             "name": "record_count_matches",
             "passed": int(manifest.get("record_count", -1)) == expected_manifest["record_count"],
         },
@@ -298,13 +372,36 @@ def validate_ingestion_manifest(normalized_payload: dict[str, object]) -> dict[s
             "name": "total_amount_matches",
             "passed": int(manifest.get("total_amount", -1)) == expected_manifest["total_amount"],
         },
+        {
+            "name": "normalized_records_present",
+            "passed": bool(normalized_records),
+        },
+        {
+            "name": "records_root_matches_normalized_records",
+            "passed": bool(recomputed_records_root) and manifest.get("records_root") == recomputed_records_root,
+        },
+        {
+            "name": "source_export_hash_matches_normalized_records",
+            "passed": bool(recomputed_source_export_hash)
+            and manifest.get("source_export_hash") == recomputed_source_export_hash,
+        },
+        {
+            "name": "source_provenance_hash_matches",
+            "passed": bool(recomputed_provenance_hash)
+            and observed_provenance_hash == recomputed_provenance_hash
+            and manifest.get("source_provenance_hash") == observed_provenance_hash,
+        },
+        {
+            "name": "ingestion_manifest_hash_matches",
+            "passed": bool(observed_manifest_hash) and observed_manifest_hash == recomputed_manifest_hash,
+        },
     ]
     return {
         "valid": all(bool(item["passed"]) for item in checks),
         "checks": checks,
         "snapshot_ref": bundle.snapshot_ref,
         "snapshot_manifest_hash": bundle.manifest_hash,
-        "ingestion_manifest_hash": str(manifest.get("ingestion_manifest_hash", "")),
+        "ingestion_manifest_hash": observed_manifest_hash,
     }
 
 

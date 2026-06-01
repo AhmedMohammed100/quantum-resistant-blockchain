@@ -4,6 +4,7 @@ import hashlib
 import importlib.metadata as importlib_metadata
 import json
 import os
+from collections import Counter
 from pathlib import Path
 import sqlite3
 import secrets
@@ -1919,6 +1920,97 @@ class NodeService:
             },
         }
 
+    def security_invariant_report(self) -> dict[str, object]:
+        best_head = self.store.best_head_hash()
+        canonical_blocks = self.store.path_to_root(best_head) if best_head else []
+        projected_utxos: dict[tuple[str, int], TxOutput] = {}
+        state_root_failures: list[dict[str, object]] = []
+        canonical_tx_ids: list[str] = []
+        migration_claim_addresses: list[str] = []
+
+        for block in canonical_blocks:
+            for transaction in block.transactions:
+                if transaction.tx_id:
+                    canonical_tx_ids.append(transaction.tx_id)
+                for tx_input in transaction.inputs:
+                    projected_utxos.pop((tx_input.prev_tx_id, tx_input.output_index), None)
+                for output_index, output in enumerate(transaction.outputs):
+                    projected_utxos[(transaction.tx_id, output_index)] = output
+                if transaction.kind == "migration_claim":
+                    migration_claim_addresses.append(str(transaction.metadata.get("classical_address", "")))
+
+            if block.index >= self.config.state_root_activation_height:
+                expected_root = self.state_root_for_utxos(projected_utxos)
+                if block.version < 3 or not block.state_root or block.state_root != expected_root:
+                    state_root_failures.append(
+                        {
+                            "height": block.index,
+                            "block_hash": block.block_hash,
+                            "expected_state_root": expected_root,
+                            "observed_state_root": block.state_root,
+                            "version": block.version,
+                        }
+                    )
+
+        stored_utxos = self.store.all_utxos()
+        duplicate_tx_ids = sorted(
+            tx_id for tx_id, count in Counter(canonical_tx_ids).items() if tx_id and count > 1
+        )
+        duplicate_migration_claims = sorted(
+            address for address, count in Counter(migration_claim_addresses).items() if address and count > 1
+        )
+        blocking_disputes = [
+            item
+            for item in self.store.list_migration_disputes()
+            if str(item.get("status", "")) in {"open", "evidence_submitted", "resolved_fraud"}
+        ]
+        recovery_count = int(self.wallet_state_store.reservation_status_counts().get("requires_recovery", 0))
+        supply = self.supply_snapshot()
+        checks = [
+            {
+                "name": "canonical_utxo_index_matches_replay",
+                "passed": stored_utxos == projected_utxos,
+                "detail": f"stored={len(stored_utxos)}, replayed={len(projected_utxos)}",
+            },
+            {
+                "name": "activated_state_roots_match_replay",
+                "passed": not state_root_failures,
+                "detail": str(len(state_root_failures)),
+            },
+            {
+                "name": "canonical_transaction_ids_unique",
+                "passed": not duplicate_tx_ids,
+                "detail": ",".join(duplicate_tx_ids[:5]),
+            },
+            {
+                "name": "migration_claims_unique_on_canonical_chain",
+                "passed": not duplicate_migration_claims,
+                "detail": ",".join(duplicate_migration_claims[:5]),
+            },
+            {
+                "name": "supply_caps_intact",
+                "passed": bool(supply["within_max_money"]),
+                "detail": str(supply["theoretical_supply"]),
+            },
+            {
+                "name": "stateful_signer_recovery_clear",
+                "passed": recovery_count == 0,
+                "detail": str(recovery_count),
+            },
+        ]
+        failed = [check for check in checks if not check["passed"]]
+        return {
+            "security_invariant_status": "pass" if not failed else "fail_closed_review_required",
+            "checks": checks,
+            "failed_checks": failed,
+            "state_root_failures": state_root_failures,
+            "duplicate_transaction_ids": duplicate_tx_ids,
+            "duplicate_migration_claims": duplicate_migration_claims,
+            "blocking_migration_dispute_count": len(blocking_disputes),
+            "canonical_height": self.store.block_count(),
+            "best_head_hash": best_head,
+        }
+
     def load_chaos_harness_report(
         self,
         *,
@@ -2009,6 +2101,7 @@ class NodeService:
             "crypto_hardening": self.crypto_runtime_hardening_report(),
             "transport": self.network_transport_readiness_report(),
             "consensus_economics": self.consensus_economics_report(),
+            "production_configuration": self.production_configuration_report(),
             "backup": self.state_backup_manifest(),
         }
         blockers = []
@@ -2020,6 +2113,8 @@ class NodeService:
             blockers.append("crypto_runtime_not_hardened")
         if reports["transport"]["transport_status"] != "ready":
             blockers.append("peer_transport_needs_hardening")
+        if reports["production_configuration"]["configuration_status"] == "blocked":
+            blockers.append("production_configuration_blocked")
         return {
             "preflight_status": "ready" if not blockers else "blocked",
             "blockers": blockers,
@@ -2030,6 +2125,179 @@ class NodeService:
                 "run migration-integrity, migration-governance, and migration-proof-coverage",
                 "run network-transport-readiness",
                 "only then start wider peer admission or public claim windows",
+            ],
+        }
+
+    def hardening_audit_report(self) -> dict[str, object]:
+        reports = {
+            "security_invariants": self.security_invariant_report(),
+            "production_configuration": self.production_configuration_report(),
+            "node_preflight": self.node_launch_preflight_report(),
+            "migration_readiness": self.migration_readiness_report(),
+            "migration_integrity": self.migration_integrity_report(),
+            "crypto_hardening": self.crypto_runtime_hardening_report(),
+            "transport": self.network_transport_readiness_report(),
+            "validator_networking": self.validator_networking_readiness_report(),
+            "consensus_economics": self.consensus_economics_report(),
+            "adversarial_performance": self.adversarial_performance_readiness_report(),
+            "backup": self.state_backup_manifest(),
+        }
+        blockers: list[str] = []
+        warnings: list[str] = []
+        if reports["security_invariants"]["security_invariant_status"] != "pass":
+            blockers.append("security_invariants_failed")
+        if reports["production_configuration"]["configuration_status"] == "blocked":
+            blockers.append("production_configuration_blocked")
+        if reports["production_configuration"]["configuration_status"] == "warning":
+            warnings.append("production_configuration_warnings")
+        if reports["node_preflight"]["preflight_status"] != "ready":
+            blockers.append("node_preflight_blocked")
+        if reports["migration_readiness"]["migration_layer_status"] != "operational":
+            blockers.append("migration_layer_not_operational")
+        if int(reports["migration_integrity"]["summary"]["critical_anomaly_count"]) > 0:
+            blockers.append("migration_integrity_critical_anomalies")
+        if reports["crypto_hardening"]["hardening_status"] != "ready":
+            blockers.append("crypto_runtime_not_hardened")
+        if reports["transport"]["transport_status"] != "ready":
+            warnings.append("transport_needs_hardening")
+        if reports["validator_networking"]["validator_networking_status"] != "authenticated_gossip_with_diversity_checks":
+            warnings.append("validator_networking_diversity_gap")
+        if reports["consensus_economics"]["consensus_economics_status"] != "ready_for_design_review":
+            warnings.append("consensus_economics_needs_review")
+        if reports["adversarial_performance"]["readiness_status"] != "test_harness_present_needs_long_running_soak":
+            warnings.append("adversarial_performance_report_unexpected")
+        if not bool(reports["backup"]["backup_manifest_hash"]):
+            blockers.append("backup_manifest_missing_hash")
+
+        report = {
+            "audit_version": 1,
+            "generated_at": round(time.time(), 6),
+            "chain_id": self.config.chain_id,
+            "node_id": self.config.node_id,
+            "deployment_mode": self.config.deployment_mode,
+            "audit_status": "blocked" if blockers else ("warning" if warnings else "pass"),
+            "blockers": blockers,
+            "warnings": warnings,
+            "reports": reports,
+            "recommended_order": [
+                "fix security invariant failures before changing configuration",
+                "clear production-config blockers before exposing public peers or migration windows",
+                "resolve migration integrity anomalies before approving new source ingestion",
+                "verify crypto-hardening before signing value-bearing transactions",
+                "run load-chaos after blockers are clear to validate multi-node behavior",
+            ],
+        }
+        report["audit_hash"] = hashlib.sha256(canonical_json(report).encode("utf-8")).hexdigest()
+        return report
+
+    def production_configuration_report(self) -> dict[str, object]:
+        mode = self.config.deployment_mode.strip().lower()
+        production_mode = mode in {"production", "mainnet", "public-testnet", "testnet"}
+        public_host = self.config.host not in {"127.0.0.1", "localhost", "::1"}
+        peer_urls = [*self.config.peers, self.config.advertised_url]
+        insecure_peer_urls = [
+            url for url in peer_urls if url.startswith("http://") and "127.0.0.1" not in url and "localhost" not in url
+        ]
+        demo_providers = {
+            "classical_claim_demo_v1",
+            "xmss_merkle_lamport_v1",
+            "native_test_pq_v1",
+        }
+        configured_signature_ids = {
+            self.config.default_signature_provider,
+            *self.config.preferred_signature_providers,
+            *self.config.allowed_signature_providers,
+        }
+        configured_migration_ids = set(self.config.migration_allowed_classical_providers)
+        checks = [
+            {
+                "name": "deployment_mode_declared",
+                "passed": bool(mode),
+                "severity": "blocker",
+                "detail": mode,
+            },
+            {
+                "name": "wallet_custody_not_plaintext",
+                "passed": self.config.wallet_custody_mode != "plaintext",
+                "severity": "blocker",
+                "detail": self.config.wallet_custody_mode,
+            },
+            {
+                "name": "production_provider_allowlist_configured",
+                "passed": bool(self.config.allowed_signature_providers) or not production_mode,
+                "severity": "blocker",
+                "detail": str(len(self.config.allowed_signature_providers)),
+            },
+            {
+                "name": "demo_signature_providers_disabled_for_production",
+                "passed": not production_mode or not (configured_signature_ids & demo_providers),
+                "severity": "blocker",
+                "detail": ",".join(sorted(configured_signature_ids & demo_providers)),
+            },
+            {
+                "name": "demo_migration_provider_disabled_for_production",
+                "passed": not production_mode or "classical_claim_demo_v1" not in configured_migration_ids,
+                "severity": "blocker",
+                "detail": ",".join(sorted(configured_migration_ids & {"classical_claim_demo_v1"})),
+            },
+            {
+                "name": "snapshot_signatures_required_for_production_migration",
+                "passed": self.config.migration_require_snapshot_signatures or not production_mode,
+                "severity": "blocker",
+                "detail": str(self.config.migration_require_snapshot_signatures),
+            },
+            {
+                "name": "trusted_snapshot_signers_configured",
+                "passed": bool(self.config.migration_trusted_snapshot_signers) or not production_mode,
+                "severity": "blocker",
+                "detail": str(len(self.config.migration_trusted_snapshot_signers)),
+            },
+            {
+                "name": "peer_allowlist_required_on_public_bind",
+                "passed": not production_mode or not public_host or self.config.require_peer_allowlist,
+                "severity": "blocker",
+                "detail": f"host={self.config.host}, require_allowlist={self.config.require_peer_allowlist}",
+            },
+            {
+                "name": "encrypted_peer_urls_for_public_mode",
+                "passed": not production_mode or not insecure_peer_urls,
+                "severity": "warning",
+                "detail": ",".join(insecure_peer_urls[:5]),
+            },
+            {
+                "name": "coinbase_maturity_nonzero_for_production",
+                "passed": self.config.coinbase_maturity_blocks > 0 or not production_mode,
+                "severity": "warning",
+                "detail": str(self.config.coinbase_maturity_blocks),
+            },
+            {
+                "name": "state_roots_active_from_genesis",
+                "passed": self.config.state_root_activation_height == 0,
+                "severity": "warning",
+                "detail": str(self.config.state_root_activation_height),
+            },
+        ]
+        blockers = [check for check in checks if check["severity"] == "blocker" and not check["passed"]]
+        warnings = [check for check in checks if check["severity"] == "warning" and not check["passed"]]
+        if blockers:
+            status = "blocked"
+        elif warnings:
+            status = "warning"
+        else:
+            status = "ready"
+        return {
+            "configuration_status": status,
+            "deployment_mode": mode,
+            "production_mode": production_mode,
+            "checks": checks,
+            "blockers": blockers,
+            "warnings": warnings,
+            "recommended_minimums": [
+                "set QR_CHAIN_DEPLOYMENT_MODE=production only after removing demo providers",
+                "require signed migration snapshots and trusted snapshot signer allowlists",
+                "use protected wallet custody and explicit signature provider allowlists",
+                "enable peer allowlists before binding to non-local interfaces",
+                "prefer encrypted peer URLs outside local lab networks",
             ],
         }
 
@@ -2511,6 +2779,7 @@ class NodeService:
             "bundle": bundle.to_dict(),  # type: ignore[union-attr]
             "ingestion_manifest": normalized["ingestion_manifest"],
             "source_provenance": normalized["source_provenance"],
+            "normalized_records": normalized["normalized_records"],
             "source_count": len(bundle.entries),  # type: ignore[union-attr]
             "source_network_profile": describe_legacy_network(bundle.source_network),  # type: ignore[union-attr]
         }

@@ -4,6 +4,16 @@ This changelog preserves the implementation history that previously lived in the
 
 ## Historical Implementation Phases
 
+### Phase 77 - Security Invariants And Fail-Closed Hardening
+
+- Added `security_invariant_report()` to replay canonical UTXO state, verify activated state roots, detect duplicate canonical transaction ids, detect duplicate migration claims, check supply caps, and surface stateful signer recovery blockers.
+- Added adversarial/property coverage for canonical state-root replay after reorgs, supply invariants after mined transfers, pending signer recovery tripwires, invalid authenticated transaction gossip, and migration fraud finality after challenge windows.
+- Hardened source-export provenance hashing so ingestion manifest hashes remain deterministic even when equivalent source records arrive in a different order.
+- Added production configuration gates through `production-config` and `/operations/production-config` to block unsafe public-mode combinations such as plaintext custody, demo providers, unsigned migration snapshots, and missing peer allowlists.
+- Strengthened source-ingestion manifest validation so approval/import checks recompute normalized record roots, source-export hashes, provenance hashes, and ingestion manifest hashes.
+- Added `hardening-audit` and `/operations/hardening-audit`, a hashed consolidated operator report that combines invariant, production config, preflight, migration, crypto, transport, consensus, adversarial, and backup gates.
+- Tightened the public security model documentation around invariant tripwires, authenticated gossip failure behavior, and stateful PQ signer recovery risk.
+
 ### Phase 76 - Load And Chaos Harness
 
 - Added `qr_blockchain.chaos`, a deterministic scripted multi-node harness for mempool floods, fork storms, migration challenge disputes, signer crash/release behavior, and verification throughput.

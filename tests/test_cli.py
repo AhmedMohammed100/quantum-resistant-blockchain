@@ -110,6 +110,8 @@ class OperatorCliTests(unittest.TestCase):
             ("migration-adversarial", "status"),
             ("protocol-conformance", "conformance_status"),
             ("node-preflight", "preflight_status"),
+            ("hardening-audit", "audit_status"),
+            ("production-config", "configuration_status"),
             ("privacy-redaction-policy", "policy_status"),
         ]:
             buffer = io.StringIO()

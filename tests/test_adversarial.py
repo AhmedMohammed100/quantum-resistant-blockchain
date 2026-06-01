@@ -201,6 +201,47 @@ class AdversarialAndPropertyTests(unittest.TestCase):
         self.assertGreater(total_fees, 0)
         self.assertEqual(chain_outputs, expected_total)
 
+        invariants = service.security_invariant_report()
+        self.assertEqual(invariants["security_invariant_status"], "pass", invariants)
+        self.assertTrue(
+            next(check for check in invariants["checks"] if check["name"] == "canonical_utxo_index_matches_replay")[
+                "passed"
+            ]
+        )
+        self.assertTrue(
+            next(check for check in invariants["checks"] if check["name"] == "activated_state_roots_match_replay")[
+                "passed"
+            ]
+        )
+
+    def test_security_invariant_report_flags_pending_signer_recovery(self) -> None:
+        service = self.make_service("recovery-invariant")
+        alice = Wallet(
+            "Alice",
+            state_db_path=service.config.wallet_state_db_path,
+            reservation_ttl_seconds=1,
+        )
+        funding = alice.create_address()
+
+        def reserve_fn(current_state: object) -> tuple[object, object]:
+            return current_state, {"leaf": 0}
+
+        alice._state_store.reserve_wallet_key_state(
+            alice.label,
+            funding,
+            alice.signature_provider,
+            reserve_fn,
+            owner_id=alice._owner_id,
+            now=0.0,
+        )
+
+        report = service.security_invariant_report()
+
+        self.assertEqual(report["security_invariant_status"], "fail_closed_review_required")
+        recovery_check = next(check for check in report["checks"] if check["name"] == "stateful_signer_recovery_clear")
+        self.assertFalse(recovery_check["passed"])
+        self.assertEqual(recovery_check["detail"], "1")
+
     def test_signature_status_reports_reservation_counts(self) -> None:
         service = self.make_service("status")
         status = service.signature_provider_statuses()

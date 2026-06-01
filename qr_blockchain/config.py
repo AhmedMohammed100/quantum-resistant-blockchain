@@ -36,6 +36,7 @@ class NodeConfig:
     public_goods_allocation_cap: int = QBC_PUBLIC_GOODS_ALLOCATION_CAP
     migration_conversion_policy: str = "capped_pool_normalized_claims"
     reward_recipient_policy: str = "single_miner_or_validator"
+    deployment_mode: str = "development"
     host: str = "127.0.0.1"
     port: int = 8080
     chain_id: str = "qr-chain-devnet"
@@ -146,6 +147,7 @@ class NodeConfig:
                 "QR_CHAIN_REWARD_RECIPIENT_POLICY",
                 "single_miner_or_validator",
             ),
+            deployment_mode=os.getenv("QR_CHAIN_DEPLOYMENT_MODE", "development"),
             host=os.getenv("QR_CHAIN_HOST", "127.0.0.1"),
             port=int(os.getenv("QR_CHAIN_PORT", "8080")),
             chain_id=os.getenv("QR_CHAIN_ID", "qr-chain-devnet"),

@@ -263,6 +263,17 @@ class NodeServiceTests(unittest.TestCase):
         self.assertIn(preflight["preflight_status"], {"ready", "blocked"})
         self.assertIn("secret_key_hex", redaction["sensitive_fields"])
 
+    def test_hardening_audit_report_collects_blockers_and_hashes_report(self) -> None:
+        service, _ = self.make_service()
+
+        audit = service.hardening_audit_report()
+
+        self.assertIn(audit["audit_status"], {"pass", "warning", "blocked"})
+        self.assertTrue(audit["audit_hash"])
+        self.assertIn("security_invariants", audit["reports"])
+        self.assertIn("production_configuration", audit["reports"])
+        self.assertIn("node_preflight", audit["reports"])
+
     def test_network_transport_and_backup_reports(self) -> None:
         service, db_path = self.make_service()
         service.create_genesis_block({"bootstrap": 1})
@@ -275,6 +286,61 @@ class NodeServiceTests(unittest.TestCase):
         self.assertTrue(backup["backup_manifest_hash"])
         self.assertTrue(backup["files"]["chain_db"]["exists"])
         self.assertEqual(backup["files"]["chain_db"]["path"], str(db_path))
+
+    def test_production_configuration_report_blocks_unsafe_public_defaults(self) -> None:
+        service, _ = self.make_service()
+        service.config = replace(
+            service.config,
+            deployment_mode="production",
+            host="0.0.0.0",
+            advertised_url="http://node.example:8080",
+            wallet_custody_mode="plaintext",
+            default_signature_provider="xmss_merkle_lamport_v1",
+            preferred_signature_providers=("xmss_merkle_lamport_v1",),
+            allowed_signature_providers=(),
+            migration_allowed_classical_providers=("classical_claim_demo_v1",),
+            migration_require_snapshot_signatures=False,
+            migration_trusted_snapshot_signers=(),
+            require_peer_allowlist=False,
+        )
+
+        report = service.production_configuration_report()
+
+        self.assertEqual(report["configuration_status"], "blocked")
+        blocker_names = {item["name"] for item in report["blockers"]}
+        self.assertIn("wallet_custody_not_plaintext", blocker_names)
+        self.assertIn("demo_signature_providers_disabled_for_production", blocker_names)
+        self.assertIn("snapshot_signatures_required_for_production_migration", blocker_names)
+        self.assertIn("peer_allowlist_required_on_public_bind", blocker_names)
+
+    def test_production_configuration_report_accepts_hardened_public_config(self) -> None:
+        service, _ = self.make_service()
+        service.config = replace(
+            service.config,
+            deployment_mode="production",
+            host="0.0.0.0",
+            advertised_url="https://node.example",
+            peers=("https://peer-a.example",),
+            wallet_custody_mode="windows_dpapi",
+            default_signature_provider="mldsa65_oqs_v1",
+            preferred_signature_providers=("mldsa65_oqs_v1",),
+            allowed_signature_providers=("mldsa65_oqs_v1",),
+            migration_allowed_classical_providers=(
+                "ecdsa_secp256k1_migration_v1",
+                "rsa_pkcs1v15_sha256_migration_v1",
+            ),
+            migration_require_snapshot_signatures=True,
+            migration_trusted_snapshot_signers=("qbc1snapshot",),
+            require_peer_allowlist=True,
+            peer_allowlist=("peer-a",),
+            coinbase_maturity_blocks=12,
+            state_root_activation_height=0,
+        )
+
+        report = service.production_configuration_report()
+
+        self.assertEqual(report["configuration_status"], "ready")
+        self.assertFalse(report["blockers"])
 
     def test_open_migration_dispute_quarantines_source(self) -> None:
         service, _ = self.make_service()
@@ -338,6 +404,33 @@ class NodeServiceTests(unittest.TestCase):
         )
         self.assertEqual(service.store.migration_source(fraud_address)["status"], "revoked")
         self.assertFalse(service.migration_claim_quote(fraud_address)["claimable"])
+
+    def test_resolved_fraud_dispute_remains_revoked_after_challenge_window(self) -> None:
+        service, _ = self.make_service()
+        service.config = replace(service.config, migration_dispute_window_blocks=0)
+        classical_address = build_demo_classical_claim_address(build_demo_classical_claim_public_key("fraud-expiry"))
+        service.seed_migration_source(
+            classical_address=classical_address,
+            provider_id="classical_claim_demo_v1",
+            source_network="legacy-demo-ledger",
+            amount=7,
+            snapshot_ref="fraud-expiry-snapshot",
+        )
+        service.create_genesis_block({"bootstrap": 1})
+
+        opened = service.open_migration_dispute(classical_address, reason="forged source ownership")
+        service.resolve_migration_dispute(
+            opened["dispute_id"],
+            outcome="resolved_fraud",
+            resolution_note="reviewer rejected source proof",
+        )
+        service.mine_pending_transactions("miner")
+        expired = service.expire_migration_disputes()
+
+        self.assertEqual(expired["expired_count"], 0)
+        self.assertEqual(service._migration_dispute_by_id(opened["dispute_id"])["status"], "resolved_fraud")
+        self.assertEqual(service.store.migration_source(classical_address)["status"], "revoked")
+        self.assertFalse(service.migration_claim_quote(classical_address)["claimable"])
 
     def test_expired_migration_dispute_unlocks_claim_after_challenge_window(self) -> None:
         service, _ = self.make_service()
@@ -677,6 +770,7 @@ class NodeServiceTests(unittest.TestCase):
         self.assertIsNone(target.store.migration_claim(classical_address))
         self.assertEqual(best.block_hash, second.block_hash)
         self.assertEqual(best.state_root, target.state_root_for_utxos(target.store.all_utxos()))
+        self.assertEqual(target.security_invariant_report()["security_invariant_status"], "pass")
 
     def test_rejects_pending_double_spend(self) -> None:
         service, _ = self.make_service()
@@ -1403,6 +1497,40 @@ class NodeServiceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "state root mismatch"):
             target.receive_authenticated_block_gossip(bad_envelope, bad_payload)
 
+        peer = target.store.peer_identity_by_node_id(source.config.node_id)
+        assert peer is not None
+        self.assertLess(peer["score"], 0)
+        self.assertGreaterEqual(peer["failure_count"], 1)
+
+    def test_authenticated_transaction_gossip_fails_closed_for_invalid_payload(self) -> None:
+        source = self.make_additional_service("invalid-source")
+        target = self.make_additional_service("invalid-target")
+        alice = Wallet("Alice")
+        bob = Wallet("Bob")
+
+        funding = alice.create_address()
+        source.create_genesis_block({funding: 25})
+        target.create_genesis_block({funding: 25})
+        response = target.accept_peer_handshake(
+            source.build_signed_envelope("peer_handshake_v2", {"target_url": target.config.advertised_url})
+        )
+        session_id = str(response["payload"]["session_id"])
+
+        transaction = alice.create_transaction(source, bob.create_address(), amount=10, fee=1)
+        transaction_payload = json.loads(transaction.serialize_with_id())
+        transaction_payload["chain_id"] = "wrong-chain"
+        envelope = source.build_peer_session_envelope(
+            "peer_transaction_gossip_v1",
+            target.config.advertised_url,
+            session_id,
+            "/peer/gossip/transaction",
+            {"transaction": transaction_payload},
+        )
+
+        with self.assertRaisesRegex(ValueError, "hash mismatch|different chain"):
+            target.receive_authenticated_transaction_gossip(envelope, transaction_payload)
+
+        self.assertEqual(target.store.pending_transaction_count(), 0)
         peer = target.store.peer_identity_by_node_id(source.config.node_id)
         assert peer is not None
         self.assertLess(peer["score"], 0)

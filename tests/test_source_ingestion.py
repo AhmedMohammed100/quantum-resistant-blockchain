@@ -141,6 +141,60 @@ class SourceExportIngestionTests(unittest.TestCase):
             second["ingestion_manifest"]["ingestion_manifest_hash"],
         )
 
+    def test_ingestion_manifest_validation_rejects_tampered_hashes_and_records(self) -> None:
+        service = self.make_service()
+        public_key = self.secp_public_key()
+        normalized = service.normalize_source_export_snapshot(
+            {
+                "source_network": "legacy-btc-mainnet",
+                "snapshot_ref": "btc-export-tamper",
+                "generated_at": 260.0,
+                "provider_id": "ecdsa_secp256k1_migration_v1",
+                "source_address_format": "bitcoin_base58",
+                "records": [
+                    {
+                        "classical_public_key": public_key,
+                        "source_address": secp_backend.derive_bitcoin_p2pkh_addresses(public_key)[0],
+                        "amount": 11,
+                        "source_height": 20,
+                        "source_tx_id": "tx-original",
+                        "source_output_index": 0,
+                    }
+                ],
+            }
+        )
+
+        tampered_manifest = json.loads(json.dumps(normalized))
+        tampered_manifest["ingestion_manifest"]["source_export_hash"] = "00" * 32
+        manifest_status = service.source_ingestion_manifest_status(tampered_manifest)
+
+        self.assertFalse(manifest_status["valid"])
+        self.assertFalse(
+            next(
+                check
+                for check in manifest_status["checks"]
+                if check["name"] == "source_export_hash_matches_normalized_records"
+            )["passed"]
+        )
+        self.assertFalse(
+            next(check for check in manifest_status["checks"] if check["name"] == "ingestion_manifest_hash_matches")[
+                "passed"
+            ]
+        )
+
+        tampered_record = json.loads(json.dumps(normalized))
+        tampered_record["normalized_records"][0]["source_tx_id"] = "tx-mutated"
+        record_status = service.source_ingestion_manifest_status(tampered_record)
+
+        self.assertFalse(record_status["valid"])
+        self.assertFalse(
+            next(
+                check
+                for check in record_status["checks"]
+                if check["name"] == "records_root_matches_normalized_records"
+            )["passed"]
+        )
+
     def test_batch_normalizes_multiple_source_exports(self) -> None:
         service = self.make_service()
         first_key = self.secp_public_key(1)
