@@ -1,0 +1,28 @@
+name: Hardening Gates
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  python-hardening:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Compile package
+        run: python -m compileall qr_blockchain
+
+      - name: Run focused hardening suites
+        run: python -m unittest tests.test_config tests.test_source_ingestion tests.test_cli tests.test_adversarial -v
+
+      - name: Run service safety suite
+        run: python -m unittest tests.test_node_service -v
+

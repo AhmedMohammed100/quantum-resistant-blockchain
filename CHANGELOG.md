@@ -12,6 +12,7 @@ This changelog preserves the implementation history that previously lived in the
 - Added production configuration gates through `production-config` and `/operations/production-config` to block unsafe public-mode combinations such as plaintext custody, demo providers, unsigned migration snapshots, and missing peer allowlists.
 - Strengthened source-ingestion manifest validation so approval/import checks recompute normalized record roots, source-export hashes, provenance hashes, and ingestion manifest hashes.
 - Added `hardening-audit` and `/operations/hardening-audit`, a hashed consolidated operator report that combines invariant, production config, preflight, migration, crypto, transport, consensus, adversarial, and backup gates.
+- Added `.github/workflows/hardening.yml` plus `hardening-stages` and `/operations/hardening-stages` to track the next ten hardening areas: CI gates, policy profiles, signed audit artifacts, peer transport, consensus upgrade manifests, post-finality fraud recovery, native crypto release provenance, soak artifacts, database durability, and external audit readiness.
 - Tightened the public security model documentation around invariant tripwires, authenticated gossip failure behavior, and stateful PQ signer recovery risk.
 
 ### Phase 76 - Load And Chaos Harness

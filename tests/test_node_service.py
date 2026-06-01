@@ -274,6 +274,18 @@ class NodeServiceTests(unittest.TestCase):
         self.assertIn("production_configuration", audit["reports"])
         self.assertIn("node_preflight", audit["reports"])
 
+    def test_hardening_stage_reports_cover_next_ten_stages(self) -> None:
+        service, _ = self.make_service()
+
+        report = service.hardening_stage_reports()
+
+        self.assertEqual(report["stage_count"], 10)
+        self.assertTrue(report["hardening_stage_report_hash"])
+        stage_names = {stage["name"] for stage in report["stages"]}
+        self.assertIn("ci_quality_gates", stage_names)
+        self.assertIn("structured_security_policy_profiles", stage_names)
+        self.assertIn("external_audit_readiness_package", stage_names)
+
     def test_network_transport_and_backup_reports(self) -> None:
         service, db_path = self.make_service()
         service.create_genesis_block({"bootstrap": 1})

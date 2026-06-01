@@ -111,6 +111,7 @@ class OperatorCliTests(unittest.TestCase):
             ("protocol-conformance", "conformance_status"),
             ("node-preflight", "preflight_status"),
             ("hardening-audit", "audit_status"),
+            ("hardening-stages", "hardening_stage_report_version"),
             ("production-config", "configuration_status"),
             ("privacy-redaction-policy", "policy_status"),
         ]:

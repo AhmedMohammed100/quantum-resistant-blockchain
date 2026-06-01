@@ -219,6 +219,10 @@ def build_parser() -> argparse.ArgumentParser:
     hardening_audit.add_argument("--output", default=None)
     hardening_audit.set_defaults(handler=cmd_hardening_audit)
 
+    hardening_stages = subparsers.add_parser("hardening-stages", help="Show the next hardening stage reports")
+    hardening_stages.add_argument("--output", default=None)
+    hardening_stages.set_defaults(handler=cmd_hardening_stages)
+
     production_config = subparsers.add_parser(
         "production-config",
         help="Show production configuration safety gates",
@@ -608,6 +612,12 @@ def cmd_node_preflight(args: argparse.Namespace) -> int:
 def cmd_hardening_audit(args: argparse.Namespace) -> int:
     service = _service_from_args(args)
     _write_json_output(service.hardening_audit_report(), None if args.output is None else Path(args.output))
+    return 0
+
+
+def cmd_hardening_stages(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    _write_json_output(service.hardening_stage_reports(), None if args.output is None else Path(args.output))
     return 0
 
 

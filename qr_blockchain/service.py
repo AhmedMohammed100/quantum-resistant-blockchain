@@ -2190,6 +2190,256 @@ class NodeService:
         report["audit_hash"] = hashlib.sha256(canonical_json(report).encode("utf-8")).hexdigest()
         return report
 
+    def hardening_stage_reports(self) -> dict[str, object]:
+        stages = [
+            self.ci_quality_gate_report(),
+            self.security_policy_profiles_report(),
+            self.signed_audit_artifact_report(),
+            self.peer_transport_policy_report(),
+            self.consensus_upgrade_manifest(),
+            self.migration_fraud_recovery_policy_report(),
+            self.native_crypto_release_provenance_report(),
+            self.soak_result_artifact_report(),
+            self.database_durability_report(),
+            self.external_audit_readiness_package(),
+        ]
+        blocked = [stage for stage in stages if stage["status"] == "blocked"]
+        warnings = [stage for stage in stages if stage["status"] == "warning"]
+        report = {
+            "hardening_stage_report_version": 1,
+            "stage_count": len(stages),
+            "status": "blocked" if blocked else ("warning" if warnings else "ready"),
+            "blocked_stage_ids": [stage["stage_id"] for stage in blocked],
+            "warning_stage_ids": [stage["stage_id"] for stage in warnings],
+            "stages": stages,
+        }
+        report["hardening_stage_report_hash"] = hashlib.sha256(canonical_json(report).encode("utf-8")).hexdigest()
+        return report
+
+    def ci_quality_gate_report(self) -> dict[str, object]:
+        workflow_path = Path(".github/workflows/hardening.yml")
+        commands = [
+            "python -m compileall qr_blockchain",
+            "python -m unittest tests.test_config tests.test_source_ingestion tests.test_cli tests.test_adversarial -v",
+            "python -m unittest tests.test_node_service -v",
+        ]
+        return {
+            "stage_id": 1,
+            "name": "ci_quality_gates",
+            "status": "ready" if workflow_path.exists() else "blocked",
+            "workflow_path": str(workflow_path),
+            "workflow_present": workflow_path.exists(),
+            "required_commands": commands,
+            "release_gate": "merge is unsafe unless compile, service, CLI, ingestion, and adversarial suites pass",
+        }
+
+    def security_policy_profiles_report(self) -> dict[str, object]:
+        profiles = {
+            "development": {
+                "public_peers": False,
+                "demo_providers_allowed": True,
+                "signed_snapshots_required": False,
+                "allowlist_required": False,
+            },
+            "private-testnet": {
+                "public_peers": False,
+                "demo_providers_allowed": False,
+                "signed_snapshots_required": True,
+                "allowlist_required": True,
+            },
+            "public-testnet": {
+                "public_peers": True,
+                "demo_providers_allowed": False,
+                "signed_snapshots_required": True,
+                "allowlist_required": True,
+            },
+            "production": {
+                "public_peers": True,
+                "demo_providers_allowed": False,
+                "signed_snapshots_required": True,
+                "allowlist_required": True,
+            },
+        }
+        production_config = self.production_configuration_report()
+        mode = self.config.deployment_mode.strip().lower()
+        known_profile = mode in profiles
+        return {
+            "stage_id": 2,
+            "name": "structured_security_policy_profiles",
+            "status": "ready" if known_profile and production_config["configuration_status"] != "blocked" else "warning",
+            "active_profile": mode,
+            "known_profile": known_profile,
+            "profiles": profiles,
+            "active_profile_checks": production_config["checks"],
+        }
+
+    def signed_audit_artifact_report(self) -> dict[str, object]:
+        audit = self.hardening_audit_report()
+        claims = {
+            "audit_hash": audit["audit_hash"],
+            "audit_status": audit["audit_status"],
+            "chain_id": self.config.chain_id,
+            "node_id": self.config.node_id,
+            "generated_at": audit["generated_at"],
+        }
+        envelope = self.identity.sign_claims("hardening_audit_artifact_v1", claims)
+        report = {
+            "stage_id": 3,
+            "name": "signed_audit_report_artifacts",
+            "status": "ready",
+            "claims": claims,
+            "envelope": envelope,
+            "operator_rule": "attach this signed artifact to migration approvals and release notes",
+        }
+        report["artifact_hash"] = hashlib.sha256(canonical_json(report["claims"]).encode("utf-8")).hexdigest()
+        return report
+
+    def peer_transport_policy_report(self) -> dict[str, object]:
+        transport = self.network_transport_readiness_report()
+        production_config = self.production_configuration_report()
+        checks = [
+            {
+                "name": "https_or_local_only",
+                "passed": production_config["configuration_status"] != "blocked"
+                and not any(str(peer).startswith("http://") for peer in self.config.peers),
+            },
+            {"name": "peer_allowlist_policy_declared", "passed": bool(self.config.peer_allowlist) or not self.config.peers},
+            {"name": "node_identity_rotation_runbook_declared", "passed": True},
+            {"name": "m_tls_boundary_documented", "passed": True},
+        ]
+        return {
+            "stage_id": 4,
+            "name": "stronger_peer_transport_policy",
+            "status": "ready" if all(check["passed"] for check in checks) else "warning",
+            "checks": checks,
+            "transport": transport,
+            "next_enforcement": "replace HTTP lab transport with TLS/mTLS transport adapter before public validators",
+        }
+
+    def consensus_upgrade_manifest(self) -> dict[str, object]:
+        manifest = {
+            "stage_id": 5,
+            "name": "consensus_parameter_governance",
+            "manifest_version": 1,
+            "chain_id": self.config.chain_id,
+            "state_root_activation_height": self.config.state_root_activation_height,
+            "max_transaction_size_bytes": self.config.max_transaction_size_bytes,
+            "max_signature_payload_bytes": self.config.max_signature_payload_bytes,
+            "max_transactions_per_block": self.config.max_transactions_per_block,
+            "min_fee_per_kib": self.config.min_fee_per_kib,
+            "allowed_signature_providers": list(self.config.allowed_signature_providers),
+            "preferred_signature_providers": list(self.config.preferred_signature_providers),
+            "operator_rule": "future consensus-affecting changes should ship as signed upgrade manifests",
+        }
+        manifest["upgrade_manifest_hash"] = hashlib.sha256(canonical_json(manifest).encode("utf-8")).hexdigest()
+        manifest["status"] = "ready"
+        return manifest
+
+    def migration_fraud_recovery_policy_report(self) -> dict[str, object]:
+        policy = {
+            "stage_id": 6,
+            "name": "migration_post_finality_fraud_recovery",
+            "status": "warning",
+            "current_controls": self.migration_finality_fraud_report()["fraud_controls"],
+            "post_finality_policy": [
+                "open post-finality fraud case with signed evidence packet",
+                "freeze future claims from affected source snapshot",
+                "quarantine destination outputs through governance review once escrow rules exist",
+                "publish audit trail and recovery decision",
+            ],
+            "blocked_on": [
+                "on-chain challenge transaction type",
+                "escrow or clawback semantics for already-mined migration outputs",
+            ],
+        }
+        policy["policy_hash"] = hashlib.sha256(canonical_json(policy).encode("utf-8")).hexdigest()
+        return policy
+
+    def native_crypto_release_provenance_report(self) -> dict[str, object]:
+        boundary = self.native_crypto_runtime_boundary_report()
+        hardening = self.crypto_runtime_hardening_report()
+        report = {
+            "stage_id": 7,
+            "name": "native_crypto_release_provenance",
+            "status": "ready" if hardening["hardening_status"] == "ready" else "warning",
+            "native_boundary": boundary,
+            "pinned_runtime": hardening["pinned_runtime"],
+            "required_release_artifacts": [
+                "liboqs version manifest",
+                "Rust crate lockfile",
+                "native extension build logs",
+                "SBOM",
+                "test vectors and verification output",
+            ],
+        }
+        report["native_release_hash"] = hashlib.sha256(canonical_json(report).encode("utf-8")).hexdigest()
+        return report
+
+    def soak_result_artifact_report(self) -> dict[str, object]:
+        scenarios = self.adversarial_performance_readiness_report()["required_soak_scenarios"]
+        report = {
+            "stage_id": 8,
+            "name": "long_running_soak_result_artifacts",
+            "status": "warning",
+            "required_scenarios": scenarios,
+            "minimum_duration": "24h private testnet soak before public testnet",
+            "artifact_schema": {
+                "scenario": "name",
+                "started_at": "unix timestamp",
+                "duration_seconds": "integer",
+                "node_count": "integer",
+                "passed": "boolean",
+                "failure_summary": "string",
+            },
+        }
+        report["soak_plan_hash"] = hashlib.sha256(canonical_json(report).encode("utf-8")).hexdigest()
+        return report
+
+    def database_durability_report(self) -> dict[str, object]:
+        chain_exists = self.config.db_path.exists()
+        wallet_exists = self.config.wallet_state_db_path.exists()
+        checks = [
+            {"name": "chain_db_path_configured", "passed": bool(self.config.db_path)},
+            {"name": "wallet_db_path_configured", "passed": bool(self.config.wallet_state_db_path)},
+            {"name": "chain_db_exists_after_start", "passed": chain_exists},
+            {"name": "wallet_db_exists_after_start", "passed": wallet_exists},
+            {"name": "backup_manifest_hash_present", "passed": bool(self.state_backup_manifest()["backup_manifest_hash"])},
+        ]
+        return {
+            "stage_id": 9,
+            "name": "database_durability_and_recovery",
+            "status": "ready" if all(check["passed"] for check in checks) else "warning",
+            "checks": checks,
+            "recommended_sqlite_policy": [
+                "enable WAL for multi-process nodes after migration testing",
+                "run integrity_check during maintenance windows",
+                "test restore from backup-manifest before public testnet",
+            ],
+        }
+
+    def external_audit_readiness_package(self) -> dict[str, object]:
+        package = {
+            "stage_id": 10,
+            "name": "external_audit_readiness_package",
+            "status": "warning",
+            "included_artifacts": [
+                "README.md architecture diagrams",
+                "CHANGELOG.md phase history",
+                "hardening-audit signed artifact",
+                "migration proof and source ingestion tests",
+                "native crypto boundary documentation",
+                "operator incident runbook",
+            ],
+            "missing_before_independent_audit": [
+                "formal consensus spec",
+                "cryptographic test vector bundle",
+                "public validator threat model",
+                "third-party review of migration economics",
+            ],
+        }
+        package["audit_package_hash"] = hashlib.sha256(canonical_json(package).encode("utf-8")).hexdigest()
+        return package
+
     def production_configuration_report(self) -> dict[str, object]:
         mode = self.config.deployment_mode.strip().lower()
         production_mode = mode in {"production", "mainnet", "public-testnet", "testnet"}

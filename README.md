@@ -398,6 +398,7 @@ The current security model is based on layered controls:
 - **Supply caps:** validation rejects blocks or claims that exceed configured QBC caps.
 - **Invariant tripwires:** the service can replay canonical UTXO state, activated state roots, migration-claim uniqueness, supply caps, and signer-recovery status through `security_invariant_report()`.
 - **Consolidated hardening audit:** `hardening-audit` and `/operations/hardening-audit` combine invariants, production config, preflight, migration, crypto, transport, consensus, adversarial, and backup gates into one hashed operator report.
+- **Hardening stage reports:** `hardening-stages` and `/operations/hardening-stages` expose the next ten hardening tracks as machine-readable stage reports.
 - **Production configuration gates:** `production-config` and `/operations/production-config` flag unsafe public-mode settings such as plaintext custody, demo providers, unsigned migration snapshots, and unbounded peer admission.
 - **Self-verifying ingestion manifests:** migration source-export manifests are checked against normalized records, provenance hashes, snapshot roots, and their own manifest hash before approval/import.
 
@@ -501,6 +502,7 @@ Core endpoints:
 - `GET /operations/backup-manifest`
 - `GET /operations/preflight`
 - `GET /operations/hardening-audit`
+- `GET /operations/hardening-stages`
 - `GET /operations/production-config`
 - `GET /privacy/redaction-policy`
 - `GET /network/transport-readiness`
@@ -586,6 +588,7 @@ qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db inc
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db backup-manifest
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db node-preflight
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db hardening-audit
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db hardening-stages
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db production-config
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db privacy-redaction-policy
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db network-transport-readiness

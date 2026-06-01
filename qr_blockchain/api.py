@@ -118,6 +118,9 @@ class NodeRequestHandler(BaseHTTPRequestHandler):
         if path == "/operations/hardening-audit":
             self._respond(HTTPStatus.OK, self.service.hardening_audit_report())
             return
+        if path == "/operations/hardening-stages":
+            self._respond(HTTPStatus.OK, self.service.hardening_stage_reports())
+            return
         if path == "/operations/production-config":
             self._respond(HTTPStatus.OK, self.service.production_configuration_report())
             return
