@@ -324,6 +324,8 @@ class NodeServiceTests(unittest.TestCase):
         self.assertIn("demo_signature_providers_disabled_for_production", blocker_names)
         self.assertIn("snapshot_signatures_required_for_production_migration", blocker_names)
         self.assertIn("peer_allowlist_required_on_public_bind", blocker_names)
+        with self.assertRaisesRegex(ValueError, "Security policy profile is blocked"):
+            service.enforce_security_policy_profile()
 
     def test_production_configuration_report_accepts_hardened_public_config(self) -> None:
         service, _ = self.make_service()
@@ -353,6 +355,18 @@ class NodeServiceTests(unittest.TestCase):
 
         self.assertEqual(report["configuration_status"], "ready")
         self.assertFalse(report["blockers"])
+        self.assertEqual(service.enforce_security_policy_profile()["configuration_status"], "ready")
+
+    def test_database_durability_report_checks_wal_and_integrity(self) -> None:
+        service, _ = self.make_service()
+
+        report = service.database_durability_report()
+
+        self.assertEqual(report["status"], "ready")
+        self.assertEqual(report["databases"]["chain"]["journal_mode"], "wal")
+        self.assertEqual(report["databases"]["wallet"]["journal_mode"], "wal")
+        self.assertEqual(report["databases"]["chain"]["integrity_check"], "ok")
+        self.assertEqual(report["databases"]["wallet"]["integrity_check"], "ok")
 
     def test_open_migration_dispute_quarantines_source(self) -> None:
         service, _ = self.make_service()

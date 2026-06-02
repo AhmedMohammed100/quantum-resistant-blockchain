@@ -503,6 +503,9 @@ Core endpoints:
 - `GET /operations/preflight`
 - `GET /operations/hardening-audit`
 - `GET /operations/hardening-stages`
+- `GET /operations/signed-audit-artifact`
+- `GET /operations/database-durability`
+- `GET /operations/consensus-upgrade-manifest`
 - `GET /operations/production-config`
 - `GET /privacy/redaction-policy`
 - `GET /network/transport-readiness`
@@ -589,6 +592,9 @@ qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db bac
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db node-preflight
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db hardening-audit
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db hardening-stages
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db signed-audit-artifact
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db database-durability
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db consensus-upgrade-manifest
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db production-config
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db privacy-redaction-policy
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db network-transport-readiness

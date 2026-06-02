@@ -223,6 +223,18 @@ def build_parser() -> argparse.ArgumentParser:
     hardening_stages.add_argument("--output", default=None)
     hardening_stages.set_defaults(handler=cmd_hardening_stages)
 
+    signed_audit = subparsers.add_parser("signed-audit-artifact", help="Emit a signed hardening audit artifact")
+    signed_audit.add_argument("--output", default=None)
+    signed_audit.set_defaults(handler=cmd_signed_audit_artifact)
+
+    database_durability = subparsers.add_parser("database-durability", help="Show SQLite durability and integrity status")
+    database_durability.add_argument("--output", default=None)
+    database_durability.set_defaults(handler=cmd_database_durability)
+
+    consensus_upgrade = subparsers.add_parser("consensus-upgrade-manifest", help="Emit consensus parameter upgrade manifest")
+    consensus_upgrade.add_argument("--output", default=None)
+    consensus_upgrade.set_defaults(handler=cmd_consensus_upgrade_manifest)
+
     production_config = subparsers.add_parser(
         "production-config",
         help="Show production configuration safety gates",
@@ -618,6 +630,24 @@ def cmd_hardening_audit(args: argparse.Namespace) -> int:
 def cmd_hardening_stages(args: argparse.Namespace) -> int:
     service = _service_from_args(args)
     _write_json_output(service.hardening_stage_reports(), None if args.output is None else Path(args.output))
+    return 0
+
+
+def cmd_signed_audit_artifact(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    _write_json_output(service.signed_audit_artifact_report(), None if args.output is None else Path(args.output))
+    return 0
+
+
+def cmd_database_durability(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    _write_json_output(service.database_durability_report(), None if args.output is None else Path(args.output))
+    return 0
+
+
+def cmd_consensus_upgrade_manifest(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    _write_json_output(service.consensus_upgrade_manifest(), None if args.output is None else Path(args.output))
     return 0
 
 

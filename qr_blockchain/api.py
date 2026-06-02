@@ -121,6 +121,15 @@ class NodeRequestHandler(BaseHTTPRequestHandler):
         if path == "/operations/hardening-stages":
             self._respond(HTTPStatus.OK, self.service.hardening_stage_reports())
             return
+        if path == "/operations/signed-audit-artifact":
+            self._respond(HTTPStatus.OK, self.service.signed_audit_artifact_report())
+            return
+        if path == "/operations/database-durability":
+            self._respond(HTTPStatus.OK, self.service.database_durability_report())
+            return
+        if path == "/operations/consensus-upgrade-manifest":
+            self._respond(HTTPStatus.OK, self.service.consensus_upgrade_manifest())
+            return
         if path == "/operations/production-config":
             self._respond(HTTPStatus.OK, self.service.production_configuration_report())
             return
@@ -740,6 +749,7 @@ class NodeRequestHandler(BaseHTTPRequestHandler):
 
 def serve(config: NodeConfig) -> None:
     service = NodeService(config)
+    service.enforce_security_policy_profile()
 
     class Handler(NodeRequestHandler):
         pass

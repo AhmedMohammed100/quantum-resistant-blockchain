@@ -112,6 +112,9 @@ class OperatorCliTests(unittest.TestCase):
             ("node-preflight", "preflight_status"),
             ("hardening-audit", "audit_status"),
             ("hardening-stages", "hardening_stage_report_version"),
+            ("signed-audit-artifact", "artifact_hash"),
+            ("database-durability", "name"),
+            ("consensus-upgrade-manifest", "upgrade_manifest_hash"),
             ("production-config", "configuration_status"),
             ("privacy-redaction-policy", "policy_status"),
         ]:

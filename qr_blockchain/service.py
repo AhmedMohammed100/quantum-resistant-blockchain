@@ -2396,13 +2396,17 @@ class NodeService:
         return report
 
     def database_durability_report(self) -> dict[str, object]:
-        chain_exists = self.config.db_path.exists()
-        wallet_exists = self.config.wallet_state_db_path.exists()
+        chain = self._sqlite_database_status(self.config.db_path)
+        wallet = self._sqlite_database_status(self.config.wallet_state_db_path)
         checks = [
             {"name": "chain_db_path_configured", "passed": bool(self.config.db_path)},
             {"name": "wallet_db_path_configured", "passed": bool(self.config.wallet_state_db_path)},
-            {"name": "chain_db_exists_after_start", "passed": chain_exists},
-            {"name": "wallet_db_exists_after_start", "passed": wallet_exists},
+            {"name": "chain_db_exists_after_start", "passed": bool(chain["exists"])},
+            {"name": "wallet_db_exists_after_start", "passed": bool(wallet["exists"])},
+            {"name": "chain_db_wal_enabled", "passed": chain["journal_mode"] == "wal"},
+            {"name": "wallet_db_wal_enabled", "passed": wallet["journal_mode"] == "wal"},
+            {"name": "chain_db_integrity_ok", "passed": chain["integrity_check"] == "ok"},
+            {"name": "wallet_db_integrity_ok", "passed": wallet["integrity_check"] == "ok"},
             {"name": "backup_manifest_hash_present", "passed": bool(self.state_backup_manifest()["backup_manifest_hash"])},
         ]
         return {
@@ -2410,11 +2414,44 @@ class NodeService:
             "name": "database_durability_and_recovery",
             "status": "ready" if all(check["passed"] for check in checks) else "warning",
             "checks": checks,
+            "databases": {
+                "chain": chain,
+                "wallet": wallet,
+            },
             "recommended_sqlite_policy": [
                 "enable WAL for multi-process nodes after migration testing",
                 "run integrity_check during maintenance windows",
                 "test restore from backup-manifest before public testnet",
             ],
+        }
+
+    @staticmethod
+    def _sqlite_database_status(path: Path) -> dict[str, object]:
+        if not path.exists():
+            return {
+                "path": str(path),
+                "exists": False,
+                "journal_mode": "",
+                "user_version": 0,
+                "schema_version": 0,
+                "integrity_check": "missing",
+                "wal_sidecar_exists": False,
+                "shm_sidecar_exists": False,
+            }
+        with sqlite3.connect(path) as connection:
+            journal_mode = str(connection.execute("PRAGMA journal_mode").fetchone()[0]).lower()
+            user_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+            schema_version = int(connection.execute("PRAGMA schema_version").fetchone()[0])
+            integrity_check = str(connection.execute("PRAGMA quick_check").fetchone()[0]).lower()
+        return {
+            "path": str(path),
+            "exists": True,
+            "journal_mode": journal_mode,
+            "user_version": user_version,
+            "schema_version": schema_version,
+            "integrity_check": integrity_check,
+            "wal_sidecar_exists": Path(f"{path}-wal").exists(),
+            "shm_sidecar_exists": Path(f"{path}-shm").exists(),
         }
 
     def external_audit_readiness_package(self) -> dict[str, object]:
@@ -2550,6 +2587,13 @@ class NodeService:
                 "prefer encrypted peer URLs outside local lab networks",
             ],
         }
+
+    def enforce_security_policy_profile(self) -> dict[str, object]:
+        report = self.production_configuration_report()
+        if report["configuration_status"] == "blocked":
+            blocker_names = ", ".join(str(item["name"]) for item in report["blockers"])
+            raise ValueError(f"Security policy profile is blocked: {blocker_names}")
+        return report
 
     def privacy_redaction_policy_report(self) -> dict[str, object]:
         public_fields = [
