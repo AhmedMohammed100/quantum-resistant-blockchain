@@ -136,6 +136,7 @@ The current consensus and fraud-hardening pass adds:
 - **Coinbase maturity:** reward outputs can be held behind `QR_CHAIN_COINBASE_MATURITY_BLOCKS` before they are spendable.
 - **Peer scoring:** authenticated sync records peer success/failure counts and score deltas for validator networking review.
 - **Persistent challenge lifecycle:** migration disputes now move through open, evidence-submitted, resolved-valid, resolved-fraud, or expired states, with claim unlock/revocation rules.
+- **Post-finality fraud recovery:** already-mined migration claims can now produce signed, tamper-evident fraud case artifacts that quarantine the source while preserving the canonical claim audit trail.
 - **Authenticated gossip:** peer networking includes transaction/block gossip endpoints, relay helpers, bad-block penalties, and peer-diversity readiness checks.
 - **Load/chaos harness:** `load-chaos` runs scripted multi-node scenarios for mempool floods, fork storms, migration disputes, signer interruptions, and verification throughput.
 - **Adversarial coverage:** tests now cover state roots, maturity enforcement, dispute quarantine, multi-input verification, gossip penalties, and load/chaos harness execution.
@@ -558,6 +559,8 @@ Migration endpoints:
 - `POST /migration/disputes`
 - `POST /migration/disputes/evidence`
 - `POST /migration/disputes/resolve`
+- `POST /migration/post-finality-fraud-case`
+- `POST /migration/post-finality-fraud-validate`
 
 Peer endpoints:
 
@@ -615,6 +618,8 @@ qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db mig
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-dispute-open --classical-address legacy-address --reason "conflicting proof"
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-dispute-evidence --dispute-id dispute-id --evidence-json "{\"source_export_hash\":\"...\"}"
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-dispute-resolve --dispute-id dispute-id --outcome resolved_valid --resolution-note "review accepted"
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-post-finality-fraud-case --classical-address legacy-address --evidence-json "{\"source_export_hash\":\"...\"}" --output fraud-case.json
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-post-finality-fraud-validate --input fraud-case.json
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db currency
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db currency-supply
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-source-export-normalize --input source-export.json --sign --output snapshot.json

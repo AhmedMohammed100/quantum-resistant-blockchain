@@ -318,6 +318,24 @@ def build_parser() -> argparse.ArgumentParser:
     dispute_resolve.add_argument("--output", default=None)
     dispute_resolve.set_defaults(handler=cmd_migration_dispute_resolve)
 
+    post_finality_case = subparsers.add_parser(
+        "migration-post-finality-fraud-case",
+        help="Create a signed fraud-recovery case for an already-mined migration claim",
+    )
+    post_finality_case.add_argument("--classical-address", required=True)
+    post_finality_case.add_argument("--evidence-json", required=True)
+    post_finality_case.add_argument("--requested-action", default="freeze_destination_outputs")
+    post_finality_case.add_argument("--output", default=None)
+    post_finality_case.set_defaults(handler=cmd_migration_post_finality_fraud_case)
+
+    post_finality_validate = subparsers.add_parser(
+        "migration-post-finality-fraud-validate",
+        help="Validate a signed post-finality migration fraud case artifact",
+    )
+    post_finality_validate.add_argument("--input", required=True)
+    post_finality_validate.add_argument("--output", default=None)
+    post_finality_validate.set_defaults(handler=cmd_migration_post_finality_fraud_validate)
+
     snapshot_attestations = subparsers.add_parser("migration-snapshot-attestations", help="Show snapshot signer/quorum readiness")
     snapshot_attestations.add_argument("--output", default=None)
     snapshot_attestations.set_defaults(handler=cmd_migration_snapshot_attestations)
@@ -788,6 +806,31 @@ def cmd_migration_dispute_resolve(args: argparse.Namespace) -> int:
             outcome=args.outcome,
             resolution_note=args.resolution_note,
         ),
+        None if args.output is None else Path(args.output),
+    )
+    return 0
+
+
+def cmd_migration_post_finality_fraud_case(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    evidence = json.loads(args.evidence_json)
+    if not isinstance(evidence, dict):
+        raise ValueError("--evidence-json must decode to an object")
+    _write_json_output(
+        service.post_finality_migration_fraud_case(
+            args.classical_address,
+            evidence=evidence,
+            requested_action=args.requested_action,
+        ),
+        None if args.output is None else Path(args.output),
+    )
+    return 0
+
+
+def cmd_migration_post_finality_fraud_validate(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    _write_json_output(
+        service.validate_post_finality_migration_fraud_case(_read_json_file(Path(args.input))),
         None if args.output is None else Path(args.output),
     )
     return 0

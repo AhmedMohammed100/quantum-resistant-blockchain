@@ -1093,6 +1093,58 @@ class NodeServiceTests(unittest.TestCase):
         self.assertEqual(receipt["claims"]["amount"], 13)
         self.assertEqual(receipt["envelope"]["purpose"], "migration_claim_receipt_v1")
 
+    def test_post_finality_migration_fraud_case_is_signed_and_tamper_evident(self) -> None:
+        service, _ = self.make_service()
+        pq_wallet = Wallet("PQWallet")
+        miner = Wallet("Miner")
+
+        service.create_genesis_block({miner.create_address(): 10})
+        classical_public_key = build_demo_classical_claim_public_key("legacy-user-post-finality")
+        classical_address = service.seed_migration_source(
+            classical_address=build_demo_classical_claim_address(classical_public_key),
+            provider_id="classical_claim_demo_v1",
+            source_network="legacy-demo-ledger",
+            amount=17,
+            snapshot_ref="snapshot-post-finality",
+        )["classical_address"]
+        transaction = Transaction(
+            inputs=[],
+            outputs=[TxOutput(recipient=pq_wallet.create_address(), amount=17)],
+            kind="migration_claim",
+            chain_id=service.config.chain_id,
+            signature_scheme="classical_claim_demo_v1",
+            metadata={
+                "classical_address": classical_address,
+                "classical_provider_id": "classical_claim_demo_v1",
+                "source_network": "legacy-demo-ledger",
+                "snapshot_ref": "snapshot-post-finality",
+                "classical_public_key": classical_public_key,
+            },
+        )
+        transaction.metadata["classical_signature"] = build_demo_classical_claim_proof(
+            classical_public_key,
+            classical_claim_message_bytes(transaction.migration_claim_payload()),
+        )
+        transaction.finalize()
+        service.submit_transaction(transaction)
+        service.mine_pending_transactions(miner.create_address())
+
+        fraud_case = service.post_finality_migration_fraud_case(
+            classical_address,
+            evidence={"review": "conflicting source export", "source_export_hash": "abc123"},
+        )
+        validation = service.validate_post_finality_migration_fraud_case(fraud_case)
+
+        self.assertTrue(validation["valid"])
+        self.assertEqual(fraud_case["envelope"]["purpose"], "post_finality_migration_fraud_case_v1")
+        self.assertEqual(service.store.migration_source(classical_address)["status"], "quarantined")
+        self.assertIsNotNone(service.store.migration_claim(classical_address))
+        self.assertEqual(fraud_case["claim"]["tx_id"], transaction.tx_id)
+
+        tampered = json.loads(json.dumps(fraud_case))
+        tampered["evidence"]["review"] = "mutated after signing"
+        self.assertFalse(service.validate_post_finality_migration_fraud_case(tampered)["valid"])
+
     def test_migration_claim_proves_bitcoin_source_address_from_secp256k1_key(self) -> None:
         service, _ = self.make_service()
         pq_wallet = Wallet("PQWallet")

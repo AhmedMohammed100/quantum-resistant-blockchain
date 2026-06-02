@@ -418,6 +418,32 @@ class NodeRequestHandler(BaseHTTPRequestHandler):
             self._respond(HTTPStatus.OK, dispute)
             return
 
+        if path == "/migration/post-finality-fraud-case":
+            classical_address = str(payload.get("classical_address", ""))
+            evidence = payload.get("evidence", {})
+            if not classical_address:
+                self._respond(HTTPStatus.BAD_REQUEST, {"error": "classical_address is required"})
+                return
+            if not isinstance(evidence, dict):
+                self._respond(HTTPStatus.BAD_REQUEST, {"error": "evidence must be an object"})
+                return
+            try:
+                fraud_case = self.service.post_finality_migration_fraud_case(
+                    classical_address,
+                    evidence=evidence,
+                    requested_action=str(payload.get("requested_action", "freeze_destination_outputs")),
+                )
+            except ValueError as error:
+                self._respond(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+                return
+            self._respond(HTTPStatus.CREATED, fraud_case)
+            return
+
+        if path == "/migration/post-finality-fraud-validate":
+            result = self.service.validate_post_finality_migration_fraud_case(payload)
+            self._respond(HTTPStatus.OK if result["valid"] else HTTPStatus.BAD_REQUEST, result)
+            return
+
         if path == "/migration/snapshots/export":
             try:
                 exported = self.service.export_migration_snapshot(

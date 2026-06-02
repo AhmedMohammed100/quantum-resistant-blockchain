@@ -1129,6 +1129,156 @@ class NodeService:
             "disputes": disputes,
         }
 
+    def post_finality_migration_fraud_case(
+        self,
+        classical_address: str,
+        *,
+        evidence: dict[str, object],
+        requested_action: str = "freeze_destination_outputs",
+    ) -> dict[str, object]:
+        if requested_action not in {
+            "freeze_destination_outputs",
+            "quarantine_source",
+            "revoke_source_after_governance_review",
+            "operator_audit_only",
+        }:
+            raise ValueError("Unsupported post-finality recovery action.")
+        if not isinstance(evidence, dict) or not evidence:
+            raise ValueError("Post-finality fraud evidence must be a non-empty object.")
+
+        claim = self.store.migration_claim(classical_address)
+        if claim is None:
+            raise ValueError("Post-finality fraud case requires a mined migration claim.")
+        source = self.store.migration_source(classical_address)
+        if source is None:
+            raise ValueError("Migration source address is unknown.")
+
+        evidence_hash = hashlib.sha256(canonical_json(evidence).encode("utf-8")).hexdigest()
+        dispute_evidence = {
+            "case_type": "post_finality_migration_fraud",
+            "requested_action": requested_action,
+            "evidence": evidence,
+            "evidence_hash": evidence_hash,
+            "mined_claim_tx_id": claim["tx_id"],
+        }
+        dispute_evidence_hash = hashlib.sha256(canonical_json(dispute_evidence).encode("utf-8")).hexdigest()
+        opened = self.open_migration_dispute(
+            classical_address,
+            reason="post-finality fraud review",
+            evidence_hash=dispute_evidence_hash,
+        )
+        dispute = self.submit_migration_dispute_evidence(
+            str(opened["dispute_id"]),
+            evidence=dispute_evidence,
+            evidence_hash=dispute_evidence_hash,
+        )
+        updated_source = self.store.migration_source(classical_address) or source
+        policy_report = self.migration_fraud_recovery_policy_report()
+        case: dict[str, object] = {
+            "case_version": 1,
+            "case_type": "post_finality_migration_fraud",
+            "chain_id": self.config.chain_id,
+            "classical_address": classical_address,
+            "created_at": round(time.time(), 6),
+            "requested_action": requested_action,
+            "evidence": evidence,
+            "evidence_hash": evidence_hash,
+            "dispute_evidence_hash": dispute_evidence_hash,
+            "source": updated_source,
+            "claim": claim,
+            "dispute": dispute,
+            "recovery_policy": policy_report["post_finality_policy"],
+            "constraints": [
+                "already-mined migration outputs are not mutated by case creation",
+                "destination-output freeze requires consensus or governance enforcement",
+                "source quarantine blocks future claims from the contested source",
+                "resolution must be published through the migration dispute lifecycle",
+            ],
+            "recommended_next_steps": [
+                "publish this signed case artifact",
+                "route the dispute to reviewer quorum",
+                "apply an operator freeze or escrow policy outside consensus until on-chain rules exist",
+                "resolve the dispute as resolved_valid or resolved_fraud with a signed audit note",
+            ],
+        }
+        case_hash = self._post_finality_migration_fraud_case_hash(case)
+        case["case_hash"] = case_hash
+        case["envelope"] = self.identity.sign_claims(
+            "post_finality_migration_fraud_case_v1",
+            {
+                "purpose": "post_finality_migration_fraud_case_v1",
+                "chain_id": self.config.chain_id,
+                "node_id": self.config.node_id,
+                "case_hash": case_hash,
+                "classical_address": classical_address,
+                "claim_tx_id": claim["tx_id"],
+                "requested_action": requested_action,
+                "dispute_id": dispute["dispute_id"],
+            },
+        )
+        return case
+
+    def validate_post_finality_migration_fraud_case(self, case: dict[str, object]) -> dict[str, object]:
+        observed_hash = str(case.get("case_hash", ""))
+        expected_hash = self._post_finality_migration_fraud_case_hash(case)
+        envelope = dict(case.get("envelope", {})) if isinstance(case.get("envelope"), dict) else {}
+        claim = dict(case.get("claim", {})) if isinstance(case.get("claim"), dict) else {}
+        dispute = dict(case.get("dispute", {})) if isinstance(case.get("dispute"), dict) else {}
+        evidence = dict(case.get("evidence", {})) if isinstance(case.get("evidence"), dict) else {}
+        expected_evidence_hash = hashlib.sha256(canonical_json(evidence).encode("utf-8")).hexdigest()
+        expected_dispute_evidence = {
+            "case_type": "post_finality_migration_fraud",
+            "requested_action": case.get("requested_action"),
+            "evidence": evidence,
+            "evidence_hash": str(case.get("evidence_hash", "")),
+            "mined_claim_tx_id": claim.get("tx_id"),
+        }
+        expected_dispute_evidence_hash = hashlib.sha256(
+            canonical_json(expected_dispute_evidence).encode("utf-8")
+        ).hexdigest()
+        signature_valid = False
+        signature_error = ""
+        try:
+            verified = verify_signed_envelope(
+                envelope,
+                expected_purpose="post_finality_migration_fraud_case_v1",
+                expected_chain_id=self.config.chain_id,
+                time_skew_seconds=self.config.auth_time_skew_seconds,
+            )
+            claims = dict(verified["claims"])
+            signature_valid = (
+                claims.get("case_hash") == observed_hash
+                and claims.get("classical_address") == case.get("classical_address")
+                and claims.get("claim_tx_id") == claim.get("tx_id")
+                and claims.get("requested_action") == case.get("requested_action")
+                and claims.get("dispute_id") == dispute.get("dispute_id")
+            )
+        except Exception as error:
+            signature_error = str(error)
+
+        checks = [
+            {"name": "case_present", "passed": bool(case)},
+            {"name": "case_hash_matches", "passed": bool(observed_hash) and observed_hash == expected_hash},
+            {"name": "signature_present", "passed": bool(envelope)},
+            {"name": "signature_valid", "passed": signature_valid, "detail": signature_error},
+            {"name": "chain_id_matches", "passed": case.get("chain_id") == self.config.chain_id},
+            {"name": "case_type_matches", "passed": case.get("case_type") == "post_finality_migration_fraud"},
+            {"name": "mined_claim_attached", "passed": bool(claim.get("tx_id"))},
+            {"name": "evidence_hash_matches", "passed": str(case.get("evidence_hash", "")) == expected_evidence_hash},
+            {
+                "name": "dispute_evidence_hash_matches",
+                "passed": str(case.get("dispute_evidence_hash", "")) == expected_dispute_evidence_hash,
+            },
+        ]
+        result = {
+            "valid": all(bool(check["passed"]) for check in checks),
+            "checks": checks,
+            "case_hash": observed_hash,
+            "expected_case_hash": expected_hash,
+        }
+        result["validation_hash"] = hashlib.sha256(canonical_json(result).encode("utf-8")).hexdigest()
+        return result
+
     def migration_claim_batch_plan(
         self,
         *,
@@ -2412,12 +2562,26 @@ class NodeService:
         payload.pop("status", None)
         return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
 
+    @staticmethod
+    def _post_finality_migration_fraud_case_hash(case: dict[str, object]) -> str:
+        payload = dict(case)
+        payload.pop("case_hash", None)
+        payload.pop("envelope", None)
+        payload.pop("validation_hash", None)
+        return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
+
     def migration_fraud_recovery_policy_report(self) -> dict[str, object]:
         policy = {
             "stage_id": 6,
             "name": "migration_post_finality_fraud_recovery",
-            "status": "warning",
+            "status": "case_artifacts_ready_escrow_rules_pending",
             "current_controls": self.migration_finality_fraud_report()["fraud_controls"],
+            "implemented_controls": [
+                "signed post-finality fraud case artifact",
+                "case validation with tamper detection",
+                "automatic source quarantine through the existing dispute lifecycle",
+                "CLI and API surfaces for case creation and validation",
+            ],
             "post_finality_policy": [
                 "open post-finality fraud case with signed evidence packet",
                 "freeze future claims from affected source snapshot",
