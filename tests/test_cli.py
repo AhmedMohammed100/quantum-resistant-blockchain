@@ -115,6 +115,7 @@ class OperatorCliTests(unittest.TestCase):
             ("signed-audit-artifact", "artifact_hash"),
             ("database-durability", "name"),
             ("consensus-upgrade-manifest", "upgrade_manifest_hash"),
+            ("consensus-upgrade-sign", "artifact_hash"),
             ("production-config", "configuration_status"),
             ("privacy-redaction-policy", "policy_status"),
         ]:
@@ -126,6 +127,39 @@ class OperatorCliTests(unittest.TestCase):
             self.assertEqual(exit_code, 0)
             outputs[command] = json.loads(buffer.getvalue())
             self.assertIn(key, outputs[command])
+
+    def test_cli_validates_signed_consensus_upgrade_artifact(self) -> None:
+        artifact_path = self.root / "upgrade-artifact.json"
+        sign_buffer = io.StringIO()
+        validate_buffer = io.StringIO()
+
+        with redirect_stdout(sign_buffer):
+            sign_exit = main(
+                [
+                    "--db-path",
+                    str(self.db_path),
+                    "--wallet-state-db-path",
+                    str(self.wallet_state_db_path),
+                    "consensus-upgrade-sign",
+                ]
+            )
+        artifact_path.write_text(sign_buffer.getvalue(), encoding="utf-8")
+        with redirect_stdout(validate_buffer):
+            validate_exit = main(
+                [
+                    "--db-path",
+                    str(self.db_path),
+                    "--wallet-state-db-path",
+                    str(self.wallet_state_db_path),
+                    "consensus-upgrade-validate",
+                    "--input",
+                    str(artifact_path),
+                ]
+            )
+
+        self.assertEqual(sign_exit, 0)
+        self.assertEqual(validate_exit, 0)
+        self.assertTrue(json.loads(validate_buffer.getvalue())["valid"])
 
     def test_cli_quotes_migration_claim(self) -> None:
         classical_address = self.demo_address("quote-cli")

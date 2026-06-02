@@ -2322,18 +2322,95 @@ class NodeService:
             "name": "consensus_parameter_governance",
             "manifest_version": 1,
             "chain_id": self.config.chain_id,
+            "node_id": self.config.node_id,
+            "effective_height": self.store.block_count(),
             "state_root_activation_height": self.config.state_root_activation_height,
             "max_transaction_size_bytes": self.config.max_transaction_size_bytes,
             "max_signature_payload_bytes": self.config.max_signature_payload_bytes,
             "max_transactions_per_block": self.config.max_transactions_per_block,
+            "max_transaction_inputs": self.config.max_transaction_inputs,
+            "max_transaction_outputs": self.config.max_transaction_outputs,
             "min_fee_per_kib": self.config.min_fee_per_kib,
+            "coinbase_maturity_blocks": self.config.coinbase_maturity_blocks,
+            "migration_claim_start_height": self.config.migration_claim_start_height,
+            "migration_claim_end_height": self.config.migration_claim_end_height,
+            "migration_dual_control_start_height": self.config.migration_dual_control_start_height,
+            "migration_dual_control_end_height": self.config.migration_dual_control_end_height,
+            "migration_dispute_window_blocks": self.config.migration_dispute_window_blocks,
             "allowed_signature_providers": list(self.config.allowed_signature_providers),
             "preferred_signature_providers": list(self.config.preferred_signature_providers),
-            "operator_rule": "future consensus-affecting changes should ship as signed upgrade manifests",
+            "operator_rule": "consensus-affecting changes must ship as signed upgrade manifests before activation",
+            "requires_signature": True,
         }
-        manifest["upgrade_manifest_hash"] = hashlib.sha256(canonical_json(manifest).encode("utf-8")).hexdigest()
+        manifest["upgrade_manifest_hash"] = self._consensus_upgrade_manifest_hash(manifest)
         manifest["status"] = "ready"
         return manifest
+
+    def signed_consensus_upgrade_manifest(self) -> dict[str, object]:
+        manifest = self.consensus_upgrade_manifest()
+        claims = {
+            "purpose": "consensus_upgrade_manifest_v1",
+            "chain_id": self.config.chain_id,
+            "node_id": self.config.node_id,
+            "upgrade_manifest_hash": manifest["upgrade_manifest_hash"],
+            "manifest_version": manifest["manifest_version"],
+            "effective_height": manifest["effective_height"],
+        }
+        envelope = self.identity.sign_claims("consensus_upgrade_manifest_v1", claims)
+        artifact = {
+            "artifact_version": 1,
+            "manifest": manifest,
+            "envelope": envelope,
+        }
+        artifact["artifact_hash"] = hashlib.sha256(canonical_json(artifact["manifest"]).encode("utf-8")).hexdigest()
+        return artifact
+
+    def validate_consensus_upgrade_manifest_artifact(self, artifact: dict[str, object]) -> dict[str, object]:
+        manifest = dict(artifact.get("manifest", {})) if isinstance(artifact.get("manifest"), dict) else {}
+        envelope = dict(artifact.get("envelope", {})) if isinstance(artifact.get("envelope"), dict) else {}
+        observed_hash = str(manifest.get("upgrade_manifest_hash", ""))
+        expected_hash = self._consensus_upgrade_manifest_hash(manifest)
+        signature_valid = False
+        signature_error = ""
+        try:
+            verified = verify_signed_envelope(
+                envelope,
+                expected_purpose="consensus_upgrade_manifest_v1",
+                expected_chain_id=self.config.chain_id,
+                time_skew_seconds=self.config.auth_time_skew_seconds,
+            )
+            signature_valid = str(verified["claims"].get("upgrade_manifest_hash", "")) == observed_hash
+        except Exception as error:
+            signature_error = str(error)
+
+        checks = [
+            {"name": "manifest_present", "passed": bool(manifest)},
+            {"name": "manifest_hash_matches", "passed": bool(observed_hash) and observed_hash == expected_hash},
+            {"name": "signature_present", "passed": bool(envelope)},
+            {"name": "signature_valid", "passed": signature_valid, "detail": signature_error},
+            {"name": "chain_id_matches", "passed": manifest.get("chain_id") == self.config.chain_id},
+            {"name": "effective_height_nonnegative", "passed": int(manifest.get("effective_height", -1)) >= 0},
+            {"name": "state_root_activation_nonnegative", "passed": int(manifest.get("state_root_activation_height", -1)) >= 0},
+            {"name": "max_transaction_size_positive", "passed": int(manifest.get("max_transaction_size_bytes", 0)) > 0},
+            {"name": "max_signature_payload_positive", "passed": int(manifest.get("max_signature_payload_bytes", 0)) > 0},
+            {"name": "min_fee_per_kib_nonnegative", "passed": int(manifest.get("min_fee_per_kib", -1)) >= 0},
+            {"name": "migration_dispute_window_positive", "passed": int(manifest.get("migration_dispute_window_blocks", 0)) > 0},
+        ]
+        result = {
+            "valid": all(bool(check["passed"]) for check in checks),
+            "checks": checks,
+            "upgrade_manifest_hash": observed_hash,
+            "expected_manifest_hash": expected_hash,
+        }
+        result["validation_hash"] = hashlib.sha256(canonical_json(result).encode("utf-8")).hexdigest()
+        return result
+
+    @staticmethod
+    def _consensus_upgrade_manifest_hash(manifest: dict[str, object]) -> str:
+        payload = dict(manifest)
+        payload.pop("upgrade_manifest_hash", None)
+        payload.pop("status", None)
+        return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
 
     def migration_fraud_recovery_policy_report(self) -> dict[str, object]:
         policy = {

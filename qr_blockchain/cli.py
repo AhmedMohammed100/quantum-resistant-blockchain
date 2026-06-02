@@ -235,6 +235,21 @@ def build_parser() -> argparse.ArgumentParser:
     consensus_upgrade.add_argument("--output", default=None)
     consensus_upgrade.set_defaults(handler=cmd_consensus_upgrade_manifest)
 
+    consensus_upgrade_signed = subparsers.add_parser(
+        "consensus-upgrade-sign",
+        help="Emit a signed consensus parameter upgrade artifact",
+    )
+    consensus_upgrade_signed.add_argument("--output", default=None)
+    consensus_upgrade_signed.set_defaults(handler=cmd_consensus_upgrade_sign)
+
+    consensus_upgrade_validate = subparsers.add_parser(
+        "consensus-upgrade-validate",
+        help="Validate a signed consensus parameter upgrade artifact",
+    )
+    consensus_upgrade_validate.add_argument("--input", required=True)
+    consensus_upgrade_validate.add_argument("--output", default=None)
+    consensus_upgrade_validate.set_defaults(handler=cmd_consensus_upgrade_validate)
+
     production_config = subparsers.add_parser(
         "production-config",
         help="Show production configuration safety gates",
@@ -648,6 +663,22 @@ def cmd_database_durability(args: argparse.Namespace) -> int:
 def cmd_consensus_upgrade_manifest(args: argparse.Namespace) -> int:
     service = _service_from_args(args)
     _write_json_output(service.consensus_upgrade_manifest(), None if args.output is None else Path(args.output))
+    return 0
+
+
+def cmd_consensus_upgrade_sign(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    _write_json_output(service.signed_consensus_upgrade_manifest(), None if args.output is None else Path(args.output))
+    return 0
+
+
+def cmd_consensus_upgrade_validate(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    artifact = _read_json_file(Path(args.input))
+    _write_json_output(
+        service.validate_consensus_upgrade_manifest_artifact(artifact),
+        None if args.output is None else Path(args.output),
+    )
     return 0
 
 

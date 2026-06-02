@@ -399,6 +399,7 @@ The current security model is based on layered controls:
 - **Invariant tripwires:** the service can replay canonical UTXO state, activated state roots, migration-claim uniqueness, supply caps, and signer-recovery status through `security_invariant_report()`.
 - **Consolidated hardening audit:** `hardening-audit` and `/operations/hardening-audit` combine invariants, production config, preflight, migration, crypto, transport, consensus, adversarial, and backup gates into one hashed operator report.
 - **Hardening stage reports:** `hardening-stages` and `/operations/hardening-stages` expose the next ten hardening tracks as machine-readable stage reports.
+- **Signed consensus upgrades:** `consensus-upgrade-sign` and `consensus-upgrade-validate` turn fee, state-root, transaction-limit, provider-policy, and migration-window changes into signed, verifiable governance artifacts.
 - **Production configuration gates:** `production-config` and `/operations/production-config` flag unsafe public-mode settings such as plaintext custody, demo providers, unsigned migration snapshots, and unbounded peer admission.
 - **Self-verifying ingestion manifests:** migration source-export manifests are checked against normalized records, provenance hashes, snapshot roots, and their own manifest hash before approval/import.
 
@@ -506,6 +507,7 @@ Core endpoints:
 - `GET /operations/signed-audit-artifact`
 - `GET /operations/database-durability`
 - `GET /operations/consensus-upgrade-manifest`
+- `GET /operations/consensus-upgrade-signed`
 - `GET /operations/production-config`
 - `GET /privacy/redaction-policy`
 - `GET /network/transport-readiness`
@@ -595,6 +597,8 @@ qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db har
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db signed-audit-artifact
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db database-durability
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db consensus-upgrade-manifest
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db consensus-upgrade-sign --output upgrade.json
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db consensus-upgrade-validate --input upgrade.json
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db production-config
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db privacy-redaction-policy
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db network-transport-readiness

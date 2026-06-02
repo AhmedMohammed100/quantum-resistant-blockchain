@@ -286,6 +286,27 @@ class NodeServiceTests(unittest.TestCase):
         self.assertIn("structured_security_policy_profiles", stage_names)
         self.assertIn("external_audit_readiness_package", stage_names)
 
+    def test_signed_consensus_upgrade_manifest_validates_and_detects_tampering(self) -> None:
+        service, _ = self.make_service()
+
+        artifact = service.signed_consensus_upgrade_manifest()
+        valid = service.validate_consensus_upgrade_manifest_artifact(artifact)
+
+        self.assertTrue(valid["valid"], valid)
+        self.assertEqual(
+            valid["upgrade_manifest_hash"],
+            artifact["manifest"]["upgrade_manifest_hash"],
+        )
+
+        tampered = json.loads(json.dumps(artifact))
+        tampered["manifest"]["min_fee_per_kib"] = int(tampered["manifest"]["min_fee_per_kib"]) + 1
+        invalid = service.validate_consensus_upgrade_manifest_artifact(tampered)
+
+        self.assertFalse(invalid["valid"])
+        self.assertFalse(
+            next(check for check in invalid["checks"] if check["name"] == "manifest_hash_matches")["passed"]
+        )
+
     def test_network_transport_and_backup_reports(self) -> None:
         service, db_path = self.make_service()
         service.create_genesis_block({"bootstrap": 1})

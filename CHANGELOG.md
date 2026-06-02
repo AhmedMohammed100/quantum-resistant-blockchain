@@ -14,6 +14,7 @@ This changelog preserves the implementation history that previously lived in the
 - Added `hardening-audit` and `/operations/hardening-audit`, a hashed consolidated operator report that combines invariant, production config, preflight, migration, crypto, transport, consensus, adversarial, and backup gates.
 - Added `.github/workflows/hardening.yml` plus `hardening-stages` and `/operations/hardening-stages` to track the next ten hardening areas: CI gates, policy profiles, signed audit artifacts, peer transport, consensus upgrade manifests, post-finality fraud recovery, native crypto release provenance, soak artifacts, database durability, and external audit readiness.
 - Added policy-profile enforcement at node server startup, expanded database durability checks with WAL and SQLite quick-check status, and exposed signed audit, database durability, and consensus upgrade manifest artifacts through CLI/API.
+- Strengthened consensus upgrade governance with signed upgrade artifacts, validation checks, tamper detection, and CLI/API surfaces for signing and validating consensus parameter manifests.
 - Tightened the public security model documentation around invariant tripwires, authenticated gossip failure behavior, and stateful PQ signer recovery risk.
 
 ### Phase 76 - Load And Chaos Harness

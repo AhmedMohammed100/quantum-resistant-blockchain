@@ -130,6 +130,9 @@ class NodeRequestHandler(BaseHTTPRequestHandler):
         if path == "/operations/consensus-upgrade-manifest":
             self._respond(HTTPStatus.OK, self.service.consensus_upgrade_manifest())
             return
+        if path == "/operations/consensus-upgrade-signed":
+            self._respond(HTTPStatus.OK, self.service.signed_consensus_upgrade_manifest())
+            return
         if path == "/operations/production-config":
             self._respond(HTTPStatus.OK, self.service.production_configuration_report())
             return
@@ -508,6 +511,11 @@ class NodeRequestHandler(BaseHTTPRequestHandler):
                 self._respond(HTTPStatus.BAD_REQUEST, {"error": str(error)})
                 return
             self._respond(HTTPStatus.CREATED, result)
+            return
+
+        if path == "/operations/consensus-upgrade-validate":
+            result = self.service.validate_consensus_upgrade_manifest_artifact(payload)
+            self._respond(HTTPStatus.OK if result["valid"] else HTTPStatus.BAD_REQUEST, result)
             return
 
         if path == "/migration/snapshots/reconcile":
