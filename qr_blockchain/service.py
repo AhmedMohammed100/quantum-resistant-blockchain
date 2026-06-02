@@ -2599,12 +2599,15 @@ class NodeService:
     def native_crypto_release_provenance_report(self) -> dict[str, object]:
         boundary = self.native_crypto_runtime_boundary_report()
         hardening = self.crypto_runtime_hardening_report()
+        release = self.release_provenance_manifest()
         report = {
             "stage_id": 7,
             "name": "native_crypto_release_provenance",
             "status": "ready" if hardening["hardening_status"] == "ready" else "warning",
             "native_boundary": boundary,
             "pinned_runtime": hardening["pinned_runtime"],
+            "release_manifest_hash": release["release_manifest_hash"],
+            "provider_policy": hardening["provider_policy"],
             "required_release_artifacts": [
                 "liboqs version manifest",
                 "Rust crate lockfile",
@@ -2612,9 +2615,90 @@ class NodeService:
                 "SBOM",
                 "test vectors and verification output",
             ],
+            "provenance_checks": [
+                {"name": "native_boundary_declared", "passed": bool(boundary["native_crypto_status"])},
+                {"name": "release_manifest_hashed", "passed": bool(release["release_manifest_hash"])},
+                {"name": "pinned_runtime_declared", "passed": bool(hardening["pinned_runtime"])},
+                {
+                    "name": "recommended_provider_available",
+                    "passed": hardening["provider_policy"]["recommended_signature_provider"] is not None,
+                },
+            ],
         }
         report["native_release_hash"] = hashlib.sha256(canonical_json(report).encode("utf-8")).hexdigest()
         return report
+
+    def signed_native_crypto_release_provenance(self) -> dict[str, object]:
+        report = self.native_crypto_release_provenance_report()
+        release = self.release_provenance_manifest()
+        report["release_manifest_hash"] = release["release_manifest_hash"]
+        report["native_release_hash"] = self._native_release_report_hash(report)
+        claims = {
+            "purpose": "native_crypto_release_provenance_v1",
+            "chain_id": self.config.chain_id,
+            "node_id": self.config.node_id,
+            "native_release_hash": report["native_release_hash"],
+            "release_manifest_hash": release["release_manifest_hash"],
+            "pinned_runtime": report["pinned_runtime"],
+        }
+        artifact = {
+            "artifact_version": 1,
+            "report": report,
+            "release_manifest": release,
+            "envelope": self.identity.sign_claims("native_crypto_release_provenance_v1", claims),
+        }
+        artifact["artifact_hash"] = self._signed_artifact_payload_hash(artifact)
+        return artifact
+
+    def validate_native_crypto_release_provenance(self, artifact: dict[str, object]) -> dict[str, object]:
+        report = dict(artifact.get("report", {})) if isinstance(artifact.get("report"), dict) else {}
+        release = dict(artifact.get("release_manifest", {})) if isinstance(artifact.get("release_manifest"), dict) else {}
+        envelope = dict(artifact.get("envelope", {})) if isinstance(artifact.get("envelope"), dict) else {}
+        expected_report_hash = self._native_release_report_hash(report)
+        expected_release_hash = self._release_manifest_hash(release)
+        expected_artifact_hash = self._signed_artifact_payload_hash(artifact)
+        signature_valid = False
+        signature_error = ""
+        try:
+            verified = verify_signed_envelope(
+                envelope,
+                expected_purpose="native_crypto_release_provenance_v1",
+                expected_chain_id=self.config.chain_id,
+                time_skew_seconds=self.config.auth_time_skew_seconds,
+            )
+            claims = dict(verified["claims"])
+            signature_valid = (
+                claims.get("native_release_hash") == report.get("native_release_hash")
+                and claims.get("release_manifest_hash") == release.get("release_manifest_hash")
+                and claims.get("pinned_runtime") == report.get("pinned_runtime")
+            )
+        except Exception as error:
+            signature_error = str(error)
+
+        checks = [
+            {"name": "report_present", "passed": bool(report)},
+            {
+                "name": "native_release_hash_matches",
+                "passed": bool(report.get("native_release_hash")) and report.get("native_release_hash") == expected_report_hash,
+            },
+            {
+                "name": "release_manifest_hash_matches",
+                "passed": bool(release.get("release_manifest_hash"))
+                and release.get("release_manifest_hash") == expected_release_hash,
+            },
+            {
+                "name": "report_binds_release_manifest",
+                "passed": report.get("release_manifest_hash") == release.get("release_manifest_hash"),
+            },
+            {
+                "name": "artifact_hash_matches",
+                "passed": bool(artifact.get("artifact_hash")) and artifact.get("artifact_hash") == expected_artifact_hash,
+            },
+            {"name": "signature_valid", "passed": signature_valid, "detail": signature_error},
+        ]
+        result = {"valid": all(bool(check["passed"]) for check in checks), "checks": checks}
+        result["validation_hash"] = hashlib.sha256(canonical_json(result).encode("utf-8")).hexdigest()
+        return result
 
     def soak_result_artifact_report(self) -> dict[str, object]:
         scenarios = self.adversarial_performance_readiness_report()["required_soak_scenarios"]
@@ -2632,9 +2716,101 @@ class NodeService:
                 "passed": "boolean",
                 "failure_summary": "string",
             },
+            "validation_contract": [
+                "artifact hash excludes envelope and validation hash",
+                "result hash commits to the normalized soak result",
+                "signed claims bind scenario, result hash, duration, and pass/fail status",
+            ],
         }
         report["soak_plan_hash"] = hashlib.sha256(canonical_json(report).encode("utf-8")).hexdigest()
         return report
+
+    def build_soak_result_artifact(self, result: dict[str, object]) -> dict[str, object]:
+        normalized = {
+            "scenario": str(result.get("scenario", "unspecified")),
+            "started_at": float(result.get("started_at", 0)),
+            "duration_seconds": int(result.get("duration_seconds", 0)),
+            "node_count": int(result.get("node_count", 0)),
+            "passed": bool(result.get("passed", False)),
+            "failure_summary": str(result.get("failure_summary", "")),
+            "metrics": dict(result.get("metrics", {})) if isinstance(result.get("metrics"), dict) else {},
+        }
+        normalized["result_hash"] = hashlib.sha256(canonical_json(normalized).encode("utf-8")).hexdigest()
+        artifact = {
+            "artifact_version": 1,
+            "chain_id": self.config.chain_id,
+            "node_id": self.config.node_id,
+            "generated_at": round(time.time(), 6),
+            "soak_plan": self.soak_result_artifact_report(),
+            "result": normalized,
+            "minimum_acceptance": {
+                "duration_seconds": 24 * 60 * 60,
+                "node_count": 3,
+                "passed": True,
+            },
+        }
+        artifact["artifact_hash"] = self._signed_artifact_payload_hash(artifact)
+        artifact["envelope"] = self.identity.sign_claims(
+            "soak_result_artifact_v1",
+            {
+                "purpose": "soak_result_artifact_v1",
+                "chain_id": self.config.chain_id,
+                "node_id": self.config.node_id,
+                "artifact_hash": artifact["artifact_hash"],
+                "result_hash": normalized["result_hash"],
+                "scenario": normalized["scenario"],
+                "duration_seconds": normalized["duration_seconds"],
+                "passed": normalized["passed"],
+            },
+        )
+        return artifact
+
+    def validate_soak_result_artifact(self, artifact: dict[str, object]) -> dict[str, object]:
+        result_payload = dict(artifact.get("result", {})) if isinstance(artifact.get("result"), dict) else {}
+        observed_result_hash = str(result_payload.get("result_hash", ""))
+        result_without_hash = dict(result_payload)
+        result_without_hash.pop("result_hash", None)
+        expected_result_hash = hashlib.sha256(canonical_json(result_without_hash).encode("utf-8")).hexdigest()
+        observed_artifact_hash = str(artifact.get("artifact_hash", ""))
+        expected_artifact_hash = self._signed_artifact_payload_hash(artifact)
+        envelope = dict(artifact.get("envelope", {})) if isinstance(artifact.get("envelope"), dict) else {}
+        signature_valid = False
+        signature_error = ""
+        try:
+            verified = verify_signed_envelope(
+                envelope,
+                expected_purpose="soak_result_artifact_v1",
+                expected_chain_id=self.config.chain_id,
+                time_skew_seconds=self.config.auth_time_skew_seconds,
+            )
+            claims = dict(verified["claims"])
+            signature_valid = (
+                claims.get("artifact_hash") == observed_artifact_hash
+                and claims.get("result_hash") == observed_result_hash
+                and claims.get("scenario") == result_payload.get("scenario")
+                and claims.get("duration_seconds") == result_payload.get("duration_seconds")
+                and claims.get("passed") == result_payload.get("passed")
+            )
+        except Exception as error:
+            signature_error = str(error)
+        minimum = dict(artifact.get("minimum_acceptance", {})) if isinstance(artifact.get("minimum_acceptance"), dict) else {}
+        checks = [
+            {"name": "result_hash_matches", "passed": bool(observed_result_hash) and observed_result_hash == expected_result_hash},
+            {"name": "artifact_hash_matches", "passed": bool(observed_artifact_hash) and observed_artifact_hash == expected_artifact_hash},
+            {"name": "signature_valid", "passed": signature_valid, "detail": signature_error},
+            {
+                "name": "minimum_duration_met",
+                "passed": int(result_payload.get("duration_seconds", 0)) >= int(minimum.get("duration_seconds", 0)),
+            },
+            {
+                "name": "minimum_node_count_met",
+                "passed": int(result_payload.get("node_count", 0)) >= int(minimum.get("node_count", 0)),
+            },
+            {"name": "scenario_passed", "passed": bool(result_payload.get("passed", False)) is True},
+        ]
+        result = {"valid": all(bool(check["passed"]) for check in checks), "checks": checks}
+        result["validation_hash"] = hashlib.sha256(canonical_json(result).encode("utf-8")).hexdigest()
+        return result
 
     def database_durability_report(self) -> dict[str, object]:
         chain = self._sqlite_database_status(self.config.db_path)
@@ -2666,6 +2842,74 @@ class NodeService:
             ],
         }
 
+    def database_recovery_manifest(self) -> dict[str, object]:
+        durability = self.database_durability_report()
+        backup = self.state_backup_manifest()
+        manifest = {
+            "recovery_manifest_version": 1,
+            "stage_id": 9,
+            "name": "database_recovery_manifest",
+            "generated_at": round(time.time(), 6),
+            "chain_id": self.config.chain_id,
+            "node_id": self.config.node_id,
+            "durability_status": durability["status"],
+            "durability_checks": durability["checks"],
+            "backup_manifest_hash": backup["backup_manifest_hash"],
+            "files": backup["files"],
+            "restore_order": backup["restore_order"],
+            "post_restore_checks": [
+                "database-durability",
+                "hardening-audit",
+                "migration-integrity",
+                "crypto-hardening",
+                "node-preflight",
+            ],
+        }
+        manifest["recovery_manifest_hash"] = self._database_recovery_manifest_hash(manifest)
+        manifest["envelope"] = self.identity.sign_claims(
+            "database_recovery_manifest_v1",
+            {
+                "purpose": "database_recovery_manifest_v1",
+                "chain_id": self.config.chain_id,
+                "node_id": self.config.node_id,
+                "recovery_manifest_hash": manifest["recovery_manifest_hash"],
+                "backup_manifest_hash": backup["backup_manifest_hash"],
+                "durability_status": durability["status"],
+            },
+        )
+        return manifest
+
+    def validate_database_recovery_manifest(self, manifest: dict[str, object]) -> dict[str, object]:
+        observed_hash = str(manifest.get("recovery_manifest_hash", ""))
+        expected_hash = self._database_recovery_manifest_hash(manifest)
+        envelope = dict(manifest.get("envelope", {})) if isinstance(manifest.get("envelope"), dict) else {}
+        signature_valid = False
+        signature_error = ""
+        try:
+            verified = verify_signed_envelope(
+                envelope,
+                expected_purpose="database_recovery_manifest_v1",
+                expected_chain_id=self.config.chain_id,
+                time_skew_seconds=self.config.auth_time_skew_seconds,
+            )
+            claims = dict(verified["claims"])
+            signature_valid = (
+                claims.get("recovery_manifest_hash") == observed_hash
+                and claims.get("backup_manifest_hash") == manifest.get("backup_manifest_hash")
+                and claims.get("durability_status") == manifest.get("durability_status")
+            )
+        except Exception as error:
+            signature_error = str(error)
+        checks = [
+            {"name": "manifest_hash_matches", "passed": bool(observed_hash) and observed_hash == expected_hash},
+            {"name": "signature_valid", "passed": signature_valid, "detail": signature_error},
+            {"name": "chain_id_matches", "passed": manifest.get("chain_id") == self.config.chain_id},
+            {"name": "backup_manifest_hash_present", "passed": bool(manifest.get("backup_manifest_hash"))},
+        ]
+        result = {"valid": all(bool(check["passed"]) for check in checks), "checks": checks}
+        result["validation_hash"] = hashlib.sha256(canonical_json(result).encode("utf-8")).hexdigest()
+        return result
+
     @staticmethod
     def _sqlite_database_status(path: Path) -> dict[str, object]:
         if not path.exists():
@@ -2696,18 +2940,34 @@ class NodeService:
         }
 
     def external_audit_readiness_package(self) -> dict[str, object]:
+        native = self.native_crypto_release_provenance_report()
+        durability = self.database_durability_report()
+        soak = self.soak_result_artifact_report()
         package = {
             "stage_id": 10,
             "name": "external_audit_readiness_package",
             "status": "warning",
+            "scope": [
+                "post-quantum signature provider boundary",
+                "migration claim proof and fraud handling",
+                "consensus state-root and transaction execution invariants",
+                "authenticated peer networking and operator recovery flows",
+            ],
             "included_artifacts": [
                 "README.md architecture diagrams",
                 "CHANGELOG.md phase history",
                 "hardening-audit signed artifact",
+                "native crypto release provenance artifact",
+                "database recovery manifest",
                 "migration proof and source ingestion tests",
                 "native crypto boundary documentation",
                 "operator incident runbook",
             ],
+            "readiness_inputs": {
+                "native_release_hash": native["native_release_hash"],
+                "database_durability_status": durability["status"],
+                "soak_plan_hash": soak["soak_plan_hash"],
+            },
             "missing_before_independent_audit": [
                 "formal consensus spec",
                 "cryptographic test vector bundle",
@@ -2717,6 +2977,93 @@ class NodeService:
         }
         package["audit_package_hash"] = hashlib.sha256(canonical_json(package).encode("utf-8")).hexdigest()
         return package
+
+    def signed_external_audit_readiness_package(self) -> dict[str, object]:
+        package = self.external_audit_readiness_package()
+        claims = {
+            "purpose": "external_audit_readiness_package_v1",
+            "chain_id": self.config.chain_id,
+            "node_id": self.config.node_id,
+            "audit_package_hash": package["audit_package_hash"],
+            "status": package["status"],
+        }
+        artifact = {
+            "artifact_version": 1,
+            "package": package,
+            "envelope": self.identity.sign_claims("external_audit_readiness_package_v1", claims),
+        }
+        artifact["artifact_hash"] = self._signed_artifact_payload_hash(artifact)
+        return artifact
+
+    def validate_external_audit_readiness_package(self, artifact: dict[str, object]) -> dict[str, object]:
+        package = dict(artifact.get("package", {})) if isinstance(artifact.get("package"), dict) else {}
+        envelope = dict(artifact.get("envelope", {})) if isinstance(artifact.get("envelope"), dict) else {}
+        observed_package_hash = str(package.get("audit_package_hash", ""))
+        expected_package_hash = self._external_audit_package_hash(package)
+        expected_artifact_hash = self._signed_artifact_payload_hash(artifact)
+        signature_valid = False
+        signature_error = ""
+        try:
+            verified = verify_signed_envelope(
+                envelope,
+                expected_purpose="external_audit_readiness_package_v1",
+                expected_chain_id=self.config.chain_id,
+                time_skew_seconds=self.config.auth_time_skew_seconds,
+            )
+            claims = dict(verified["claims"])
+            signature_valid = (
+                claims.get("audit_package_hash") == observed_package_hash
+                and claims.get("status") == package.get("status")
+            )
+        except Exception as error:
+            signature_error = str(error)
+        checks = [
+            {"name": "package_hash_matches", "passed": bool(observed_package_hash) and observed_package_hash == expected_package_hash},
+            {
+                "name": "artifact_hash_matches",
+                "passed": bool(artifact.get("artifact_hash")) and artifact.get("artifact_hash") == expected_artifact_hash,
+            },
+            {"name": "signature_valid", "passed": signature_valid, "detail": signature_error},
+            {"name": "scope_present", "passed": bool(package.get("scope"))},
+            {"name": "included_artifacts_present", "passed": bool(package.get("included_artifacts"))},
+        ]
+        result = {"valid": all(bool(check["passed"]) for check in checks), "checks": checks}
+        result["validation_hash"] = hashlib.sha256(canonical_json(result).encode("utf-8")).hexdigest()
+        return result
+
+    @staticmethod
+    def _signed_artifact_payload_hash(artifact: dict[str, object]) -> str:
+        payload = dict(artifact)
+        payload.pop("artifact_hash", None)
+        payload.pop("envelope", None)
+        payload.pop("validation_hash", None)
+        return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _native_release_report_hash(report: dict[str, object]) -> str:
+        payload = dict(report)
+        payload.pop("native_release_hash", None)
+        return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _release_manifest_hash(manifest: dict[str, object]) -> str:
+        payload = dict(manifest)
+        payload.pop("release_manifest_hash", None)
+        return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _database_recovery_manifest_hash(manifest: dict[str, object]) -> str:
+        payload = dict(manifest)
+        payload.pop("recovery_manifest_hash", None)
+        payload.pop("envelope", None)
+        payload.pop("validation_hash", None)
+        return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _external_audit_package_hash(package: dict[str, object]) -> str:
+        payload = dict(package)
+        payload.pop("audit_package_hash", None)
+        return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
 
     def production_configuration_report(self) -> dict[str, object]:
         mode = self.config.deployment_mode.strip().lower()

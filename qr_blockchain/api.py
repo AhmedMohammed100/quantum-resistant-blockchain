@@ -127,6 +127,18 @@ class NodeRequestHandler(BaseHTTPRequestHandler):
         if path == "/operations/database-durability":
             self._respond(HTTPStatus.OK, self.service.database_durability_report())
             return
+        if path == "/operations/native-release-provenance":
+            self._respond(HTTPStatus.OK, self.service.signed_native_crypto_release_provenance())
+            return
+        if path == "/operations/soak-result-schema":
+            self._respond(HTTPStatus.OK, self.service.soak_result_artifact_report())
+            return
+        if path == "/operations/database-recovery-manifest":
+            self._respond(HTTPStatus.OK, self.service.database_recovery_manifest())
+            return
+        if path == "/operations/external-audit-package":
+            self._respond(HTTPStatus.OK, self.service.signed_external_audit_readiness_package())
+            return
         if path == "/operations/consensus-upgrade-manifest":
             self._respond(HTTPStatus.OK, self.service.consensus_upgrade_manifest())
             return
@@ -541,6 +553,38 @@ class NodeRequestHandler(BaseHTTPRequestHandler):
 
         if path == "/operations/consensus-upgrade-validate":
             result = self.service.validate_consensus_upgrade_manifest_artifact(payload)
+            self._respond(HTTPStatus.OK if result["valid"] else HTTPStatus.BAD_REQUEST, result)
+            return
+
+        if path == "/operations/native-release-provenance-validate":
+            result = self.service.validate_native_crypto_release_provenance(payload)
+            self._respond(HTTPStatus.OK if result["valid"] else HTTPStatus.BAD_REQUEST, result)
+            return
+
+        if path == "/operations/soak-result-artifact":
+            try:
+                result_payload = payload.get("result", payload)
+                if not isinstance(result_payload, dict):
+                    raise ValueError("result must be an object")
+                artifact = self.service.build_soak_result_artifact(result_payload)
+            except ValueError as error:
+                self._respond(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+                return
+            self._respond(HTTPStatus.CREATED, artifact)
+            return
+
+        if path == "/operations/soak-result-validate":
+            result = self.service.validate_soak_result_artifact(payload)
+            self._respond(HTTPStatus.OK if result["valid"] else HTTPStatus.BAD_REQUEST, result)
+            return
+
+        if path == "/operations/database-recovery-validate":
+            result = self.service.validate_database_recovery_manifest(payload)
+            self._respond(HTTPStatus.OK if result["valid"] else HTTPStatus.BAD_REQUEST, result)
+            return
+
+        if path == "/operations/external-audit-package-validate":
+            result = self.service.validate_external_audit_readiness_package(payload)
             self._respond(HTTPStatus.OK if result["valid"] else HTTPStatus.BAD_REQUEST, result)
             return
 

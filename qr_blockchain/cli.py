@@ -231,6 +231,61 @@ def build_parser() -> argparse.ArgumentParser:
     database_durability.add_argument("--output", default=None)
     database_durability.set_defaults(handler=cmd_database_durability)
 
+    native_release = subparsers.add_parser(
+        "native-release-provenance",
+        help="Emit a signed native crypto release provenance artifact",
+    )
+    native_release.add_argument("--output", default=None)
+    native_release.set_defaults(handler=cmd_native_release_provenance)
+
+    native_release_validate = subparsers.add_parser(
+        "native-release-provenance-validate",
+        help="Validate a signed native crypto release provenance artifact",
+    )
+    native_release_validate.add_argument("--input", required=True)
+    native_release_validate.add_argument("--output", default=None)
+    native_release_validate.set_defaults(handler=cmd_native_release_provenance_validate)
+
+    soak_artifact = subparsers.add_parser("soak-result-artifact", help="Build a signed long-running soak result artifact")
+    soak_artifact.add_argument("--result-json", required=True)
+    soak_artifact.add_argument("--output", default=None)
+    soak_artifact.set_defaults(handler=cmd_soak_result_artifact)
+
+    soak_validate = subparsers.add_parser("soak-result-validate", help="Validate a signed soak result artifact")
+    soak_validate.add_argument("--input", required=True)
+    soak_validate.add_argument("--output", default=None)
+    soak_validate.set_defaults(handler=cmd_soak_result_validate)
+
+    recovery_manifest = subparsers.add_parser(
+        "database-recovery-manifest",
+        help="Emit a signed database recovery manifest",
+    )
+    recovery_manifest.add_argument("--output", default=None)
+    recovery_manifest.set_defaults(handler=cmd_database_recovery_manifest)
+
+    recovery_validate = subparsers.add_parser(
+        "database-recovery-validate",
+        help="Validate a signed database recovery manifest",
+    )
+    recovery_validate.add_argument("--input", required=True)
+    recovery_validate.add_argument("--output", default=None)
+    recovery_validate.set_defaults(handler=cmd_database_recovery_validate)
+
+    audit_package = subparsers.add_parser(
+        "external-audit-package",
+        help="Emit a signed external audit readiness package",
+    )
+    audit_package.add_argument("--output", default=None)
+    audit_package.set_defaults(handler=cmd_external_audit_package)
+
+    audit_package_validate = subparsers.add_parser(
+        "external-audit-package-validate",
+        help="Validate a signed external audit readiness package",
+    )
+    audit_package_validate.add_argument("--input", required=True)
+    audit_package_validate.add_argument("--output", default=None)
+    audit_package_validate.set_defaults(handler=cmd_external_audit_package_validate)
+
     consensus_upgrade = subparsers.add_parser("consensus-upgrade-manifest", help="Emit consensus parameter upgrade manifest")
     consensus_upgrade.add_argument("--output", default=None)
     consensus_upgrade.set_defaults(handler=cmd_consensus_upgrade_manifest)
@@ -675,6 +730,69 @@ def cmd_signed_audit_artifact(args: argparse.Namespace) -> int:
 def cmd_database_durability(args: argparse.Namespace) -> int:
     service = _service_from_args(args)
     _write_json_output(service.database_durability_report(), None if args.output is None else Path(args.output))
+    return 0
+
+
+def cmd_native_release_provenance(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    _write_json_output(service.signed_native_crypto_release_provenance(), None if args.output is None else Path(args.output))
+    return 0
+
+
+def cmd_native_release_provenance_validate(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    _write_json_output(
+        service.validate_native_crypto_release_provenance(_read_json_file(Path(args.input))),
+        None if args.output is None else Path(args.output),
+    )
+    return 0
+
+
+def cmd_soak_result_artifact(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    result = json.loads(args.result_json)
+    if not isinstance(result, dict):
+        raise ValueError("--result-json must decode to an object")
+    _write_json_output(service.build_soak_result_artifact(result), None if args.output is None else Path(args.output))
+    return 0
+
+
+def cmd_soak_result_validate(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    _write_json_output(
+        service.validate_soak_result_artifact(_read_json_file(Path(args.input))),
+        None if args.output is None else Path(args.output),
+    )
+    return 0
+
+
+def cmd_database_recovery_manifest(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    _write_json_output(service.database_recovery_manifest(), None if args.output is None else Path(args.output))
+    return 0
+
+
+def cmd_database_recovery_validate(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    _write_json_output(
+        service.validate_database_recovery_manifest(_read_json_file(Path(args.input))),
+        None if args.output is None else Path(args.output),
+    )
+    return 0
+
+
+def cmd_external_audit_package(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    _write_json_output(service.signed_external_audit_readiness_package(), None if args.output is None else Path(args.output))
+    return 0
+
+
+def cmd_external_audit_package_validate(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    _write_json_output(
+        service.validate_external_audit_readiness_package(_read_json_file(Path(args.input))),
+        None if args.output is None else Path(args.output),
+    )
     return 0
 
 

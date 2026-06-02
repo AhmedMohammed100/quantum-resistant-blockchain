@@ -139,6 +139,7 @@ The current consensus and fraud-hardening pass adds:
 - **Post-finality fraud recovery:** already-mined migration claims can now produce signed, tamper-evident fraud case artifacts that quarantine the source while preserving the canonical claim audit trail.
 - **Authenticated gossip:** peer networking includes transaction/block gossip endpoints, relay helpers, bad-block penalties, and peer-diversity readiness checks.
 - **Load/chaos harness:** `load-chaos` runs scripted multi-node scenarios for mempool floods, fork storms, migration disputes, signer interruptions, and verification throughput.
+- **Auditable hardening artifacts:** stages 7-10 now emit signed native-release provenance, soak-result evidence, database recovery manifests, and external-audit readiness packages.
 - **Adversarial coverage:** tests now cover state roots, maturity enforcement, dispute quarantine, multi-input verification, gossip penalties, and load/chaos harness execution.
 
 The native signer pass adds:
@@ -507,6 +508,10 @@ Core endpoints:
 - `GET /operations/hardening-stages`
 - `GET /operations/signed-audit-artifact`
 - `GET /operations/database-durability`
+- `GET /operations/native-release-provenance`
+- `GET /operations/soak-result-schema`
+- `GET /operations/database-recovery-manifest`
+- `GET /operations/external-audit-package`
 - `GET /operations/consensus-upgrade-manifest`
 - `GET /operations/consensus-upgrade-signed`
 - `GET /operations/production-config`
@@ -519,6 +524,11 @@ Core endpoints:
 - `POST /transactions`
 - `POST /mine`
 - `POST /sync`
+- `POST /operations/native-release-provenance-validate`
+- `POST /operations/soak-result-artifact`
+- `POST /operations/soak-result-validate`
+- `POST /operations/database-recovery-validate`
+- `POST /operations/external-audit-package-validate`
 
 Migration endpoints:
 
@@ -599,6 +609,14 @@ qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db har
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db hardening-stages
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db signed-audit-artifact
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db database-durability
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db native-release-provenance --output native-release.json
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db native-release-provenance-validate --input native-release.json
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db soak-result-artifact --result-json "{\"scenario\":\"private-soak\",\"duration_seconds\":86400,\"node_count\":3,\"passed\":true}" --output soak.json
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db soak-result-validate --input soak.json
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db database-recovery-manifest --output recovery.json
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db database-recovery-validate --input recovery.json
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db external-audit-package --output audit-package.json
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db external-audit-package-validate --input audit-package.json
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db consensus-upgrade-manifest
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db consensus-upgrade-sign --output upgrade.json
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db consensus-upgrade-validate --input upgrade.json

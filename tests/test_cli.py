@@ -114,6 +114,9 @@ class OperatorCliTests(unittest.TestCase):
             ("hardening-stages", "hardening_stage_report_version"),
             ("signed-audit-artifact", "artifact_hash"),
             ("database-durability", "name"),
+            ("native-release-provenance", "artifact_hash"),
+            ("database-recovery-manifest", "recovery_manifest_hash"),
+            ("external-audit-package", "artifact_hash"),
             ("consensus-upgrade-manifest", "upgrade_manifest_hash"),
             ("consensus-upgrade-sign", "artifact_hash"),
             ("production-config", "configuration_status"),
@@ -127,6 +130,31 @@ class OperatorCliTests(unittest.TestCase):
             self.assertEqual(exit_code, 0)
             outputs[command] = json.loads(buffer.getvalue())
             self.assertIn(key, outputs[command])
+
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            exit_code = main(
+                [
+                    "--db-path",
+                    str(self.db_path),
+                    "--wallet-state-db-path",
+                    str(self.wallet_state_db_path),
+                    "soak-result-artifact",
+                    "--result-json",
+                    json.dumps(
+                        {
+                            "scenario": "cli-soak",
+                            "started_at": 1,
+                            "duration_seconds": 86400,
+                            "node_count": 3,
+                            "passed": True,
+                            "failure_summary": "",
+                        }
+                    ),
+                ]
+            )
+        self.assertEqual(exit_code, 0)
+        self.assertIn("artifact_hash", json.loads(buffer.getvalue()))
 
     def test_cli_validates_signed_consensus_upgrade_artifact(self) -> None:
         artifact_path = self.root / "upgrade-artifact.json"

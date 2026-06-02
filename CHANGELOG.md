@@ -16,6 +16,7 @@ This changelog preserves the implementation history that previously lived in the
 - Added policy-profile enforcement at node server startup, expanded database durability checks with WAL and SQLite quick-check status, and exposed signed audit, database durability, and consensus upgrade manifest artifacts through CLI/API.
 - Strengthened consensus upgrade governance with signed upgrade artifacts, validation checks, tamper detection, and CLI/API surfaces for signing and validating consensus parameter manifests.
 - Added signed post-finality migration fraud case artifacts with source quarantine, dispute evidence linkage, validation/tamper checks, and CLI/API creation and validation surfaces.
+- Built hardening stages 7-10 with signed native crypto release provenance, validated soak-result artifacts, signed database recovery manifests, and signed external-audit readiness packages.
 - Tightened the public security model documentation around invariant tripwires, authenticated gossip failure behavior, and stateful PQ signer recovery risk.
 
 ### Phase 76 - Load And Chaos Harness

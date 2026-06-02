@@ -286,6 +286,43 @@ class NodeServiceTests(unittest.TestCase):
         self.assertIn("structured_security_policy_profiles", stage_names)
         self.assertIn("external_audit_readiness_package", stage_names)
 
+    def test_hardening_stage_7_to_10_artifacts_validate_and_detect_tampering(self) -> None:
+        service, _ = self.make_service()
+
+        native = service.signed_native_crypto_release_provenance()
+        self.assertTrue(service.validate_native_crypto_release_provenance(native)["valid"])
+        tampered_native = json.loads(json.dumps(native))
+        tampered_native["report"]["pinned_runtime"] = "mutated-runtime"
+        self.assertFalse(service.validate_native_crypto_release_provenance(tampered_native)["valid"])
+
+        soak = service.build_soak_result_artifact(
+            {
+                "scenario": "private-testnet-soak",
+                "started_at": 1,
+                "duration_seconds": 24 * 60 * 60,
+                "node_count": 3,
+                "passed": True,
+                "failure_summary": "",
+                "metrics": {"invalid_frames": 0, "fork_recoveries": 2},
+            }
+        )
+        self.assertTrue(service.validate_soak_result_artifact(soak)["valid"])
+        tampered_soak = json.loads(json.dumps(soak))
+        tampered_soak["result"]["passed"] = False
+        self.assertFalse(service.validate_soak_result_artifact(tampered_soak)["valid"])
+
+        recovery = service.database_recovery_manifest()
+        self.assertTrue(service.validate_database_recovery_manifest(recovery)["valid"])
+        tampered_recovery = json.loads(json.dumps(recovery))
+        tampered_recovery["durability_status"] = "mutated"
+        self.assertFalse(service.validate_database_recovery_manifest(tampered_recovery)["valid"])
+
+        audit_package = service.signed_external_audit_readiness_package()
+        self.assertTrue(service.validate_external_audit_readiness_package(audit_package)["valid"])
+        tampered_audit = json.loads(json.dumps(audit_package))
+        tampered_audit["package"]["scope"].append("unreviewed extra scope")
+        self.assertFalse(service.validate_external_audit_readiness_package(tampered_audit)["valid"])
+
     def test_signed_consensus_upgrade_manifest_validates_and_detects_tampering(self) -> None:
         service, _ = self.make_service()
 
