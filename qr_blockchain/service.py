@@ -226,6 +226,8 @@ class NodeService:
         spent_in_block: set[tuple[str, int]] = set()
         claimed_in_block: set[str] = set()
         fee_total = 0
+        parent_path = self.store.path_to_root(block.previous_hash)
+        epoch_minted = self._migration_epoch_minted_for_blocks(parent_path, block.index)
 
         for index, transaction in enumerate(block.transactions):
             self._validate_transaction_against_view(
@@ -248,12 +250,20 @@ class NodeService:
                 classical_address = str(transaction.metadata.get("classical_address", ""))
                 if classical_address in claimed_in_block:
                     raise ValueError("Block contains a duplicate migration claim.")
+                if self.config.migration_epoch_mint_cap > 0:
+                    epoch_minted += sum(output.amount for output in transaction.outputs)
+                    if epoch_minted > self.config.migration_epoch_mint_cap:
+                        raise ValueError("Migration claim would exceed the configured epoch mint cap.")
                 claimed_in_block.add(classical_address)
                 for output_index, output in enumerate(transaction.outputs):
                     utxo_view[(transaction.tx_id, output_index)] = output
                     utxo_metadata[(transaction.tx_id, output_index)] = {
                         "height": block.index,
                         "coinbase": False,
+                        "migration_claim": True,
+                        "classical_address": classical_address,
+                        "source_network": str(transaction.metadata.get("source_network", "")),
+                        "provider_id": str(transaction.metadata.get("classical_provider_id", "")),
                     }
                 continue
             for tx_input in transaction.inputs:
@@ -277,7 +287,6 @@ class NodeService:
             raise ValueError("Reward transaction amount is invalid.")
         if block.version >= 3 and block.state_root != self.state_root_for_utxos(utxo_view):
             raise ValueError("Block state root mismatch.")
-        parent_path = self.store.path_to_root(block.previous_hash)
         self._validate_supply_limits(self._supply_for_blocks([*parent_path, block]))
 
     def sync_with_peer(self, peer_url: str) -> int:
@@ -654,10 +663,20 @@ class NodeService:
                     origins.pop((tx_input.prev_tx_id, tx_input.output_index), None)
                 is_coinbase = block.index > 0 and transaction_index == 0 and not transaction.inputs
                 for output_index, _ in enumerate(transaction.outputs):
-                    origins[(transaction.tx_id, output_index)] = {
+                    metadata: dict[str, object] = {
                         "height": block.index,
                         "coinbase": is_coinbase,
                     }
+                    if transaction.kind == "migration_claim":
+                        metadata.update(
+                            {
+                                "migration_claim": True,
+                                "classical_address": str(transaction.metadata.get("classical_address", "")),
+                                "source_network": str(transaction.metadata.get("source_network", "")),
+                                "provider_id": str(transaction.metadata.get("classical_provider_id", "")),
+                            }
+                        )
+                    origins[(transaction.tx_id, output_index)] = metadata
         return origins
 
     def chain_summary(self) -> dict[str, object]:
@@ -718,6 +737,36 @@ class NodeService:
             raise ValueError("Migration claim would exceed the configured migration pool cap.")
         if supply["theoretical_supply"] > self.config.max_money:
             raise ValueError("Block would exceed the configured native supply cap.")
+
+    def _migration_epoch_for_height(self, height: int) -> tuple[int, int, int]:
+        length = max(1, self.config.migration_epoch_length_blocks)
+        epoch_index = max(0, height) // length
+        start_height = epoch_index * length
+        end_height = start_height + length - 1
+        return epoch_index, start_height, end_height
+
+    def _migration_epoch_minted_for_blocks(self, blocks: list[Block], height: int) -> int:
+        _, start_height, end_height = self._migration_epoch_for_height(height)
+        total = 0
+        for block in blocks:
+            if block.index < start_height or block.index > end_height:
+                continue
+            for transaction in block.transactions:
+                if transaction.kind == "migration_claim":
+                    total += sum(output.amount for output in transaction.outputs)
+        return total
+
+    def _migration_epoch_minted_for_head(self, head_hash: str | None, height: int) -> int:
+        if head_hash is None:
+            return 0
+        return self._migration_epoch_minted_for_blocks(self.store.path_to_root(head_hash), height)
+
+    def _migration_claim_amount_for_source(self, source: dict[str, object]) -> int:
+        denominator = max(1, self.config.migration_conversion_ratio_denominator)
+        converted = int(source["amount"]) * self.config.migration_conversion_ratio_numerator // denominator
+        if self.config.migration_claim_per_address_cap > 0:
+            converted = min(converted, self.config.migration_claim_per_address_cap)
+        return converted
 
     def supply_snapshot(self) -> dict[str, object]:
         canonical_blocks: list[Block] = []
@@ -787,8 +836,16 @@ class NodeService:
             "trusted_snapshot_signers": list(self.config.migration_trusted_snapshot_signers),
             "trusted_snapshot_nodes": list(self.config.migration_trusted_snapshot_nodes),
             "conversion_policy": self.config.migration_conversion_policy,
+            "conversion_ratio": {
+                "numerator": self.config.migration_conversion_ratio_numerator,
+                "denominator": self.config.migration_conversion_ratio_denominator,
+            },
             "migration_pool_cap": self.config.migration_pool_cap,
             "migration_pool_remaining": self.supply_snapshot()["migration_pool_remaining"],
+            "per_address_cap": self.config.migration_claim_per_address_cap,
+            "epoch_length_blocks": self.config.migration_epoch_length_blocks,
+            "epoch_mint_cap": self.config.migration_epoch_mint_cap,
+            "escrow_blocks": self.config.migration_escrow_blocks,
         }
 
     def migration_network_profiles(self) -> dict[str, object]:
@@ -854,8 +911,17 @@ class NodeService:
         if source is None:
             raise ValueError("Migration source address is unknown.")
         supply = self.supply_snapshot()
-        amount = int(source["amount"])
+        source_amount = int(source["amount"])
+        amount = self._migration_claim_amount_for_source(source)
         pool_remaining = int(supply["migration_pool_remaining"])
+        effective_height = self.store.block_count() + 1
+        _, epoch_start, epoch_end = self._migration_epoch_for_height(effective_height)
+        epoch_minted = self._migration_epoch_minted_for_head(self.store.best_head_hash(), effective_height)
+        epoch_remaining = (
+            max(0, self.config.migration_epoch_mint_cap - epoch_minted)
+            if self.config.migration_epoch_mint_cap > 0
+            else None
+        )
         already_claimed = self.store.migration_claim(classical_address) is not None
         evidence = self._migration_source_evidence(source)
         disputes = self.store.list_migration_disputes(classical_address)
@@ -868,6 +934,10 @@ class NodeService:
             {"name": "migration_not_paused", "passed": not self.config.migration_emergency_pause},
             {"name": "not_claimed", "passed": not already_claimed},
             {"name": "pool_capacity_available", "passed": amount <= pool_remaining},
+            {
+                "name": "epoch_capacity_available",
+                "passed": epoch_remaining is None or amount <= epoch_remaining,
+            },
             {
                 "name": "provider_allowed",
                 "passed": source.get("provider_id") in self.config.migration_allowed_classical_providers,
@@ -884,8 +954,13 @@ class NodeService:
             "classical_address": classical_address,
             "source_network": source["source_network"],
             "source_address": source.get("source_address", classical_address),
+            "source_amount": source_amount,
             "destination_amount": amount,
             "conversion_policy": self.config.migration_conversion_policy,
+            "conversion_ratio": {
+                "numerator": self.config.migration_conversion_ratio_numerator,
+                "denominator": self.config.migration_conversion_ratio_denominator,
+            },
             "snapshot_ref": source.get("snapshot_ref", ""),
         }
         return {
@@ -894,9 +969,14 @@ class NodeService:
             "source_address": source.get("source_address", classical_address),
             "source_address_format": source.get("source_address_format", ""),
             "conversion_policy": self.config.migration_conversion_policy,
+            "source_amount": source_amount,
             "normalized_claim_amount": amount,
             "migration_pool_remaining": pool_remaining,
             "pool_after_claim": pool_remaining - amount,
+            "epoch_window": {"start_height": epoch_start, "end_height": epoch_end},
+            "epoch_minted": epoch_minted,
+            "epoch_mint_cap": self.config.migration_epoch_mint_cap,
+            "epoch_remaining": epoch_remaining,
             "claim_intent_hash": hashlib.sha256(json.dumps(intent, sort_keys=True).encode("utf-8")).hexdigest(),
             "claimable": all(bool(check["passed"]) for check in checks),
             "checks": checks,
@@ -953,9 +1033,10 @@ class NodeService:
     def migration_claim_status(self, classical_address: str) -> dict[str, object]:
         quote = self.migration_claim_quote(classical_address)
         claim = self.store.migration_claim(classical_address)
+        finality = self.migration_claim_finality(classical_address) if claim is not None else {}
         lifecycle_state = "claimable"
         if claim is not None:
-            lifecycle_state = "claimed"
+            lifecycle_state = str(finality.get("state", "claimed"))
         elif not quote["claimable"]:
             lifecycle_state = "blocked"
         return {
@@ -963,7 +1044,70 @@ class NodeService:
             "lifecycle_state": lifecycle_state,
             "quote": quote,
             "claim": claim or {},
+            "finality": finality,
         }
+
+    def migration_claim_finality(self, classical_address: str) -> dict[str, object]:
+        claim = self.store.migration_claim(classical_address)
+        if claim is None:
+            raise ValueError("Migration claim is unknown.")
+        claim_height = self._canonical_transaction_height(str(claim["tx_id"]))
+        if claim_height is None:
+            raise ValueError("Migration claim is not on the canonical chain.")
+        return self._migration_output_finality_status(
+            classical_address,
+            origin_height=claim_height,
+            current_height=self.store.block_count(),
+            claim=claim,
+        )
+
+    def _migration_output_finality_status(
+        self,
+        classical_address: str,
+        *,
+        origin_height: int,
+        current_height: int,
+        claim: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        disputes = self.store.list_migration_disputes(classical_address)
+        blocking = [item for item in disputes if item["status"] in {"open", "evidence_submitted"}]
+        fraud = [item for item in disputes if item["status"] == "resolved_fraud"]
+        source = self.store.migration_source(classical_address) or {}
+        unlock_height = origin_height + max(0, self.config.migration_escrow_blocks)
+        if fraud or source.get("status") == "revoked":
+            state = "fraud_resolved_frozen"
+            spendable = False
+        elif blocking or source.get("status") == "quarantined":
+            state = "frozen_dispute"
+            spendable = False
+        elif current_height < unlock_height:
+            state = "escrow_locked"
+            spendable = False
+        else:
+            state = "unlocked"
+            spendable = True
+        return {
+            "classical_address": classical_address,
+            "state": state,
+            "spendable": spendable,
+            "claim": claim or self.store.migration_claim(classical_address) or {},
+            "origin_height": origin_height,
+            "current_height": current_height,
+            "unlock_height": unlock_height,
+            "escrow_blocks": self.config.migration_escrow_blocks,
+            "blocking_dispute_count": len(blocking),
+            "resolved_fraud_count": len(fraud),
+            "source_status": str(source.get("status", "")),
+        }
+
+    def _canonical_transaction_height(self, tx_id: str) -> int | None:
+        best_head = self.store.best_head_hash()
+        if best_head is None:
+            return None
+        for block in self.store.path_to_root(best_head):
+            if any(transaction.tx_id == tx_id for transaction in block.transactions):
+                return block.index
+        return None
 
     def migration_dispute_packet(self, classical_address: str) -> dict[str, object]:
         source = self.store.migration_source(classical_address)
@@ -1299,17 +1443,19 @@ class NodeService:
                 "source_network": source["source_network"],
                 "provider_id": source["provider_id"],
                 "amount": int(source["amount"]),
+                "normalized_claim_amount": int(quote["normalized_claim_amount"]),
                 "claim_intent_hash": quote["claim_intent_hash"],
                 "evidence_level": quote["evidence"]["level"],
             }
-            if quote["claimable"] and len(planned) < limit and running_total + int(source["amount"]) <= pool_remaining:
-                running_total += int(source["amount"])
+            claim_amount = int(quote["normalized_claim_amount"])
+            if quote["claimable"] and len(planned) < limit and running_total + claim_amount <= pool_remaining:
+                running_total += claim_amount
                 planned.append({**item, "pool_after_batch_item": pool_remaining - running_total})
             else:
                 blockers = [check["name"] for check in quote["checks"] if not check["passed"]]
                 if quote["claimable"] and len(planned) >= limit:
                     blockers.append("batch_limit_reached")
-                if quote["claimable"] and running_total + int(source["amount"]) > pool_remaining:
+                if quote["claimable"] and running_total + claim_amount > pool_remaining:
                     blockers.append("batch_would_exceed_pool")
                 blocked.append({**item, "blockers": blockers, "warnings": quote["warnings"]})
         return {
@@ -1372,6 +1518,307 @@ class NodeService:
             "by_provider": by_provider,
             "risks": risks,
         }
+
+    def migration_escrow_finality_report(self) -> dict[str, object]:
+        claims = self.store.list_migration_claims()
+        finalities = []
+        counts: dict[str, int] = {}
+        for claim in claims:
+            finality = self.migration_claim_finality(str(claim["classical_address"]))
+            counts[str(finality["state"])] = counts.get(str(finality["state"]), 0) + 1
+            finalities.append(finality)
+        report = {
+            "escrow_policy_version": 1,
+            "status": "enforced",
+            "escrow_blocks": self.config.migration_escrow_blocks,
+            "dispute_window_blocks": self.config.migration_dispute_window_blocks,
+            "claim_count": len(claims),
+            "state_counts": counts,
+            "claims": finalities,
+            "rules": [
+                "migration outputs are locked until origin height plus escrow blocks",
+                "open or evidence-submitted disputes freeze migration outputs",
+                "resolved-fraud disputes keep migration outputs frozen",
+                "unlocked outputs may be spent only after escrow and dispute gates pass",
+            ],
+        }
+        report["escrow_policy_hash"] = hashlib.sha256(canonical_json(report).encode("utf-8")).hexdigest()
+        return report
+
+    def migration_conversion_guardrail_report(self) -> dict[str, object]:
+        supply = self.supply_snapshot()
+        next_height = self.store.block_count() + 1
+        epoch_index, epoch_start, epoch_end = self._migration_epoch_for_height(next_height)
+        epoch_minted = self._migration_epoch_minted_for_head(self.store.best_head_hash(), next_height)
+        sources = self.store.list_migration_sources()
+        active_unclaimed = [
+            source
+            for source in sources
+            if source.get("status") == "active" and self.store.migration_claim(str(source["classical_address"])) is None
+        ]
+        active_claimable_amount = sum(self._migration_claim_amount_for_source(source) for source in active_unclaimed)
+        checks = [
+            {"name": "pool_cap_positive", "passed": self.config.migration_pool_cap > 0},
+            {"name": "pool_remaining_nonnegative", "passed": int(supply["migration_pool_remaining"]) >= 0},
+            {
+                "name": "active_claimable_within_remaining_pool",
+                "passed": active_claimable_amount <= int(supply["migration_pool_remaining"]),
+            },
+            {
+                "name": "conversion_ratio_valid",
+                "passed": self.config.migration_conversion_ratio_numerator >= 0
+                and self.config.migration_conversion_ratio_denominator > 0,
+            },
+            {
+                "name": "epoch_cap_configured_or_unlimited",
+                "passed": self.config.migration_epoch_mint_cap >= 0,
+            },
+        ]
+        report = {
+            "guardrail_version": 1,
+            "status": "pass" if all(bool(check["passed"]) for check in checks) else "warning",
+            "checks": checks,
+            "conversion_policy": self.config.migration_conversion_policy,
+            "conversion_ratio": {
+                "numerator": self.config.migration_conversion_ratio_numerator,
+                "denominator": self.config.migration_conversion_ratio_denominator,
+            },
+            "per_address_cap": self.config.migration_claim_per_address_cap,
+            "migration_pool_cap": self.config.migration_pool_cap,
+            "migration_pool_remaining": int(supply["migration_pool_remaining"]),
+            "active_claimable_amount": active_claimable_amount,
+            "epoch": {
+                "index": epoch_index,
+                "start_height": epoch_start,
+                "end_height": epoch_end,
+                "minted": epoch_minted,
+                "cap": self.config.migration_epoch_mint_cap,
+                "remaining": None
+                if self.config.migration_epoch_mint_cap <= 0
+                else max(0, self.config.migration_epoch_mint_cap - epoch_minted),
+            },
+        }
+        report["guardrail_hash"] = hashlib.sha256(canonical_json(report).encode("utf-8")).hexdigest()
+        return report
+
+    def migration_proof_registry_report(self) -> dict[str, object]:
+        entries = []
+        proof_ids: list[str] = []
+        best_head = self.store.best_head_hash()
+        if best_head is not None:
+            for block in self.store.path_to_root(best_head):
+                for transaction in block.transactions:
+                    if transaction.kind != "migration_claim":
+                        continue
+                    registry_payload = {
+                        "chain_id": self.config.chain_id,
+                        "classical_address": str(transaction.metadata.get("classical_address", "")),
+                        "provider_id": str(transaction.metadata.get("classical_provider_id", "")),
+                        "source_network": str(transaction.metadata.get("source_network", "")),
+                        "source_address": str(transaction.metadata.get("source_address", "")),
+                        "snapshot_ref": str(transaction.metadata.get("snapshot_ref", "")),
+                        "tx_id": transaction.tx_id,
+                    }
+                    proof_id = hashlib.sha256(canonical_json(registry_payload).encode("utf-8")).hexdigest()
+                    proof_ids.append(proof_id)
+                    entries.append({**registry_payload, "height": block.index, "proof_id": proof_id})
+        duplicate_proofs = sorted(proof_id for proof_id, count in Counter(proof_ids).items() if count > 1)
+        report = {
+            "registry_version": 1,
+            "status": "pass" if not duplicate_proofs else "blocked",
+            "entry_count": len(entries),
+            "duplicate_proof_ids": duplicate_proofs,
+            "entries": entries,
+            "rules": [
+                "proof id binds chain, provider, source network, source address, snapshot, classical address, and tx id",
+                "canonical replay must not contain duplicate proof ids",
+                "cross-chain replay is rejected by transaction chain_id before proof registry admission",
+            ],
+        }
+        report["registry_root"] = hashlib.sha256(canonical_json(entries).encode("utf-8")).hexdigest()
+        report["registry_report_hash"] = hashlib.sha256(canonical_json(report).encode("utf-8")).hexdigest()
+        return report
+
+    def signed_migration_economics_governance_manifest(self) -> dict[str, object]:
+        guardrails = self.migration_conversion_guardrail_report()
+        escrow = self.migration_escrow_finality_report()
+        manifest = {
+            "manifest_version": 1,
+            "chain_id": self.config.chain_id,
+            "node_id": self.config.node_id,
+            "generated_at": round(time.time(), 6),
+            "conversion_policy": self.config.migration_conversion_policy,
+            "conversion_ratio": guardrails["conversion_ratio"],
+            "migration_pool_cap": self.config.migration_pool_cap,
+            "per_address_cap": self.config.migration_claim_per_address_cap,
+            "epoch_length_blocks": self.config.migration_epoch_length_blocks,
+            "epoch_mint_cap": self.config.migration_epoch_mint_cap,
+            "escrow_blocks": self.config.migration_escrow_blocks,
+            "dispute_window_blocks": self.config.migration_dispute_window_blocks,
+            "claim_window": {
+                "start_height": self.config.migration_claim_start_height,
+                "end_height": self.config.migration_claim_end_height,
+            },
+            "guardrail_hash": guardrails["guardrail_hash"],
+            "escrow_policy_hash": escrow["escrow_policy_hash"],
+        }
+        manifest["manifest_hash"] = self._migration_economics_manifest_hash(manifest)
+        artifact = {
+            "artifact_version": 1,
+            "manifest": manifest,
+            "envelope": self.identity.sign_claims(
+                "migration_economics_governance_v1",
+                {
+                    "purpose": "migration_economics_governance_v1",
+                    "chain_id": self.config.chain_id,
+                    "node_id": self.config.node_id,
+                    "manifest_hash": manifest["manifest_hash"],
+                    "conversion_policy": self.config.migration_conversion_policy,
+                },
+            ),
+        }
+        artifact["artifact_hash"] = self._signed_artifact_payload_hash(artifact)
+        return artifact
+
+    def validate_migration_economics_governance_manifest(self, artifact: dict[str, object]) -> dict[str, object]:
+        manifest = dict(artifact.get("manifest", {})) if isinstance(artifact.get("manifest"), dict) else {}
+        envelope = dict(artifact.get("envelope", {})) if isinstance(artifact.get("envelope"), dict) else {}
+        expected_manifest_hash = self._migration_economics_manifest_hash(manifest)
+        expected_artifact_hash = self._signed_artifact_payload_hash(artifact)
+        signature_valid = False
+        signature_error = ""
+        try:
+            verified = verify_signed_envelope(
+                envelope,
+                expected_purpose="migration_economics_governance_v1",
+                expected_chain_id=self.config.chain_id,
+                time_skew_seconds=self.config.auth_time_skew_seconds,
+            )
+            claims = dict(verified["claims"])
+            signature_valid = (
+                claims.get("manifest_hash") == manifest.get("manifest_hash")
+                and claims.get("conversion_policy") == manifest.get("conversion_policy")
+            )
+        except Exception as error:
+            signature_error = str(error)
+        checks = [
+            {"name": "manifest_hash_matches", "passed": manifest.get("manifest_hash") == expected_manifest_hash},
+            {"name": "artifact_hash_matches", "passed": artifact.get("artifact_hash") == expected_artifact_hash},
+            {"name": "signature_valid", "passed": signature_valid, "detail": signature_error},
+            {"name": "conversion_ratio_valid", "passed": int(dict(manifest.get("conversion_ratio", {})).get("denominator", 0)) > 0},
+            {"name": "escrow_blocks_nonnegative", "passed": int(manifest.get("escrow_blocks", -1)) >= 0},
+        ]
+        result = {"valid": all(bool(check["passed"]) for check in checks), "checks": checks}
+        result["validation_hash"] = hashlib.sha256(canonical_json(result).encode("utf-8")).hexdigest()
+        return result
+
+    @staticmethod
+    def _migration_economics_manifest_hash(manifest: dict[str, object]) -> str:
+        payload = dict(manifest)
+        payload.pop("manifest_hash", None)
+        return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
+
+    def signed_migration_fraud_recovery_decision(
+        self,
+        classical_address: str,
+        *,
+        outcome: str,
+        recovery_action: str,
+        note: str,
+    ) -> dict[str, object]:
+        if outcome not in {"resolved_valid", "resolved_fraud"}:
+            raise ValueError("Fraud recovery outcome must be resolved_valid or resolved_fraud.")
+        claim = self.store.migration_claim(classical_address)
+        if claim is None:
+            raise ValueError("Migration claim is unknown.")
+        finality = self.migration_claim_finality(classical_address)
+        disputes = self.store.list_migration_disputes(classical_address)
+        decision = {
+            "decision_version": 1,
+            "chain_id": self.config.chain_id,
+            "classical_address": classical_address,
+            "claim": claim,
+            "finality": finality,
+            "outcome": outcome,
+            "recovery_action": recovery_action,
+            "note": note,
+            "recovery_effects": {
+                "source_status_after_fraud": "revoked" if outcome == "resolved_fraud" else "active",
+                "migration_output_spendable": outcome == "resolved_valid" and bool(finality["spendable"]),
+                "conversion_pool_accounting": "claimed capacity remains consumed unless governance creates an explicit reversal transaction",
+                "future_claims_from_source": "blocked" if outcome == "resolved_fraud" else "allowed_only_if_unclaimed",
+            },
+            "dispute_ids": [item["dispute_id"] for item in disputes],
+        }
+        decision["decision_hash"] = self._migration_fraud_recovery_decision_hash(decision)
+        artifact = {
+            "artifact_version": 1,
+            "decision": decision,
+            "envelope": self.identity.sign_claims(
+                "migration_fraud_recovery_decision_v1",
+                {
+                    "purpose": "migration_fraud_recovery_decision_v1",
+                    "chain_id": self.config.chain_id,
+                    "node_id": self.config.node_id,
+                    "decision_hash": decision["decision_hash"],
+                    "classical_address": classical_address,
+                    "outcome": outcome,
+                },
+            ),
+        }
+        artifact["artifact_hash"] = self._signed_artifact_payload_hash(artifact)
+        return artifact
+
+    @staticmethod
+    def _migration_fraud_recovery_decision_hash(decision: dict[str, object]) -> str:
+        payload = dict(decision)
+        payload.pop("decision_hash", None)
+        return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
+
+    def migration_adversarial_economics_simulation_report(self) -> dict[str, object]:
+        guardrails = self.migration_conversion_guardrail_report()
+        registry = self.migration_proof_registry_report()
+        escrow = self.migration_escrow_finality_report()
+        scenarios = [
+            {
+                "name": "whale_claim_pressure",
+                "passed": guardrails["active_claimable_amount"] <= guardrails["migration_pool_remaining"],
+                "detail": f"active={guardrails['active_claimable_amount']} remaining={guardrails['migration_pool_remaining']}",
+            },
+            {
+                "name": "duplicate_proof_replay",
+                "passed": not registry["duplicate_proof_ids"],
+                "detail": str(len(registry["duplicate_proof_ids"])),
+            },
+            {
+                "name": "escrow_freezes_pending_value",
+                "passed": all(not item["spendable"] for item in escrow["claims"] if item["state"] != "unlocked"),
+                "detail": canonical_json(escrow["state_counts"]),
+            },
+            {
+                "name": "epoch_cap_not_exceeded",
+                "passed": guardrails["epoch"]["cap"] <= 0 or guardrails["epoch"]["minted"] <= guardrails["epoch"]["cap"],
+                "detail": canonical_json(guardrails["epoch"]),
+            },
+        ]
+        report = {
+            "simulation_version": 1,
+            "status": "pass" if all(bool(item["passed"]) for item in scenarios) else "warning",
+            "scenarios": scenarios,
+            "guardrails": guardrails,
+            "proof_registry": {
+                "status": registry["status"],
+                "entry_count": registry["entry_count"],
+                "registry_root": registry["registry_root"],
+            },
+            "escrow": {
+                "claim_count": escrow["claim_count"],
+                "state_counts": escrow["state_counts"],
+                "escrow_policy_hash": escrow["escrow_policy_hash"],
+            },
+        }
+        report["simulation_hash"] = hashlib.sha256(canonical_json(report).encode("utf-8")).hexdigest()
+        return report
 
     def migration_source_proof_coverage_report(self) -> dict[str, object]:
         sources = self.store.list_migration_sources()
@@ -2285,6 +2732,10 @@ class NodeService:
             "node_preflight": self.node_launch_preflight_report(),
             "migration_readiness": self.migration_readiness_report(),
             "migration_integrity": self.migration_integrity_report(),
+            "migration_escrow_finality": self.migration_escrow_finality_report(),
+            "migration_conversion_guardrails": self.migration_conversion_guardrail_report(),
+            "migration_proof_registry": self.migration_proof_registry_report(),
+            "migration_economics_adversarial": self.migration_adversarial_economics_simulation_report(),
             "crypto_hardening": self.crypto_runtime_hardening_report(),
             "transport": self.network_transport_readiness_report(),
             "validator_networking": self.validator_networking_readiness_report(),
@@ -2306,6 +2757,12 @@ class NodeService:
             blockers.append("migration_layer_not_operational")
         if int(reports["migration_integrity"]["summary"]["critical_anomaly_count"]) > 0:
             blockers.append("migration_integrity_critical_anomalies")
+        if reports["migration_conversion_guardrails"]["status"] != "pass":
+            warnings.append("migration_conversion_guardrails_warning")
+        if reports["migration_proof_registry"]["status"] != "pass":
+            blockers.append("migration_proof_registry_blocked")
+        if reports["migration_economics_adversarial"]["status"] != "pass":
+            warnings.append("migration_economics_adversarial_warning")
         if reports["crypto_hardening"]["hardening_status"] != "ready":
             blockers.append("crypto_runtime_not_hardened")
         if reports["transport"]["transport_status"] != "ready":
@@ -4293,7 +4750,7 @@ class NodeService:
             raise ValueError("Migration source address is unknown.")
         return Transaction(
             inputs=[],
-            outputs=[TxOutput(recipient=destination_address, amount=int(source["amount"]))],
+            outputs=[TxOutput(recipient=destination_address, amount=self._migration_claim_amount_for_source(source))],
             kind="migration_claim",
             chain_id=self.config.chain_id,
             signature_scheme=classical_provider_id,
@@ -4375,6 +4832,15 @@ class NodeService:
                 current_height = self.store.block_count() if effective_height is None else effective_height
                 if current_height < maturity_height:
                     raise ValueError("Coinbase output has not reached configured maturity.")
+            if metadata.get("migration_claim", False):
+                current_height = self.store.block_count() if effective_height is None else effective_height
+                finality = self._migration_output_finality_status(
+                    str(metadata.get("classical_address", "")),
+                    origin_height=int(metadata.get("height", 0)),
+                    current_height=current_height,
+                )
+                if not finality["spendable"]:
+                    raise ValueError(f"Migration output is not spendable: {finality['state']}.")
             previous_output = utxo_view[key]
             total_input += previous_output.amount
 
@@ -4747,12 +5213,17 @@ class NodeService:
             raise ValueError("Migration source has already been claimed on the canonical chain.")
         if len(transaction.outputs) != 1:
             raise ValueError("Migration claim transactions must create exactly one PQ output.")
-        if transaction.outputs[0].amount != int(source["amount"]):
-            raise ValueError("Migration claim amount does not match the seeded source balance.")
+        expected_amount = self._migration_claim_amount_for_source(source)
+        if transaction.outputs[0].amount != expected_amount:
+            raise ValueError("Migration claim amount does not match the configured conversion policy.")
         if claimed_classical_addresses is None and self.config.migration_pool_cap > 0:
             projected_migration_minted = int(self.supply_snapshot()["migration_minted"]) + transaction.outputs[0].amount
             if projected_migration_minted > self.config.migration_pool_cap:
                 raise ValueError("Migration claim would exceed the configured migration pool cap.")
+        if claimed_classical_addresses is None and self.config.migration_epoch_mint_cap > 0:
+            epoch_minted = self._migration_epoch_minted_for_head(self.store.best_head_hash(), effective_height)
+            if epoch_minted + transaction.outputs[0].amount > self.config.migration_epoch_mint_cap:
+                raise ValueError("Migration claim would exceed the configured epoch mint cap.")
 
         verifier = get_classical_claim_verifier(provider_id)
         claim_message = classical_claim_message_bytes(transaction.migration_claim_payload())

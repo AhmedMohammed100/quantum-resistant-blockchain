@@ -172,6 +172,21 @@ class NodeRequestHandler(BaseHTTPRequestHandler):
         if path == "/migration/conversion-risk":
             self._respond(HTTPStatus.OK, self.service.migration_conversion_risk_report())
             return
+        if path == "/migration/escrow-finality":
+            self._respond(HTTPStatus.OK, self.service.migration_escrow_finality_report())
+            return
+        if path == "/migration/conversion-guardrails":
+            self._respond(HTTPStatus.OK, self.service.migration_conversion_guardrail_report())
+            return
+        if path == "/migration/proof-registry":
+            self._respond(HTTPStatus.OK, self.service.migration_proof_registry_report())
+            return
+        if path == "/migration/economics-governance":
+            self._respond(HTTPStatus.OK, self.service.signed_migration_economics_governance_manifest())
+            return
+        if path == "/migration/economics-adversarial":
+            self._respond(HTTPStatus.OK, self.service.migration_adversarial_economics_simulation_report())
+            return
         if path == "/migration/proof-coverage":
             self._respond(HTTPStatus.OK, self.service.migration_source_proof_coverage_report())
             return
@@ -454,6 +469,35 @@ class NodeRequestHandler(BaseHTTPRequestHandler):
         if path == "/migration/post-finality-fraud-validate":
             result = self.service.validate_post_finality_migration_fraud_case(payload)
             self._respond(HTTPStatus.OK if result["valid"] else HTTPStatus.BAD_REQUEST, result)
+            return
+
+        if path == "/migration/economics-governance-validate":
+            result = self.service.validate_migration_economics_governance_manifest(payload)
+            self._respond(HTTPStatus.OK if result["valid"] else HTTPStatus.BAD_REQUEST, result)
+            return
+
+        if path == "/migration/fraud-recovery-decision":
+            classical_address = str(payload.get("classical_address", ""))
+            outcome = str(payload.get("outcome", ""))
+            recovery_action = str(payload.get("recovery_action", ""))
+            note = str(payload.get("note", ""))
+            if not classical_address or not outcome or not recovery_action or not note:
+                self._respond(
+                    HTTPStatus.BAD_REQUEST,
+                    {"error": "classical_address, outcome, recovery_action, and note are required"},
+                )
+                return
+            try:
+                decision = self.service.signed_migration_fraud_recovery_decision(
+                    classical_address,
+                    outcome=outcome,
+                    recovery_action=recovery_action,
+                    note=note,
+                )
+            except ValueError as error:
+                self._respond(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+                return
+            self._respond(HTTPStatus.CREATED, decision)
             return
 
         if path == "/migration/snapshots/export":

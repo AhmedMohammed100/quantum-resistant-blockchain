@@ -58,6 +58,12 @@ class NodeConfigTests(unittest.TestCase):
             "QR_CHAIN_MIGRATION_DUAL_CONTROL_START_HEIGHT": "12",
             "QR_CHAIN_MIGRATION_DUAL_CONTROL_END_HEIGHT": "40",
             "QR_CHAIN_MIGRATION_DISPUTE_WINDOW_BLOCKS": "144",
+            "QR_CHAIN_MIGRATION_ESCROW_BLOCKS": "288",
+            "QR_CHAIN_MIGRATION_CLAIM_PER_ADDRESS_CAP": "1000",
+            "QR_CHAIN_MIGRATION_EPOCH_LENGTH_BLOCKS": "2016",
+            "QR_CHAIN_MIGRATION_EPOCH_MINT_CAP": "5000",
+            "QR_CHAIN_MIGRATION_CONVERSION_RATIO_NUMERATOR": "3",
+            "QR_CHAIN_MIGRATION_CONVERSION_RATIO_DENOMINATOR": "2",
             "QR_CHAIN_MIGRATION_SNAPSHOT_REVIEWER_QUORUM": "3",
             "QR_CHAIN_MIGRATION_EMERGENCY_PAUSE": "true",
             "QR_CHAIN_MIGRATION_REQUIRE_SNAPSHOT_SIGNATURES": "true",
@@ -124,6 +130,12 @@ class NodeConfigTests(unittest.TestCase):
         self.assertEqual(config.migration_dual_control_start_height, 12)
         self.assertEqual(config.migration_dual_control_end_height, 40)
         self.assertEqual(config.migration_dispute_window_blocks, 144)
+        self.assertEqual(config.migration_escrow_blocks, 288)
+        self.assertEqual(config.migration_claim_per_address_cap, 1000)
+        self.assertEqual(config.migration_epoch_length_blocks, 2016)
+        self.assertEqual(config.migration_epoch_mint_cap, 5000)
+        self.assertEqual(config.migration_conversion_ratio_numerator, 3)
+        self.assertEqual(config.migration_conversion_ratio_denominator, 2)
         self.assertEqual(config.migration_snapshot_reviewer_quorum, 3)
         self.assertTrue(config.migration_emergency_pause)
         self.assertTrue(config.migration_require_snapshot_signatures)

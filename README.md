@@ -137,6 +137,7 @@ The current consensus and fraud-hardening pass adds:
 - **Peer scoring:** authenticated sync records peer success/failure counts and score deltas for validator networking review.
 - **Persistent challenge lifecycle:** migration disputes now move through open, evidence-submitted, resolved-valid, resolved-fraud, or expired states, with claim unlock/revocation rules.
 - **Post-finality fraud recovery:** already-mined migration claims can now produce signed, tamper-evident fraud case artifacts that quarantine the source while preserving the canonical claim audit trail.
+- **Migration economics hardening:** migration outputs now pass through escrow/finality states, conversion caps are policy-driven, proof claims are registry-audited, and economics changes can be signed as governance artifacts.
 - **Authenticated gossip:** peer networking includes transaction/block gossip endpoints, relay helpers, bad-block penalties, and peer-diversity readiness checks.
 - **Load/chaos harness:** `load-chaos` runs scripted multi-node scenarios for mempool floods, fork storms, migration disputes, signer interruptions, and verification throughput.
 - **Auditable hardening artifacts:** stages 7-10 now emit signed native-release provenance, soak-result evidence, database recovery manifests, and external-audit readiness packages.
@@ -537,6 +538,11 @@ Migration endpoints:
 - `GET /migration/adversarial`
 - `GET /migration/claim-batch-plan`
 - `GET /migration/conversion-risk`
+- `GET /migration/escrow-finality`
+- `GET /migration/conversion-guardrails`
+- `GET /migration/proof-registry`
+- `GET /migration/economics-governance`
+- `GET /migration/economics-adversarial`
 - `GET /migration/proof-coverage`
 - `GET /migration/snapshot-attestations`
 - `GET /migration/dispute-packet`
@@ -571,6 +577,8 @@ Migration endpoints:
 - `POST /migration/disputes/resolve`
 - `POST /migration/post-finality-fraud-case`
 - `POST /migration/post-finality-fraud-validate`
+- `POST /migration/economics-governance-validate`
+- `POST /migration/fraud-recovery-decision`
 
 Peer endpoints:
 
@@ -629,6 +637,12 @@ qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db mig
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-adversarial
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-claim-batch-plan
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-conversion-risk
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-escrow-finality
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-conversion-guardrails
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-proof-registry
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-economics-governance --output migration-economics.json
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-economics-governance-validate --input migration-economics.json
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-economics-adversarial
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-proof-coverage
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-snapshot-attestations
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-dispute-packet --classical-address legacy-address

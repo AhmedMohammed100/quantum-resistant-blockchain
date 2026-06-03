@@ -88,6 +88,12 @@ def _service_from_args(args: argparse.Namespace) -> NodeService:
             migration_dual_control_start_height=base.migration_dual_control_start_height,
             migration_dual_control_end_height=base.migration_dual_control_end_height,
             migration_dispute_window_blocks=base.migration_dispute_window_blocks,
+            migration_escrow_blocks=base.migration_escrow_blocks,
+            migration_claim_per_address_cap=base.migration_claim_per_address_cap,
+            migration_epoch_length_blocks=base.migration_epoch_length_blocks,
+            migration_epoch_mint_cap=base.migration_epoch_mint_cap,
+            migration_conversion_ratio_numerator=base.migration_conversion_ratio_numerator,
+            migration_conversion_ratio_denominator=base.migration_conversion_ratio_denominator,
             migration_snapshot_reviewer_quorum=base.migration_snapshot_reviewer_quorum,
             migration_emergency_pause=base.migration_emergency_pause,
             migration_require_snapshot_signatures=base.migration_require_snapshot_signatures,
@@ -337,6 +343,42 @@ def build_parser() -> argparse.ArgumentParser:
     conversion_risk = subparsers.add_parser("migration-conversion-risk", help="Show migration conversion concentration and pool risk")
     conversion_risk.add_argument("--output", default=None)
     conversion_risk.set_defaults(handler=cmd_migration_conversion_risk)
+
+    escrow_finality = subparsers.add_parser("migration-escrow-finality", help="Show migration escrow and claim-finality states")
+    escrow_finality.add_argument("--output", default=None)
+    escrow_finality.set_defaults(handler=cmd_migration_escrow_finality)
+
+    conversion_guardrails = subparsers.add_parser("migration-conversion-guardrails", help="Show migration conversion caps and epoch guardrails")
+    conversion_guardrails.add_argument("--output", default=None)
+    conversion_guardrails.set_defaults(handler=cmd_migration_conversion_guardrails)
+
+    proof_registry = subparsers.add_parser("migration-proof-registry", help="Show canonical migration proof registry")
+    proof_registry.add_argument("--output", default=None)
+    proof_registry.set_defaults(handler=cmd_migration_proof_registry)
+
+    economics_governance = subparsers.add_parser("migration-economics-governance", help="Emit a signed migration economics governance manifest")
+    economics_governance.add_argument("--output", default=None)
+    economics_governance.set_defaults(handler=cmd_migration_economics_governance)
+
+    economics_governance_validate = subparsers.add_parser(
+        "migration-economics-governance-validate",
+        help="Validate a signed migration economics governance manifest",
+    )
+    economics_governance_validate.add_argument("--input", required=True)
+    economics_governance_validate.add_argument("--output", default=None)
+    economics_governance_validate.set_defaults(handler=cmd_migration_economics_governance_validate)
+
+    fraud_decision = subparsers.add_parser("migration-fraud-recovery-decision", help="Emit a signed migration fraud recovery decision")
+    fraud_decision.add_argument("--classical-address", required=True)
+    fraud_decision.add_argument("--outcome", choices=["resolved_valid", "resolved_fraud"], required=True)
+    fraud_decision.add_argument("--recovery-action", required=True)
+    fraud_decision.add_argument("--note", required=True)
+    fraud_decision.add_argument("--output", default=None)
+    fraud_decision.set_defaults(handler=cmd_migration_fraud_recovery_decision)
+
+    economics_simulation = subparsers.add_parser("migration-economics-adversarial", help="Run migration economics adversarial checks")
+    economics_simulation.add_argument("--output", default=None)
+    economics_simulation.set_defaults(handler=cmd_migration_economics_adversarial)
 
     proof_coverage = subparsers.add_parser("migration-proof-coverage", help="Show migration proof evidence coverage")
     proof_coverage.add_argument("--output", default=None)
@@ -860,6 +902,65 @@ def cmd_migration_claim_batch_plan(args: argparse.Namespace) -> int:
 def cmd_migration_conversion_risk(args: argparse.Namespace) -> int:
     service = _service_from_args(args)
     _write_json_output(service.migration_conversion_risk_report(), None if args.output is None else Path(args.output))
+    return 0
+
+
+def cmd_migration_escrow_finality(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    _write_json_output(service.migration_escrow_finality_report(), None if args.output is None else Path(args.output))
+    return 0
+
+
+def cmd_migration_conversion_guardrails(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    _write_json_output(service.migration_conversion_guardrail_report(), None if args.output is None else Path(args.output))
+    return 0
+
+
+def cmd_migration_proof_registry(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    _write_json_output(service.migration_proof_registry_report(), None if args.output is None else Path(args.output))
+    return 0
+
+
+def cmd_migration_economics_governance(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    _write_json_output(
+        service.signed_migration_economics_governance_manifest(),
+        None if args.output is None else Path(args.output),
+    )
+    return 0
+
+
+def cmd_migration_economics_governance_validate(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    _write_json_output(
+        service.validate_migration_economics_governance_manifest(_read_json_file(Path(args.input))),
+        None if args.output is None else Path(args.output),
+    )
+    return 0
+
+
+def cmd_migration_fraud_recovery_decision(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    _write_json_output(
+        service.signed_migration_fraud_recovery_decision(
+            args.classical_address,
+            outcome=args.outcome,
+            recovery_action=args.recovery_action,
+            note=args.note,
+        ),
+        None if args.output is None else Path(args.output),
+    )
+    return 0
+
+
+def cmd_migration_economics_adversarial(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    _write_json_output(
+        service.migration_adversarial_economics_simulation_report(),
+        None if args.output is None else Path(args.output),
+    )
     return 0
 
 

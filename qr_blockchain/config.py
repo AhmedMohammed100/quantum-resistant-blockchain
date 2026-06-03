@@ -72,6 +72,12 @@ class NodeConfig:
     migration_dual_control_start_height: int = 0
     migration_dual_control_end_height: int = 0
     migration_dispute_window_blocks: int = 1008
+    migration_escrow_blocks: int = 1008
+    migration_claim_per_address_cap: int = 0
+    migration_epoch_length_blocks: int = 1008
+    migration_epoch_mint_cap: int = 0
+    migration_conversion_ratio_numerator: int = 1
+    migration_conversion_ratio_denominator: int = 1
     migration_snapshot_reviewer_quorum: int = 2
     migration_emergency_pause: bool = False
     migration_require_snapshot_signatures: bool = False
@@ -184,6 +190,12 @@ class NodeConfig:
             migration_dual_control_start_height=int(os.getenv("QR_CHAIN_MIGRATION_DUAL_CONTROL_START_HEIGHT", "0")),
             migration_dual_control_end_height=int(os.getenv("QR_CHAIN_MIGRATION_DUAL_CONTROL_END_HEIGHT", "0")),
             migration_dispute_window_blocks=int(os.getenv("QR_CHAIN_MIGRATION_DISPUTE_WINDOW_BLOCKS", "1008")),
+            migration_escrow_blocks=int(os.getenv("QR_CHAIN_MIGRATION_ESCROW_BLOCKS", "1008")),
+            migration_claim_per_address_cap=int(os.getenv("QR_CHAIN_MIGRATION_CLAIM_PER_ADDRESS_CAP", "0")),
+            migration_epoch_length_blocks=int(os.getenv("QR_CHAIN_MIGRATION_EPOCH_LENGTH_BLOCKS", "1008")),
+            migration_epoch_mint_cap=int(os.getenv("QR_CHAIN_MIGRATION_EPOCH_MINT_CAP", "0")),
+            migration_conversion_ratio_numerator=int(os.getenv("QR_CHAIN_MIGRATION_CONVERSION_RATIO_NUMERATOR", "1")),
+            migration_conversion_ratio_denominator=int(os.getenv("QR_CHAIN_MIGRATION_CONVERSION_RATIO_DENOMINATOR", "1")),
             migration_snapshot_reviewer_quorum=int(os.getenv("QR_CHAIN_MIGRATION_SNAPSHOT_REVIEWER_QUORUM", "2")),
             migration_emergency_pause=os.getenv("QR_CHAIN_MIGRATION_EMERGENCY_PAUSE", "0").strip().lower()
             in {"1", "true", "yes", "on"},

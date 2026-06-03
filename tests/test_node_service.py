@@ -1062,6 +1062,177 @@ class NodeServiceTests(unittest.TestCase):
         self.assertIsNotNone(claim)
         self.assertEqual(claim["destination_address"], pq_address)
 
+    def test_migration_escrow_locks_then_unlocks_claim_outputs(self) -> None:
+        service, _ = self.make_service()
+        service.config = replace(service.config, migration_escrow_blocks=2)
+        pq_wallet = Wallet("PQWallet")
+        receiver = Wallet("Receiver")
+        miner = Wallet("Miner")
+
+        service.create_genesis_block({miner.create_address(): 10})
+        classical_public_key = build_demo_classical_claim_public_key("legacy-user-escrow")
+        classical_address = service.seed_migration_source(
+            classical_address=build_demo_classical_claim_address(classical_public_key),
+            provider_id="classical_claim_demo_v1",
+            source_network="legacy-demo-ledger",
+            amount=10,
+            snapshot_ref="snapshot-escrow",
+        )["classical_address"]
+        preview = service.build_migration_claim_draft(
+            destination_address=pq_wallet.create_address(),
+            classical_address=classical_address,
+            classical_provider_id="classical_claim_demo_v1",
+            source_network="legacy-demo-ledger",
+            snapshot_ref="snapshot-escrow",
+            classical_public_key=classical_public_key,
+        )
+        claim = pq_wallet.create_migration_claim(
+            service,
+            classical_address=classical_address,
+            classical_provider_id="classical_claim_demo_v1",
+            classical_public_key=classical_public_key,
+            classical_signature=build_demo_classical_claim_proof(
+                classical_public_key,
+                classical_claim_message_bytes(preview.migration_claim_payload()),
+            ),
+            source_network="legacy-demo-ledger",
+            snapshot_ref="snapshot-escrow",
+            destination_address=preview.outputs[0].recipient,
+            timestamp=preview.timestamp,
+        )
+        service.submit_transaction(claim)
+        service.mine_pending_transactions(miner.create_address())
+
+        locked = service.migration_claim_finality(classical_address)
+        self.assertEqual(locked["state"], "escrow_locked")
+        spend = pq_wallet.create_transaction(service, receiver.create_address(), amount=5, fee=1)
+        with self.assertRaisesRegex(ValueError, "Migration output is not spendable"):
+            service.submit_transaction(spend)
+
+        service.mine_pending_transactions(miner.create_address())
+        service.mine_pending_transactions(miner.create_address())
+        self.assertEqual(service.migration_claim_finality(classical_address)["state"], "unlocked")
+        spend = pq_wallet.create_transaction(service, receiver.create_address(), amount=5, fee=1)
+        service.submit_transaction(spend)
+
+    def test_resolved_fraud_freezes_migration_output_after_claim(self) -> None:
+        service, _ = self.make_service()
+        service.config = replace(service.config, migration_escrow_blocks=0)
+        pq_wallet = Wallet("PQWallet")
+        receiver = Wallet("Receiver")
+        miner = Wallet("Miner")
+
+        service.create_genesis_block({miner.create_address(): 10})
+        classical_public_key = build_demo_classical_claim_public_key("legacy-user-fraud-freeze")
+        classical_address = service.seed_migration_source(
+            classical_address=build_demo_classical_claim_address(classical_public_key),
+            provider_id="classical_claim_demo_v1",
+            source_network="legacy-demo-ledger",
+            amount=10,
+            snapshot_ref="snapshot-fraud-freeze",
+        )["classical_address"]
+        preview = service.build_migration_claim_draft(
+            destination_address=pq_wallet.create_address(),
+            classical_address=classical_address,
+            classical_provider_id="classical_claim_demo_v1",
+            source_network="legacy-demo-ledger",
+            snapshot_ref="snapshot-fraud-freeze",
+            classical_public_key=classical_public_key,
+        )
+        claim = pq_wallet.create_migration_claim(
+            service,
+            classical_address=classical_address,
+            classical_provider_id="classical_claim_demo_v1",
+            classical_public_key=classical_public_key,
+            classical_signature=build_demo_classical_claim_proof(
+                classical_public_key,
+                classical_claim_message_bytes(preview.migration_claim_payload()),
+            ),
+            source_network="legacy-demo-ledger",
+            snapshot_ref="snapshot-fraud-freeze",
+            destination_address=preview.outputs[0].recipient,
+            timestamp=preview.timestamp,
+        )
+        service.submit_transaction(claim)
+        service.mine_pending_transactions(miner.create_address())
+        dispute = service.open_migration_dispute(classical_address, reason="post-claim forged source")
+        service.resolve_migration_dispute(
+            dispute["dispute_id"],
+            outcome="resolved_fraud",
+            resolution_note="fraud proven",
+        )
+
+        self.assertEqual(service.migration_claim_finality(classical_address)["state"], "fraud_resolved_frozen")
+        decision = service.signed_migration_fraud_recovery_decision(
+            classical_address,
+            outcome="resolved_fraud",
+            recovery_action="freeze_and_revoke_source",
+            note="fraud proven",
+        )
+        self.assertTrue(decision["artifact_hash"])
+        spend = pq_wallet.create_transaction(service, receiver.create_address(), amount=5, fee=1)
+        with self.assertRaisesRegex(ValueError, "Migration output is not spendable"):
+            service.submit_transaction(spend)
+
+    def test_migration_conversion_caps_governance_and_registry_reports(self) -> None:
+        service, _ = self.make_service()
+        service.config = replace(
+            service.config,
+            migration_claim_per_address_cap=10,
+            migration_conversion_ratio_numerator=1,
+            migration_conversion_ratio_denominator=2,
+            migration_epoch_mint_cap=15,
+            migration_epoch_length_blocks=100,
+        )
+        pq_wallet = Wallet("PQWallet")
+        miner = Wallet("Miner")
+
+        service.create_genesis_block({miner.create_address(): 10})
+        classical_public_key = build_demo_classical_claim_public_key("legacy-user-capped")
+        classical_address = service.seed_migration_source(
+            classical_address=build_demo_classical_claim_address(classical_public_key),
+            provider_id="classical_claim_demo_v1",
+            source_network="legacy-demo-ledger",
+            amount=50,
+            snapshot_ref="snapshot-capped",
+        )["classical_address"]
+        quote = service.migration_claim_quote(classical_address)
+        self.assertEqual(quote["normalized_claim_amount"], 10)
+        preview = service.build_migration_claim_draft(
+            destination_address=pq_wallet.create_address(),
+            classical_address=classical_address,
+            classical_provider_id="classical_claim_demo_v1",
+            source_network="legacy-demo-ledger",
+            snapshot_ref="snapshot-capped",
+            classical_public_key=classical_public_key,
+        )
+        self.assertEqual(preview.outputs[0].amount, 10)
+        claim = pq_wallet.create_migration_claim(
+            service,
+            classical_address=classical_address,
+            classical_provider_id="classical_claim_demo_v1",
+            classical_public_key=classical_public_key,
+            classical_signature=build_demo_classical_claim_proof(
+                classical_public_key,
+                classical_claim_message_bytes(preview.migration_claim_payload()),
+            ),
+            source_network="legacy-demo-ledger",
+            snapshot_ref="snapshot-capped",
+            destination_address=preview.outputs[0].recipient,
+            timestamp=preview.timestamp,
+        )
+        service.submit_transaction(claim)
+        service.mine_pending_transactions(miner.create_address())
+
+        self.assertEqual(service.migration_proof_registry_report()["entry_count"], 1)
+        self.assertEqual(service.migration_conversion_guardrail_report()["epoch"]["minted"], 10)
+        manifest = service.signed_migration_economics_governance_manifest()
+        self.assertTrue(service.validate_migration_economics_governance_manifest(manifest)["valid"])
+        tampered = json.loads(json.dumps(manifest))
+        tampered["manifest"]["epoch_mint_cap"] = 999
+        self.assertFalse(service.validate_migration_economics_governance_manifest(tampered)["valid"])
+        self.assertEqual(service.migration_adversarial_economics_simulation_report()["status"], "pass")
+
     def test_migration_claim_preflight_exposes_signing_payloads(self) -> None:
         service, _ = self.make_service()
         pq_wallet = Wallet("PQWallet")
