@@ -1820,6 +1820,178 @@ class NodeService:
         report["simulation_hash"] = hashlib.sha256(canonical_json(report).encode("utf-8")).hexdigest()
         return report
 
+    def migration_economics_specification(self) -> dict[str, object]:
+        spec = {
+            "spec_version": 1,
+            "chain_id": self.config.chain_id,
+            "currency": {
+                "symbol": self.config.currency_symbol,
+                "max_money": self.config.max_money,
+                "genesis_supply_cap": self.config.genesis_supply_cap,
+                "emission_supply_cap": self.config.emission_supply_cap,
+                "migration_pool_cap": self.config.migration_pool_cap,
+            },
+            "migration": {
+                "conversion_policy": self.config.migration_conversion_policy,
+                "conversion_ratio": {
+                    "numerator": self.config.migration_conversion_ratio_numerator,
+                    "denominator": self.config.migration_conversion_ratio_denominator,
+                },
+                "per_address_cap": self.config.migration_claim_per_address_cap,
+                "epoch_length_blocks": self.config.migration_epoch_length_blocks,
+                "epoch_mint_cap": self.config.migration_epoch_mint_cap,
+                "escrow_blocks": self.config.migration_escrow_blocks,
+                "dispute_window_blocks": self.config.migration_dispute_window_blocks,
+                "governance_quorum": self.config.migration_governance_quorum,
+            },
+            "invariants": [
+                "theoretical supply must never exceed max_money",
+                "migration_minted must never exceed migration_pool_cap",
+                "migration epoch minted amount must not exceed configured epoch_mint_cap when non-zero",
+                "migration claim amount must equal source amount times conversion ratio after per-address cap",
+                "migration outputs must not be spendable before escrow unlock height",
+                "open disputes and resolved-fraud disputes must freeze affected migration outputs",
+                "canonical proof registry must not contain duplicate proof ids",
+                "migration economics changes require signed governance artifacts and quorum review",
+            ],
+        }
+        spec["spec_hash"] = hashlib.sha256(canonical_json(spec).encode("utf-8")).hexdigest()
+        return spec
+
+    def migration_economics_invariant_report(self) -> dict[str, object]:
+        spec = self.migration_economics_specification()
+        supply = self.supply_snapshot()
+        guardrails = self.migration_conversion_guardrail_report()
+        registry = self.migration_proof_registry_report()
+        escrow = self.migration_escrow_finality_report()
+        checks = [
+            {"name": "supply_within_max_money", "passed": bool(supply["within_max_money"])},
+            {
+                "name": "migration_pool_cap_respected",
+                "passed": int(supply["migration_minted"]) <= self.config.migration_pool_cap,
+            },
+            {
+                "name": "epoch_cap_respected",
+                "passed": guardrails["epoch"]["cap"] <= 0 or guardrails["epoch"]["minted"] <= guardrails["epoch"]["cap"],
+            },
+            {"name": "proof_registry_unique", "passed": registry["status"] == "pass"},
+            {
+                "name": "locked_outputs_not_spendable",
+                "passed": all(bool(item["spendable"]) for item in escrow["claims"] if item["state"] == "unlocked")
+                and all(not bool(item["spendable"]) for item in escrow["claims"] if item["state"] != "unlocked"),
+            },
+            {
+                "name": "governance_quorum_positive",
+                "passed": self.config.migration_governance_quorum > 0,
+            },
+        ]
+        report = {
+            "invariant_report_version": 1,
+            "status": "pass" if all(bool(check["passed"]) for check in checks) else "blocked",
+            "spec_hash": spec["spec_hash"],
+            "checks": checks,
+            "spec": spec,
+        }
+        report["invariant_report_hash"] = hashlib.sha256(canonical_json(report).encode("utf-8")).hexdigest()
+        return report
+
+    def migration_governance_quorum_report(self, approvals: list[dict[str, object]] | None = None) -> dict[str, object]:
+        approvals = approvals or []
+        trusted = set(self.config.migration_trusted_snapshot_signers)
+        valid_approvals = []
+        invalid_approvals = []
+        for approval in approvals:
+            envelope = dict(approval.get("envelope", approval)) if isinstance(approval, dict) else {}
+            try:
+                verified = verify_signed_envelope(
+                    envelope,
+                    expected_purpose="migration_governance_approval_v1",
+                    expected_chain_id=self.config.chain_id,
+                    time_skew_seconds=self.config.auth_time_skew_seconds,
+                )
+                address = str(verified["address"])
+                if trusted and address not in trusted:
+                    raise ValueError("Approval signer is not trusted by node policy.")
+                valid_approvals.append(
+                    {
+                        "address": address,
+                        "node_id": verified["node_id"],
+                        "claims": verified["claims"],
+                    }
+                )
+            except Exception as error:
+                invalid_approvals.append({"error": str(error)})
+        unique_signers = sorted({item["address"] for item in valid_approvals})
+        report = {
+            "quorum_version": 1,
+            "required_quorum": self.config.migration_governance_quorum,
+            "trusted_signer_count": len(trusted),
+            "valid_approval_count": len(valid_approvals),
+            "unique_valid_signer_count": len(unique_signers),
+            "quorum_met": len(unique_signers) >= self.config.migration_governance_quorum,
+            "unique_signers": unique_signers,
+            "invalid_approvals": invalid_approvals,
+            "required_actions": [
+                "economics_governance_change",
+                "fraud_recovery_decision",
+                "migration_emergency_pause",
+                "source_revocation",
+            ],
+        }
+        report["quorum_report_hash"] = hashlib.sha256(canonical_json(report).encode("utf-8")).hexdigest()
+        return report
+
+    def sign_migration_governance_approval(self, *, action: str, artifact_hash: str, note: str = "") -> dict[str, object]:
+        claims = {
+            "purpose": "migration_governance_approval_v1",
+            "chain_id": self.config.chain_id,
+            "node_id": self.config.node_id,
+            "action": action,
+            "artifact_hash": artifact_hash,
+            "note_hash": hashlib.sha256(note.encode("utf-8")).hexdigest(),
+        }
+        approval = {
+            "approval_version": 1,
+            "action": action,
+            "artifact_hash": artifact_hash,
+            "note": note,
+            "envelope": self.identity.sign_claims("migration_governance_approval_v1", claims),
+        }
+        approval["approval_hash"] = hashlib.sha256(canonical_json(approval).encode("utf-8")).hexdigest()
+        return approval
+
+    def migration_escrow_transition_artifact(self, classical_address: str, *, action: str, reason: str) -> dict[str, object]:
+        if action not in {"unlock", "freeze", "fraud_freeze", "review_hold"}:
+            raise ValueError("Unsupported migration escrow transition action.")
+        finality = self.migration_claim_finality(classical_address)
+        transition = {
+            "transition_version": 1,
+            "chain_id": self.config.chain_id,
+            "classical_address": classical_address,
+            "action": action,
+            "reason": reason,
+            "current_finality": finality,
+            "consensus_note": "This artifact is the signed migration-escrow transition intent; future consensus transaction types should commit this payload on-chain.",
+        }
+        transition["transition_hash"] = hashlib.sha256(canonical_json(transition).encode("utf-8")).hexdigest()
+        artifact = {
+            "artifact_version": 1,
+            "transition": transition,
+            "envelope": self.identity.sign_claims(
+                "migration_escrow_transition_v1",
+                {
+                    "purpose": "migration_escrow_transition_v1",
+                    "chain_id": self.config.chain_id,
+                    "node_id": self.config.node_id,
+                    "transition_hash": transition["transition_hash"],
+                    "classical_address": classical_address,
+                    "action": action,
+                },
+            ),
+        }
+        artifact["artifact_hash"] = self._signed_artifact_payload_hash(artifact)
+        return artifact
+
     def migration_source_proof_coverage_report(self) -> dict[str, object]:
         sources = self.store.list_migration_sources()
         by_network: dict[str, dict[str, int]] = {}
@@ -2736,6 +2908,7 @@ class NodeService:
             "migration_conversion_guardrails": self.migration_conversion_guardrail_report(),
             "migration_proof_registry": self.migration_proof_registry_report(),
             "migration_economics_adversarial": self.migration_adversarial_economics_simulation_report(),
+            "migration_economics_invariants": self.migration_economics_invariant_report(),
             "crypto_hardening": self.crypto_runtime_hardening_report(),
             "transport": self.network_transport_readiness_report(),
             "validator_networking": self.validator_networking_readiness_report(),
@@ -2763,6 +2936,8 @@ class NodeService:
             blockers.append("migration_proof_registry_blocked")
         if reports["migration_economics_adversarial"]["status"] != "pass":
             warnings.append("migration_economics_adversarial_warning")
+        if reports["migration_economics_invariants"]["status"] != "pass":
+            blockers.append("migration_economics_invariants_failed")
         if reports["crypto_hardening"]["hardening_status"] != "ready":
             blockers.append("crypto_runtime_not_hardened")
         if reports["transport"]["transport_status"] != "ready":
@@ -3488,6 +3663,79 @@ class NodeService:
         result["validation_hash"] = hashlib.sha256(canonical_json(result).encode("utf-8")).hexdigest()
         return result
 
+    def signed_project_audit_bundle(self) -> dict[str, object]:
+        bundle = {
+            "bundle_version": 1,
+            "generated_at": round(time.time(), 6),
+            "chain_id": self.config.chain_id,
+            "node_id": self.config.node_id,
+            "artifacts": {
+                "hardening_audit": self.hardening_audit_report(),
+                "signed_audit_artifact": self.signed_audit_artifact_report(),
+                "migration_economics_spec": self.migration_economics_specification(),
+                "migration_economics_invariants": self.migration_economics_invariant_report(),
+                "migration_proof_registry": self.migration_proof_registry_report(),
+                "migration_escrow_finality": self.migration_escrow_finality_report(),
+                "native_release_provenance": self.signed_native_crypto_release_provenance(),
+                "database_recovery": self.database_recovery_manifest(),
+                "external_audit_package": self.signed_external_audit_readiness_package(),
+                "protocol_manifest": self.protocol_manifest(),
+            },
+        }
+        bundle["bundle_hash"] = self._project_audit_bundle_hash(bundle)
+        artifact = {
+            "artifact_version": 1,
+            "bundle": bundle,
+            "envelope": self.identity.sign_claims(
+                "project_audit_bundle_v1",
+                {
+                    "purpose": "project_audit_bundle_v1",
+                    "chain_id": self.config.chain_id,
+                    "node_id": self.config.node_id,
+                    "bundle_hash": bundle["bundle_hash"],
+                    "hardening_audit_hash": bundle["artifacts"]["hardening_audit"]["audit_hash"],
+                },
+            ),
+        }
+        artifact["artifact_hash"] = self._signed_artifact_payload_hash(artifact)
+        return artifact
+
+    def validate_project_audit_bundle(self, artifact: dict[str, object]) -> dict[str, object]:
+        bundle = dict(artifact.get("bundle", {})) if isinstance(artifact.get("bundle"), dict) else {}
+        envelope = dict(artifact.get("envelope", {})) if isinstance(artifact.get("envelope"), dict) else {}
+        expected_bundle_hash = self._project_audit_bundle_hash(bundle)
+        expected_artifact_hash = self._signed_artifact_payload_hash(artifact)
+        signature_valid = False
+        signature_error = ""
+        try:
+            verified = verify_signed_envelope(
+                envelope,
+                expected_purpose="project_audit_bundle_v1",
+                expected_chain_id=self.config.chain_id,
+                time_skew_seconds=self.config.auth_time_skew_seconds,
+            )
+            claims = dict(verified["claims"])
+            signature_valid = (
+                claims.get("bundle_hash") == bundle.get("bundle_hash")
+                and claims.get("hardening_audit_hash")
+                == dict(dict(bundle.get("artifacts", {})).get("hardening_audit", {})).get("audit_hash")
+            )
+        except Exception as error:
+            signature_error = str(error)
+        checks = [
+            {"name": "bundle_hash_matches", "passed": bundle.get("bundle_hash") == expected_bundle_hash},
+            {"name": "artifact_hash_matches", "passed": artifact.get("artifact_hash") == expected_artifact_hash},
+            {"name": "signature_valid", "passed": signature_valid, "detail": signature_error},
+            {"name": "hardening_audit_present", "passed": bool(dict(bundle.get("artifacts", {})).get("hardening_audit"))},
+            {
+                "name": "migration_economics_invariants_present",
+                "passed": bool(dict(bundle.get("artifacts", {})).get("migration_economics_invariants")),
+            },
+        ]
+        result = {"valid": all(bool(check["passed"]) for check in checks), "checks": checks}
+        result["validation_hash"] = hashlib.sha256(canonical_json(result).encode("utf-8")).hexdigest()
+        return result
+
     @staticmethod
     def _signed_artifact_payload_hash(artifact: dict[str, object]) -> str:
         payload = dict(artifact)
@@ -3520,6 +3768,12 @@ class NodeService:
     def _external_audit_package_hash(package: dict[str, object]) -> str:
         payload = dict(package)
         payload.pop("audit_package_hash", None)
+        return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _project_audit_bundle_hash(bundle: dict[str, object]) -> str:
+        payload = dict(bundle)
+        payload.pop("bundle_hash", None)
         return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
 
     def production_configuration_report(self) -> dict[str, object]:
@@ -4770,12 +5024,92 @@ class NodeService:
     def select_inputs(self, addresses: list[str], target_amount: int) -> tuple[list[tuple[str, int, TxOutput]], int]:
         selected: list[tuple[str, int, TxOutput]] = []
         running_total = 0
+        metadata = self._utxo_origin_metadata_for_head(self.store.best_head_hash())
         for tx_id, output_index, output in reversed(self.store.list_utxos(addresses)):
+            spendability = self._utxo_spendability_status(
+                (tx_id, output_index),
+                metadata.get((tx_id, output_index), {}),
+                current_height=self.store.block_count(),
+            )
+            if not bool(spendability["spendable"]):
+                continue
             selected.append((tx_id, output_index, output))
             running_total += output.amount
             if running_total >= target_amount:
                 return selected, running_total
         raise ValueError("Insufficient funds.")
+
+    def utxo_spendability_report(self, addresses: list[str] | None = None) -> dict[str, object]:
+        metadata = self._utxo_origin_metadata_for_head(self.store.best_head_hash())
+        rows = []
+        for tx_id, output_index, output in self.store.list_utxos(addresses):
+            spendability = self._utxo_spendability_status(
+                (tx_id, output_index),
+                metadata.get((tx_id, output_index), {}),
+                current_height=self.store.block_count(),
+            )
+            rows.append(
+                {
+                    "tx_id": tx_id,
+                    "output_index": output_index,
+                    "recipient": output.recipient,
+                    "amount": output.amount,
+                    **spendability,
+                }
+            )
+        spendable_total = sum(int(item["amount"]) for item in rows if bool(item["spendable"]))
+        locked_total = sum(int(item["amount"]) for item in rows if not bool(item["spendable"]))
+        report = {
+            "spendability_version": 1,
+            "current_height": self.store.block_count(),
+            "address_filter_count": 0 if addresses is None else len(addresses),
+            "utxo_count": len(rows),
+            "spendable_total": spendable_total,
+            "locked_total": locked_total,
+            "utxos": rows,
+        }
+        report["spendability_hash"] = hashlib.sha256(canonical_json(report).encode("utf-8")).hexdigest()
+        return report
+
+    def _utxo_spendability_status(
+        self,
+        key: tuple[str, int],
+        metadata: dict[str, object],
+        *,
+        current_height: int,
+    ) -> dict[str, object]:
+        if metadata.get("coinbase", False):
+            origin_height = int(metadata.get("height", 0))
+            maturity_height = origin_height + self.config.coinbase_maturity_blocks
+            if current_height < maturity_height:
+                return {
+                    "spendable": False,
+                    "lock_type": "coinbase_maturity",
+                    "state": "coinbase_locked",
+                    "origin_height": origin_height,
+                    "unlock_height": maturity_height,
+                }
+        if metadata.get("migration_claim", False):
+            finality = self._migration_output_finality_status(
+                str(metadata.get("classical_address", "")),
+                origin_height=int(metadata.get("height", 0)),
+                current_height=current_height,
+            )
+            return {
+                "spendable": bool(finality["spendable"]),
+                "lock_type": "migration_escrow" if not bool(finality["spendable"]) else "",
+                "state": str(finality["state"]),
+                "origin_height": int(finality["origin_height"]),
+                "unlock_height": int(finality["unlock_height"]),
+                "classical_address": str(metadata.get("classical_address", "")),
+            }
+        return {
+            "spendable": True,
+            "lock_type": "",
+            "state": "spendable",
+            "origin_height": int(metadata.get("height", 0)),
+            "unlock_height": int(metadata.get("height", 0)),
+        }
 
     def _validate_transaction_against_view(
         self,

@@ -64,6 +64,7 @@ class NodeConfigTests(unittest.TestCase):
             "QR_CHAIN_MIGRATION_EPOCH_MINT_CAP": "5000",
             "QR_CHAIN_MIGRATION_CONVERSION_RATIO_NUMERATOR": "3",
             "QR_CHAIN_MIGRATION_CONVERSION_RATIO_DENOMINATOR": "2",
+            "QR_CHAIN_MIGRATION_GOVERNANCE_QUORUM": "4",
             "QR_CHAIN_MIGRATION_SNAPSHOT_REVIEWER_QUORUM": "3",
             "QR_CHAIN_MIGRATION_EMERGENCY_PAUSE": "true",
             "QR_CHAIN_MIGRATION_REQUIRE_SNAPSHOT_SIGNATURES": "true",
@@ -136,6 +137,7 @@ class NodeConfigTests(unittest.TestCase):
         self.assertEqual(config.migration_epoch_mint_cap, 5000)
         self.assertEqual(config.migration_conversion_ratio_numerator, 3)
         self.assertEqual(config.migration_conversion_ratio_denominator, 2)
+        self.assertEqual(config.migration_governance_quorum, 4)
         self.assertEqual(config.migration_snapshot_reviewer_quorum, 3)
         self.assertTrue(config.migration_emergency_pause)
         self.assertTrue(config.migration_require_snapshot_signatures)

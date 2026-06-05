@@ -138,6 +138,7 @@ The current consensus and fraud-hardening pass adds:
 - **Persistent challenge lifecycle:** migration disputes now move through open, evidence-submitted, resolved-valid, resolved-fraud, or expired states, with claim unlock/revocation rules.
 - **Post-finality fraud recovery:** already-mined migration claims can now produce signed, tamper-evident fraud case artifacts that quarantine the source while preserving the canonical claim audit trail.
 - **Migration economics hardening:** migration outputs now pass through escrow/finality states, conversion caps are policy-driven, proof claims are registry-audited, and economics changes can be signed as governance artifacts.
+- **Audit and governance automation:** operators can generate formal migration-economics specs, invariant reports, quorum approvals, escrow transition intents, wallet spendability reports, and a signed full-project audit bundle.
 - **Authenticated gossip:** peer networking includes transaction/block gossip endpoints, relay helpers, bad-block penalties, and peer-diversity readiness checks.
 - **Load/chaos harness:** `load-chaos` runs scripted multi-node scenarios for mempool floods, fork storms, migration disputes, signer interruptions, and verification throughput.
 - **Auditable hardening artifacts:** stages 7-10 now emit signed native-release provenance, soak-result evidence, database recovery manifests, and external-audit readiness packages.
@@ -513,6 +514,7 @@ Core endpoints:
 - `GET /operations/soak-result-schema`
 - `GET /operations/database-recovery-manifest`
 - `GET /operations/external-audit-package`
+- `GET /operations/project-audit-bundle`
 - `GET /operations/consensus-upgrade-manifest`
 - `GET /operations/consensus-upgrade-signed`
 - `GET /operations/production-config`
@@ -530,6 +532,8 @@ Core endpoints:
 - `POST /operations/soak-result-validate`
 - `POST /operations/database-recovery-validate`
 - `POST /operations/external-audit-package-validate`
+- `POST /operations/project-audit-bundle-validate`
+- `GET /wallet/utxo-spendability`
 
 Migration endpoints:
 
@@ -540,6 +544,9 @@ Migration endpoints:
 - `GET /migration/conversion-risk`
 - `GET /migration/escrow-finality`
 - `GET /migration/conversion-guardrails`
+- `GET /migration/economics-spec`
+- `GET /migration/economics-invariants`
+- `GET /migration/governance-quorum`
 - `GET /migration/proof-registry`
 - `GET /migration/economics-governance`
 - `GET /migration/economics-adversarial`
@@ -578,6 +585,9 @@ Migration endpoints:
 - `POST /migration/post-finality-fraud-case`
 - `POST /migration/post-finality-fraud-validate`
 - `POST /migration/economics-governance-validate`
+- `POST /migration/governance-approval`
+- `POST /migration/governance-quorum`
+- `POST /migration/escrow-transition`
 - `POST /migration/fraud-recovery-decision`
 
 Peer endpoints:
@@ -625,6 +635,8 @@ qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db dat
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db database-recovery-validate --input recovery.json
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db external-audit-package --output audit-package.json
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db external-audit-package-validate --input audit-package.json
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db project-audit-bundle --output audit-bundle.json
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db project-audit-bundle-validate --input audit-bundle.json
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db consensus-upgrade-manifest
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db consensus-upgrade-sign --output upgrade.json
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db consensus-upgrade-validate --input upgrade.json
@@ -639,9 +651,13 @@ qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db mig
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-conversion-risk
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-escrow-finality
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-conversion-guardrails
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-economics-spec
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-economics-invariants
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-proof-registry
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-governance-quorum
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-economics-governance --output migration-economics.json
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-economics-governance-validate --input migration-economics.json
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-governance-approval --action economics_governance_change --artifact-hash hash
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-economics-adversarial
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-proof-coverage
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-snapshot-attestations
@@ -652,6 +668,7 @@ qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db mig
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-dispute-resolve --dispute-id dispute-id --outcome resolved_valid --resolution-note "review accepted"
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-post-finality-fraud-case --classical-address legacy-address --evidence-json "{\"source_export_hash\":\"...\"}" --output fraud-case.json
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-post-finality-fraud-validate --input fraud-case.json
+qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db wallet-utxo-spendability --address pq-address
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db currency
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db currency-supply
 qr-chain --db-path data/chain.db --wallet-state-db-path data/wallet_state.db migration-source-export-normalize --input source-export.json --sign --output snapshot.json

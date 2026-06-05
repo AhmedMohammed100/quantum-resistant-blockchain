@@ -272,7 +272,7 @@ class AdversarialAndPropertyTests(unittest.TestCase):
         )
 
         self.assertTrue(report["passed"], report)
-        self.assertEqual(report["scenario_count"], 5)
+        self.assertEqual(report["scenario_count"], 7)
         self.assertIn("mempool_flood", report["results"])
         self.assertIn("fork_storm", report["results"])
         self.assertIn("migration_disputes", report["results"])

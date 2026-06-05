@@ -94,6 +94,7 @@ def _service_from_args(args: argparse.Namespace) -> NodeService:
             migration_epoch_mint_cap=base.migration_epoch_mint_cap,
             migration_conversion_ratio_numerator=base.migration_conversion_ratio_numerator,
             migration_conversion_ratio_denominator=base.migration_conversion_ratio_denominator,
+            migration_governance_quorum=base.migration_governance_quorum,
             migration_snapshot_reviewer_quorum=base.migration_snapshot_reviewer_quorum,
             migration_emergency_pause=base.migration_emergency_pause,
             migration_require_snapshot_signatures=base.migration_require_snapshot_signatures,
@@ -217,6 +218,11 @@ def build_parser() -> argparse.ArgumentParser:
     backup_manifest.add_argument("--output", default=None)
     backup_manifest.set_defaults(handler=cmd_backup_manifest)
 
+    wallet_spendability = subparsers.add_parser("wallet-utxo-spendability", help="Show spendable and locked UTXOs")
+    wallet_spendability.add_argument("--address", action="append", default=None)
+    wallet_spendability.add_argument("--output", default=None)
+    wallet_spendability.set_defaults(handler=cmd_wallet_utxo_spendability)
+
     node_preflight = subparsers.add_parser("node-preflight", help="Show launch preflight gates across node subsystems")
     node_preflight.add_argument("--output", default=None)
     node_preflight.set_defaults(handler=cmd_node_preflight)
@@ -292,6 +298,18 @@ def build_parser() -> argparse.ArgumentParser:
     audit_package_validate.add_argument("--output", default=None)
     audit_package_validate.set_defaults(handler=cmd_external_audit_package_validate)
 
+    project_audit_bundle = subparsers.add_parser("project-audit-bundle", help="Emit a signed full-project audit evidence bundle")
+    project_audit_bundle.add_argument("--output", default=None)
+    project_audit_bundle.set_defaults(handler=cmd_project_audit_bundle)
+
+    project_audit_bundle_validate = subparsers.add_parser(
+        "project-audit-bundle-validate",
+        help="Validate a signed full-project audit evidence bundle",
+    )
+    project_audit_bundle_validate.add_argument("--input", required=True)
+    project_audit_bundle_validate.add_argument("--output", default=None)
+    project_audit_bundle_validate.set_defaults(handler=cmd_project_audit_bundle_validate)
+
     consensus_upgrade = subparsers.add_parser("consensus-upgrade-manifest", help="Emit consensus parameter upgrade manifest")
     consensus_upgrade.add_argument("--output", default=None)
     consensus_upgrade.set_defaults(handler=cmd_consensus_upgrade_manifest)
@@ -352,9 +370,36 @@ def build_parser() -> argparse.ArgumentParser:
     conversion_guardrails.add_argument("--output", default=None)
     conversion_guardrails.set_defaults(handler=cmd_migration_conversion_guardrails)
 
+    economics_spec = subparsers.add_parser("migration-economics-spec", help="Show formal migration economics specification")
+    economics_spec.add_argument("--output", default=None)
+    economics_spec.set_defaults(handler=cmd_migration_economics_spec)
+
+    economics_invariants = subparsers.add_parser("migration-economics-invariants", help="Check migration economics invariants")
+    economics_invariants.add_argument("--output", default=None)
+    economics_invariants.set_defaults(handler=cmd_migration_economics_invariants)
+
     proof_registry = subparsers.add_parser("migration-proof-registry", help="Show canonical migration proof registry")
     proof_registry.add_argument("--output", default=None)
     proof_registry.set_defaults(handler=cmd_migration_proof_registry)
+
+    governance_quorum = subparsers.add_parser("migration-governance-quorum", help="Show migration governance quorum status")
+    governance_quorum.add_argument("--approvals", default=None, help="Optional JSON file containing {'approvals': [...]}")
+    governance_quorum.add_argument("--output", default=None)
+    governance_quorum.set_defaults(handler=cmd_migration_governance_quorum)
+
+    governance_approval = subparsers.add_parser("migration-governance-approval", help="Sign a migration governance approval")
+    governance_approval.add_argument("--action", required=True)
+    governance_approval.add_argument("--artifact-hash", required=True)
+    governance_approval.add_argument("--note", default="")
+    governance_approval.add_argument("--output", default=None)
+    governance_approval.set_defaults(handler=cmd_migration_governance_approval)
+
+    escrow_transition = subparsers.add_parser("migration-escrow-transition", help="Emit a signed migration escrow transition intent")
+    escrow_transition.add_argument("--classical-address", required=True)
+    escrow_transition.add_argument("--action", choices=["unlock", "freeze", "fraud_freeze", "review_hold"], required=True)
+    escrow_transition.add_argument("--reason", required=True)
+    escrow_transition.add_argument("--output", default=None)
+    escrow_transition.set_defaults(handler=cmd_migration_escrow_transition)
 
     economics_governance = subparsers.add_parser("migration-economics-governance", help="Emit a signed migration economics governance manifest")
     economics_governance.add_argument("--output", default=None)
@@ -745,6 +790,12 @@ def cmd_backup_manifest(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_wallet_utxo_spendability(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    _write_json_output(service.utxo_spendability_report(args.address), None if args.output is None else Path(args.output))
+    return 0
+
+
 def cmd_node_preflight(args: argparse.Namespace) -> int:
     service = _service_from_args(args)
     _write_json_output(service.node_launch_preflight_report(), None if args.output is None else Path(args.output))
@@ -838,6 +889,21 @@ def cmd_external_audit_package_validate(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_project_audit_bundle(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    _write_json_output(service.signed_project_audit_bundle(), None if args.output is None else Path(args.output))
+    return 0
+
+
+def cmd_project_audit_bundle_validate(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    _write_json_output(
+        service.validate_project_audit_bundle(_read_json_file(Path(args.input))),
+        None if args.output is None else Path(args.output),
+    )
+    return 0
+
+
 def cmd_consensus_upgrade_manifest(args: argparse.Namespace) -> int:
     service = _service_from_args(args)
     _write_json_output(service.consensus_upgrade_manifest(), None if args.output is None else Path(args.output))
@@ -917,9 +983,60 @@ def cmd_migration_conversion_guardrails(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_migration_economics_spec(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    _write_json_output(service.migration_economics_specification(), None if args.output is None else Path(args.output))
+    return 0
+
+
+def cmd_migration_economics_invariants(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    _write_json_output(service.migration_economics_invariant_report(), None if args.output is None else Path(args.output))
+    return 0
+
+
 def cmd_migration_proof_registry(args: argparse.Namespace) -> int:
     service = _service_from_args(args)
     _write_json_output(service.migration_proof_registry_report(), None if args.output is None else Path(args.output))
+    return 0
+
+
+def cmd_migration_governance_quorum(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    approvals: list[dict[str, object]] = []
+    if args.approvals:
+        payload = _read_json_file(Path(args.approvals))
+        raw_approvals = payload.get("approvals", [])
+        if not isinstance(raw_approvals, list):
+            raise ValueError("--approvals must contain an approvals list")
+        approvals = [dict(item) for item in raw_approvals]
+    _write_json_output(service.migration_governance_quorum_report(approvals), None if args.output is None else Path(args.output))
+    return 0
+
+
+def cmd_migration_governance_approval(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    _write_json_output(
+        service.sign_migration_governance_approval(
+            action=args.action,
+            artifact_hash=args.artifact_hash,
+            note=args.note,
+        ),
+        None if args.output is None else Path(args.output),
+    )
+    return 0
+
+
+def cmd_migration_escrow_transition(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    _write_json_output(
+        service.migration_escrow_transition_artifact(
+            args.classical_address,
+            action=args.action,
+            reason=args.reason,
+        ),
+        None if args.output is None else Path(args.output),
+    )
     return 0
 
 

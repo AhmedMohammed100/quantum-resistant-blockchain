@@ -761,11 +761,11 @@ class NodeServiceTests(unittest.TestCase):
         self.assertEqual(reward_block.version, 3)
         self.assertTrue(reward_block.state_root)
 
-        spend_reward = miner.create_transaction(service, bob.create_address(), amount=1, fee=1)
-        with self.assertRaisesRegex(ValueError, "Coinbase output has not reached configured maturity"):
-            service.submit_transaction(spend_reward)
+        with self.assertRaisesRegex(ValueError, "Insufficient funds"):
+            miner.create_transaction(service, bob.create_address(), amount=1, fee=1)
 
         service.mine_pending_transactions(miner_address)
+        spend_reward = miner.create_transaction(service, bob.create_address(), amount=1, fee=1)
         service.submit_transaction(spend_reward)
         self.assertEqual(service.store.pending_transaction_count(), 1)
 
@@ -1105,9 +1105,9 @@ class NodeServiceTests(unittest.TestCase):
 
         locked = service.migration_claim_finality(classical_address)
         self.assertEqual(locked["state"], "escrow_locked")
-        spend = pq_wallet.create_transaction(service, receiver.create_address(), amount=5, fee=1)
-        with self.assertRaisesRegex(ValueError, "Migration output is not spendable"):
-            service.submit_transaction(spend)
+        self.assertGreater(service.utxo_spendability_report(pq_wallet.addresses())["locked_total"], 0)
+        with self.assertRaisesRegex(ValueError, "Insufficient funds"):
+            pq_wallet.create_transaction(service, receiver.create_address(), amount=5, fee=1)
 
         service.mine_pending_transactions(miner.create_address())
         service.mine_pending_transactions(miner.create_address())
@@ -1170,9 +1170,8 @@ class NodeServiceTests(unittest.TestCase):
             note="fraud proven",
         )
         self.assertTrue(decision["artifact_hash"])
-        spend = pq_wallet.create_transaction(service, receiver.create_address(), amount=5, fee=1)
-        with self.assertRaisesRegex(ValueError, "Migration output is not spendable"):
-            service.submit_transaction(spend)
+        with self.assertRaisesRegex(ValueError, "Insufficient funds"):
+            pq_wallet.create_transaction(service, receiver.create_address(), amount=5, fee=1)
 
     def test_migration_conversion_caps_governance_and_registry_reports(self) -> None:
         service, _ = self.make_service()
@@ -1232,6 +1231,27 @@ class NodeServiceTests(unittest.TestCase):
         tampered["manifest"]["epoch_mint_cap"] = 999
         self.assertFalse(service.validate_migration_economics_governance_manifest(tampered)["valid"])
         self.assertEqual(service.migration_adversarial_economics_simulation_report()["status"], "pass")
+        self.assertEqual(service.migration_economics_invariant_report()["status"], "pass")
+        spec = service.migration_economics_specification()
+        self.assertTrue(spec["spec_hash"])
+        approval = service.sign_migration_governance_approval(
+            action="economics_governance_change",
+            artifact_hash=manifest["artifact_hash"],
+            note="unit test approval",
+        )
+        quorum = service.migration_governance_quorum_report([approval])
+        self.assertEqual(quorum["valid_approval_count"], 1)
+        transition = service.migration_escrow_transition_artifact(
+            classical_address,
+            action="review_hold",
+            reason="unit test transition",
+        )
+        self.assertTrue(transition["artifact_hash"])
+        bundle = service.signed_project_audit_bundle()
+        self.assertTrue(service.validate_project_audit_bundle(bundle)["valid"])
+        tampered_bundle = json.loads(json.dumps(bundle))
+        tampered_bundle["bundle"]["artifacts"]["migration_economics_spec"]["migration"]["escrow_blocks"] = 999
+        self.assertFalse(service.validate_project_audit_bundle(tampered_bundle)["valid"])
 
     def test_migration_claim_preflight_exposes_signing_payloads(self) -> None:
         service, _ = self.make_service()

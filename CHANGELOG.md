@@ -18,6 +18,7 @@ This changelog preserves the implementation history that previously lived in the
 - Added signed post-finality migration fraud case artifacts with source quarantine, dispute evidence linkage, validation/tamper checks, and CLI/API creation and validation surfaces.
 - Built hardening stages 7-10 with signed native crypto release provenance, validated soak-result artifacts, signed database recovery manifests, and signed external-audit readiness packages.
 - Hardened migration economics with enforced claim-output escrow, fraud freezes, normalized conversion caps, epoch mint guardrails, proof-registry reporting, signed economics governance manifests, and adversarial migration-economics simulations.
+- Added wallet spendability filtering for locked migration funds, formal migration-economics specifications and invariant reports, governance quorum approval artifacts, signed escrow transition intents, expanded migration chaos scenarios, and signed full-project audit bundles.
 - Tightened the public security model documentation around invariant tripwires, authenticated gossip failure behavior, and stateful PQ signer recovery risk.
 
 ### Phase 76 - Load And Chaos Harness

@@ -78,6 +78,7 @@ class NodeConfig:
     migration_epoch_mint_cap: int = 0
     migration_conversion_ratio_numerator: int = 1
     migration_conversion_ratio_denominator: int = 1
+    migration_governance_quorum: int = 2
     migration_snapshot_reviewer_quorum: int = 2
     migration_emergency_pause: bool = False
     migration_require_snapshot_signatures: bool = False
@@ -196,6 +197,7 @@ class NodeConfig:
             migration_epoch_mint_cap=int(os.getenv("QR_CHAIN_MIGRATION_EPOCH_MINT_CAP", "0")),
             migration_conversion_ratio_numerator=int(os.getenv("QR_CHAIN_MIGRATION_CONVERSION_RATIO_NUMERATOR", "1")),
             migration_conversion_ratio_denominator=int(os.getenv("QR_CHAIN_MIGRATION_CONVERSION_RATIO_DENOMINATOR", "1")),
+            migration_governance_quorum=int(os.getenv("QR_CHAIN_MIGRATION_GOVERNANCE_QUORUM", "2")),
             migration_snapshot_reviewer_quorum=int(os.getenv("QR_CHAIN_MIGRATION_SNAPSHOT_REVIEWER_QUORUM", "2")),
             migration_emergency_pause=os.getenv("QR_CHAIN_MIGRATION_EMERGENCY_PAUSE", "0").strip().lower()
             in {"1", "true", "yes", "on"},

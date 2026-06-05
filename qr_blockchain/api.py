@@ -139,6 +139,9 @@ class NodeRequestHandler(BaseHTTPRequestHandler):
         if path == "/operations/external-audit-package":
             self._respond(HTTPStatus.OK, self.service.signed_external_audit_readiness_package())
             return
+        if path == "/operations/project-audit-bundle":
+            self._respond(HTTPStatus.OK, self.service.signed_project_audit_bundle())
+            return
         if path == "/operations/consensus-upgrade-manifest":
             self._respond(HTTPStatus.OK, self.service.consensus_upgrade_manifest())
             return
@@ -178,8 +181,22 @@ class NodeRequestHandler(BaseHTTPRequestHandler):
         if path == "/migration/conversion-guardrails":
             self._respond(HTTPStatus.OK, self.service.migration_conversion_guardrail_report())
             return
+        if path == "/migration/economics-spec":
+            self._respond(HTTPStatus.OK, self.service.migration_economics_specification())
+            return
+        if path == "/migration/economics-invariants":
+            self._respond(HTTPStatus.OK, self.service.migration_economics_invariant_report())
+            return
+        if path == "/migration/governance-quorum":
+            self._respond(HTTPStatus.OK, self.service.migration_governance_quorum_report())
+            return
         if path == "/migration/proof-registry":
             self._respond(HTTPStatus.OK, self.service.migration_proof_registry_report())
+            return
+        if path == "/wallet/utxo-spendability":
+            query = parse_qs(parsed.query)
+            addresses = query.get("address", [])
+            self._respond(HTTPStatus.OK, self.service.utxo_spendability_report(addresses or None))
             return
         if path == "/migration/economics-governance":
             self._respond(HTTPStatus.OK, self.service.signed_migration_economics_governance_manifest())
@@ -476,6 +493,40 @@ class NodeRequestHandler(BaseHTTPRequestHandler):
             self._respond(HTTPStatus.OK if result["valid"] else HTTPStatus.BAD_REQUEST, result)
             return
 
+        if path == "/migration/governance-approval":
+            try:
+                approval = self.service.sign_migration_governance_approval(
+                    action=str(payload.get("action", "")),
+                    artifact_hash=str(payload.get("artifact_hash", "")),
+                    note=str(payload.get("note", "")),
+                )
+            except ValueError as error:
+                self._respond(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+                return
+            self._respond(HTTPStatus.CREATED, approval)
+            return
+
+        if path == "/migration/governance-quorum":
+            approvals = payload.get("approvals", [])
+            if not isinstance(approvals, list):
+                self._respond(HTTPStatus.BAD_REQUEST, {"error": "approvals must be a list"})
+                return
+            self._respond(HTTPStatus.OK, self.service.migration_governance_quorum_report([dict(item) for item in approvals]))
+            return
+
+        if path == "/migration/escrow-transition":
+            try:
+                transition = self.service.migration_escrow_transition_artifact(
+                    str(payload.get("classical_address", "")),
+                    action=str(payload.get("action", "")),
+                    reason=str(payload.get("reason", "")),
+                )
+            except ValueError as error:
+                self._respond(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+                return
+            self._respond(HTTPStatus.CREATED, transition)
+            return
+
         if path == "/migration/fraud-recovery-decision":
             classical_address = str(payload.get("classical_address", ""))
             outcome = str(payload.get("outcome", ""))
@@ -629,6 +680,11 @@ class NodeRequestHandler(BaseHTTPRequestHandler):
 
         if path == "/operations/external-audit-package-validate":
             result = self.service.validate_external_audit_readiness_package(payload)
+            self._respond(HTTPStatus.OK if result["valid"] else HTTPStatus.BAD_REQUEST, result)
+            return
+
+        if path == "/operations/project-audit-bundle-validate":
+            result = self.service.validate_project_audit_bundle(payload)
             self._respond(HTTPStatus.OK if result["valid"] else HTTPStatus.BAD_REQUEST, result)
             return
 

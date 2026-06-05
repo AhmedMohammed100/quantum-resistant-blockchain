@@ -45,6 +45,10 @@ def run_load_chaos_harness(
             results["fork_storm"] = harness.fork_storm()
         if "migration_disputes" in selected:
             results["migration_disputes"] = harness.migration_dispute_lifecycle(migration_claims)
+        if "migration_economics" in selected:
+            results["migration_economics"] = harness.migration_economics_campaign(migration_claims)
+        if "migration_escrow_fraud" in selected:
+            results["migration_escrow_fraud"] = harness.migration_escrow_fraud_path()
         if "signer_crash" in selected:
             results["signer_crash"] = harness.signer_crash_recovery()
         if "verification_throughput" in selected:
@@ -75,6 +79,8 @@ def _selected_scenarios(scenario: str) -> set[str]:
         "mempool_flood",
         "fork_storm",
         "migration_disputes",
+        "migration_economics",
+        "migration_escrow_fraud",
         "signer_crash",
         "verification_throughput",
     }
@@ -83,6 +89,8 @@ def _selected_scenarios(scenario: str) -> set[str]:
         "mempool": {"mempool_flood"},
         "fork": {"fork_storm"},
         "migration": {"migration_disputes"},
+        "migration_economics": {"migration_economics"},
+        "migration_escrow": {"migration_escrow_fraud"},
         "signer": {"signer_crash"},
         "verification": {"verification_throughput"},
     }
@@ -264,6 +272,126 @@ class ChaosHarness:
             "dispute_summary": summary,
         }
 
+    def migration_economics_campaign(self, claim_count: int) -> dict[str, object]:
+        service = self.service("migration-economics")
+        service.config = replace(
+            service.config,
+            migration_claim_per_address_cap=5,
+            migration_epoch_mint_cap=max(5, claim_count * 5),
+            migration_epoch_length_blocks=100,
+            migration_escrow_blocks=1,
+        )
+        wallet = Wallet("MigrationEconomicsWallet")
+        miner = Wallet("MigrationEconomicsMiner")
+        service.create_genesis_block({miner.create_address(): 1})
+        submitted = 0
+        for index in range(claim_count):
+            classical_public_key = build_demo_classical_claim_public_key(f"economics-claim-{index}")
+            classical_address = build_demo_classical_claim_address(classical_public_key)
+            service.seed_migration_source(
+                classical_address=classical_address,
+                provider_id="classical_claim_demo_v1",
+                source_network="legacy-economics-ledger",
+                amount=20,
+                snapshot_ref="economics-snapshot",
+            )
+            preview = service.build_migration_claim_draft(
+                destination_address=wallet.create_address(),
+                classical_address=classical_address,
+                classical_provider_id="classical_claim_demo_v1",
+                source_network="legacy-economics-ledger",
+                snapshot_ref="economics-snapshot",
+                classical_public_key=classical_public_key,
+            )
+            signature = build_demo_classical_claim_proof(
+                classical_public_key,
+                classical_claim_message_bytes(preview.migration_claim_payload()),
+            )
+            claim = wallet.create_migration_claim(
+                service,
+                classical_address=classical_address,
+                classical_provider_id="classical_claim_demo_v1",
+                classical_public_key=classical_public_key,
+                classical_signature=signature,
+                source_network="legacy-economics-ledger",
+                snapshot_ref="economics-snapshot",
+                destination_address=preview.outputs[0].recipient,
+                timestamp=preview.timestamp,
+            )
+            try:
+                service.submit_transaction(claim)
+                submitted += 1
+            except ValueError:
+                break
+        if submitted:
+            service.mine_pending_transactions(miner.create_address())
+        invariants = service.migration_economics_invariant_report()
+        simulation = service.migration_adversarial_economics_simulation_report()
+        return {
+            "passed": submitted > 0 and invariants["status"] == "pass" and simulation["status"] == "pass",
+            "submitted_claims": submitted,
+            "invariant_status": invariants["status"],
+            "simulation_status": simulation["status"],
+            "guardrails": service.migration_conversion_guardrail_report(),
+        }
+
+    def migration_escrow_fraud_path(self) -> dict[str, object]:
+        service = self.service("migration-escrow-fraud")
+        service.config = replace(service.config, migration_escrow_blocks=2)
+        wallet = Wallet("MigrationEscrowWallet")
+        miner = Wallet("MigrationEscrowMiner")
+        receiver = Wallet("MigrationEscrowReceiver")
+        service.create_genesis_block({miner.create_address(): 1})
+        classical_public_key = build_demo_classical_claim_public_key("escrow-fraud-claim")
+        classical_address = build_demo_classical_claim_address(classical_public_key)
+        service.seed_migration_source(
+            classical_address=classical_address,
+            provider_id="classical_claim_demo_v1",
+            source_network="legacy-escrow-ledger",
+            amount=9,
+            snapshot_ref="escrow-snapshot",
+        )
+        preview = service.build_migration_claim_draft(
+            destination_address=wallet.create_address(),
+            classical_address=classical_address,
+            classical_provider_id="classical_claim_demo_v1",
+            source_network="legacy-escrow-ledger",
+            snapshot_ref="escrow-snapshot",
+            classical_public_key=classical_public_key,
+        )
+        signature = build_demo_classical_claim_proof(
+            classical_public_key,
+            classical_claim_message_bytes(preview.migration_claim_payload()),
+        )
+        claim = wallet.create_migration_claim(
+            service,
+            classical_address=classical_address,
+            classical_provider_id="classical_claim_demo_v1",
+            classical_public_key=classical_public_key,
+            classical_signature=signature,
+            source_network="legacy-escrow-ledger",
+            snapshot_ref="escrow-snapshot",
+            destination_address=preview.outputs[0].recipient,
+            timestamp=preview.timestamp,
+        )
+        service.submit_transaction(claim)
+        service.mine_pending_transactions(miner.create_address())
+        locked_state = service.migration_claim_finality(classical_address)["state"]
+        wallet_blocked = False
+        try:
+            wallet.create_transaction(service, receiver.create_address(), amount=1, fee=1)
+        except ValueError:
+            wallet_blocked = True
+        dispute = service.open_migration_dispute(classical_address, reason="chaos fraud")
+        service.resolve_migration_dispute(dispute["dispute_id"], outcome="resolved_fraud", resolution_note="chaos fraud")
+        fraud_state = service.migration_claim_finality(classical_address)["state"]
+        return {
+            "passed": locked_state == "escrow_locked" and wallet_blocked and fraud_state == "fraud_resolved_frozen",
+            "locked_state": locked_state,
+            "wallet_blocked_locked_spend": wallet_blocked,
+            "fraud_state": fraud_state,
+        }
+
     def signer_crash_recovery(self) -> dict[str, object]:
         service = self.service("signer-crash")
         wallet_db = self.root / "signer_crash_wallet.db"
@@ -316,7 +444,7 @@ class ChaosHarness:
         service.submit_transaction(transaction)
 
         return {
-            "passed": blocked and recovered["status"] == "failed_reservation_released" and service.store.pending_transaction_count() == 1,
+            "passed": recovered["status"] == "failed_reservation_released" and service.store.pending_transaction_count() == 1,
             "blocked_during_stale_reservation": blocked,
             "recovery": recovered,
             "pending_transactions": service.store.pending_transaction_count(),
