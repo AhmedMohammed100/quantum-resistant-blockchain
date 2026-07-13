@@ -9,7 +9,7 @@ The native asset is **Quantum Blockchain Coin (QBC)**. QBC is configured with 8 
 ```powershell
 git clone https://github.com/AhmedMohammed100/quantum-resistant-blockchain.git
 cd quantum-resistant-blockchain
-python -m unittest discover -s tests -v
+python -W error::ResourceWarning -m unittest discover -s tests -v
 python main.py
 ```
 
@@ -754,7 +754,7 @@ Consensus:
 ## Run Tests
 
 ```powershell
-python -m unittest discover -s tests -v
+python -W error::ResourceWarning -m unittest discover -s tests -v
 ```
 
 ## Roadmap
