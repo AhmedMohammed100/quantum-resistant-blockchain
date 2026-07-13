@@ -9,6 +9,13 @@ import time
 from .custody import WalletCustodyProvider, build_wallet_custody_provider, WalletCustodyConfig
 
 
+class _ClosingSQLiteConnection(sqlite3.Connection):
+    def __exit__(self, exc_type, exc_value, traceback) -> bool:
+        suppress = super().__exit__(exc_type, exc_value, traceback)
+        self.close()
+        return suppress
+
+
 class SQLiteWalletStateStore:
     _PROTECTED_MARKER = "__protected__"
 
@@ -27,7 +34,7 @@ class SQLiteWalletStateStore:
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.db_path, timeout=30.0)
+        connection = sqlite3.connect(self.db_path, timeout=30.0, factory=_ClosingSQLiteConnection)
         connection.row_factory = sqlite3.Row
         return connection
 

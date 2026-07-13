@@ -3555,11 +3555,14 @@ class NodeService:
                 "wal_sidecar_exists": False,
                 "shm_sidecar_exists": False,
             }
-        with sqlite3.connect(path) as connection:
+        connection = sqlite3.connect(path)
+        try:
             journal_mode = str(connection.execute("PRAGMA journal_mode").fetchone()[0]).lower()
             user_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
             schema_version = int(connection.execute("PRAGMA schema_version").fetchone()[0])
             integrity_check = str(connection.execute("PRAGMA quick_check").fetchone()[0]).lower()
+        finally:
+            connection.close()
         return {
             "path": str(path),
             "exists": True,

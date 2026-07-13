@@ -27,6 +27,17 @@ from qr_blockchain.verification import verify_transaction_inputs
 import qr_chain_classical_migration_backend_secp256k1 as secp_backend
 
 
+class _ClosingSQLiteConnection(sqlite3.Connection):
+    def __exit__(self, exc_type, exc_value, traceback) -> bool:
+        suppress = super().__exit__(exc_type, exc_value, traceback)
+        self.close()
+        return suppress
+
+
+def _connect_test_db(path: Path) -> sqlite3.Connection:
+    return sqlite3.connect(path, factory=_ClosingSQLiteConnection)
+
+
 def _secp256k1_sign(message: bytes, private_key: int, nonce: int = 7) -> bytes:
     z = int.from_bytes(hashlib.sha256(message).digest(), "big")
     point = secp_backend._point_mul(nonce, secp_backend._G)
@@ -1960,7 +1971,7 @@ class NodeServiceTests(unittest.TestCase):
         service.create_genesis_block({funding: 25})
         alice.create_transaction(service, bob.create_address(), amount=10, fee=1)
 
-        with sqlite3.connect(wallet_db) as connection:
+        with _connect_test_db(wallet_db) as connection:
             row = connection.execute(
                 """
                 SELECT key_state_json, key_state_blob, custody_backend
@@ -1985,7 +1996,7 @@ class NodeServiceTests(unittest.TestCase):
         address = provider.derive_address(keypair)
         legacy_json = provider.serialize_keypair(keypair)
 
-        with sqlite3.connect(wallet_db) as connection:
+        with _connect_test_db(wallet_db) as connection:
             connection.executescript(
                 """
                 CREATE TABLE wallet_keys (
@@ -2009,7 +2020,7 @@ class NodeServiceTests(unittest.TestCase):
         reloaded = Wallet("Alice", state_db_path=wallet_db)
         self.assertIn(address, reloaded.addresses())
 
-        with sqlite3.connect(wallet_db) as connection:
+        with _connect_test_db(wallet_db) as connection:
             row = connection.execute(
                 """
                 SELECT key_state_json, key_state_blob, custody_backend

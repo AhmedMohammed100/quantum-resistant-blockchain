@@ -8,6 +8,13 @@ import time
 from .models import Block, Transaction, TxOutput
 
 
+class _ClosingSQLiteConnection(sqlite3.Connection):
+    def __exit__(self, exc_type, exc_value, traceback) -> bool:
+        suppress = super().__exit__(exc_type, exc_value, traceback)
+        self.close()
+        return suppress
+
+
 def block_work(difficulty: int) -> int:
     return 16 ** max(difficulty, 0)
 
@@ -19,7 +26,7 @@ class SQLiteChainStore:
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.db_path)
+        connection = sqlite3.connect(self.db_path, factory=_ClosingSQLiteConnection)
         connection.row_factory = sqlite3.Row
         return connection
 
