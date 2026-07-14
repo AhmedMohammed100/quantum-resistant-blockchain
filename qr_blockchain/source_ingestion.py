@@ -223,12 +223,26 @@ def normalize_source_export_batch(payloads: list[dict[str, object]]) -> dict[str
     if not payloads:
         raise ValueError("Source export batch must include at least one payload.")
     items: list[dict[str, object]] = []
+    seen_classical_addresses: dict[str, int] = {}
     total_records = 0
     total_amount = 0
     for index, payload in enumerate(payloads):
         normalized = normalize_source_export(payload)
         bundle = normalized["bundle"]
         manifest = dict(normalized["ingestion_manifest"])
+        for record in normalized["normalized_records"]:
+            if not isinstance(record, dict):
+                continue
+            classical_address = str(record.get("classical_address", ""))
+            if not classical_address:
+                continue
+            if classical_address in seen_classical_addresses:
+                first_index = seen_classical_addresses[classical_address]
+                raise ValueError(
+                    "Source export batch contains duplicate classical_address "
+                    f"'{classical_address}' in items {first_index} and {index}."
+                )
+            seen_classical_addresses[classical_address] = index
         total_records += int(manifest["record_count"])
         total_amount += int(manifest["total_amount"])
         items.append(

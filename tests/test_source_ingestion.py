@@ -238,6 +238,45 @@ class SourceExportIngestionTests(unittest.TestCase):
         self.assertEqual(batch["batch_manifest"]["total_amount"], 15)
         self.assertEqual(len(batch["items"]), 2)
 
+    def test_batch_rejects_duplicate_classical_addresses_across_exports(self) -> None:
+        service = self.make_service()
+        public_key = self.secp_public_key(1)
+        source_address = secp_backend.derive_bitcoin_p2pkh_addresses(public_key)[0]
+
+        with self.assertRaisesRegex(ValueError, "duplicate classical_address"):
+            service.normalize_source_export_batch(
+                [
+                    {
+                        "source_network": "legacy-btc-mainnet",
+                        "snapshot_ref": "btc-export-duplicate-a",
+                        "generated_at": 254.0,
+                        "provider_id": "ecdsa_secp256k1_migration_v1",
+                        "source_address_format": "bitcoin_base58",
+                        "records": [
+                            {
+                                "classical_public_key": public_key,
+                                "source_address": source_address,
+                                "amount": 7,
+                            }
+                        ],
+                    },
+                    {
+                        "source_network": "legacy-btc-mainnet",
+                        "snapshot_ref": "btc-export-duplicate-b",
+                        "generated_at": 255.0,
+                        "provider_id": "ecdsa_secp256k1_migration_v1",
+                        "source_address_format": "bitcoin_base58",
+                        "records": [
+                            {
+                                "classical_public_key": public_key,
+                                "source_address": source_address,
+                                "amount": 8,
+                            }
+                        ],
+                    },
+                ]
+            )
+
     def test_builds_source_ingestion_runbook(self) -> None:
         service = self.make_service()
         public_key = self.secp_public_key()
