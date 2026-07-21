@@ -219,30 +219,68 @@ def normalize_source_export_to_snapshot(payload: dict[str, object]) -> Migration
     return normalize_source_export(payload)["bundle"]  # type: ignore[return-value]
 
 
+def _batch_record_conflicts(items: list[dict[str, object]]) -> list[dict[str, object]]:
+    conflicts: list[dict[str, object]] = []
+    seen_classical_addresses: dict[str, tuple[int, int]] = {}
+    seen_source_bindings: dict[tuple[str, str, str], tuple[int, int]] = {}
+    for item_index, item in enumerate(items):
+        normalized_records = item.get("normalized_records", [])
+        if not isinstance(normalized_records, list):
+            continue
+        for record_index, record in enumerate(normalized_records):
+            if not isinstance(record, dict):
+                continue
+            classical_address = str(record.get("classical_address", ""))
+            if classical_address:
+                if classical_address in seen_classical_addresses:
+                    first_item, first_record = seen_classical_addresses[classical_address]
+                    conflicts.append(
+                        {
+                            "kind": "duplicate_classical_address",
+                            "classical_address": classical_address,
+                            "first_item_index": first_item,
+                            "first_record_index": first_record,
+                            "second_item_index": item_index,
+                            "second_record_index": record_index,
+                        }
+                    )
+                else:
+                    seen_classical_addresses[classical_address] = (item_index, record_index)
+
+            source_network = str(record.get("source_network", ""))
+            source_address = str(record.get("source_address", ""))
+            source_address_format = str(record.get("source_address_format", ""))
+            if source_network and source_address and source_address_format:
+                source_key = (source_network, source_address, source_address_format)
+                if source_key in seen_source_bindings:
+                    first_item, first_record = seen_source_bindings[source_key]
+                    conflicts.append(
+                        {
+                            "kind": "duplicate_source_binding",
+                            "source_network": source_network,
+                            "source_address": source_address,
+                            "source_address_format": source_address_format,
+                            "first_item_index": first_item,
+                            "first_record_index": first_record,
+                            "second_item_index": item_index,
+                            "second_record_index": record_index,
+                        }
+                    )
+                else:
+                    seen_source_bindings[source_key] = (item_index, record_index)
+    return conflicts
+
+
 def normalize_source_export_batch(payloads: list[dict[str, object]]) -> dict[str, object]:
     if not payloads:
         raise ValueError("Source export batch must include at least one payload.")
     items: list[dict[str, object]] = []
-    seen_classical_addresses: dict[str, int] = {}
     total_records = 0
     total_amount = 0
     for index, payload in enumerate(payloads):
         normalized = normalize_source_export(payload)
         bundle = normalized["bundle"]
         manifest = dict(normalized["ingestion_manifest"])
-        for record in normalized["normalized_records"]:
-            if not isinstance(record, dict):
-                continue
-            classical_address = str(record.get("classical_address", ""))
-            if not classical_address:
-                continue
-            if classical_address in seen_classical_addresses:
-                first_index = seen_classical_addresses[classical_address]
-                raise ValueError(
-                    "Source export batch contains duplicate classical_address "
-                    f"'{classical_address}' in items {first_index} and {index}."
-                )
-            seen_classical_addresses[classical_address] = index
         total_records += int(manifest["record_count"])
         total_amount += int(manifest["total_amount"])
         items.append(
@@ -254,6 +292,20 @@ def normalize_source_export_batch(payloads: list[dict[str, object]]) -> dict[str
                 "normalized_records": normalized["normalized_records"],
             }
         )
+        conflicts = _batch_record_conflicts(items)
+        if conflicts:
+            conflict = conflicts[0]
+            if conflict["kind"] == "duplicate_classical_address":
+                raise ValueError(
+                    "Source export batch contains duplicate classical_address "
+                    f"'{conflict['classical_address']}' in items "
+                    f"{conflict['first_item_index']} and {conflict['second_item_index']}."
+                )
+            raise ValueError(
+                "Source export batch contains duplicate source binding "
+                f"'{conflict['source_network']}:{conflict['source_address_format']}:{conflict['source_address']}' "
+                f"in items {conflict['first_item_index']} and {conflict['second_item_index']}."
+            )
     batch_manifest = {
         "batch_version": 1,
         "item_count": len(items),
@@ -416,6 +468,76 @@ def validate_ingestion_manifest(normalized_payload: dict[str, object]) -> dict[s
         "snapshot_ref": bundle.snapshot_ref,
         "snapshot_manifest_hash": bundle.manifest_hash,
         "ingestion_manifest_hash": observed_manifest_hash,
+    }
+
+
+def validate_source_export_batch(normalized_batch: dict[str, object]) -> dict[str, object]:
+    batch_manifest = (
+        dict(normalized_batch.get("batch_manifest", {}))
+        if isinstance(normalized_batch.get("batch_manifest"), dict)
+        else {}
+    )
+    items = [
+        dict(item)
+        for item in normalized_batch.get("items", [])
+        if isinstance(item, dict)
+    ]
+    item_statuses = [validate_ingestion_manifest(item) for item in items]
+    item_manifest_hashes = [
+        str(dict(item.get("ingestion_manifest", {})).get("ingestion_manifest_hash", ""))
+        for item in items
+    ]
+    expected_manifest = {
+        "batch_version": 1,
+        "item_count": len(items),
+        "total_records": sum(
+            int(dict(item.get("ingestion_manifest", {})).get("record_count", 0))
+            for item in items
+        ),
+        "total_amount": sum(
+            int(dict(item.get("ingestion_manifest", {})).get("total_amount", 0))
+            for item in items
+        ),
+        "item_manifest_hashes": item_manifest_hashes,
+    }
+    observed_manifest_without_hash = dict(batch_manifest)
+    observed_batch_hash = str(observed_manifest_without_hash.pop("batch_hash", ""))
+    recomputed_observed_batch_hash = hashlib.sha256(
+        canonical_json(observed_manifest_without_hash).encode("utf-8")
+    ).hexdigest()
+    expected_batch_hash = hashlib.sha256(canonical_json(expected_manifest).encode("utf-8")).hexdigest()
+    conflicts = _batch_record_conflicts(items)
+    checks = [
+        {"name": "batch_manifest_present", "passed": bool(batch_manifest)},
+        {"name": "items_present", "passed": bool(items)},
+        {
+            "name": "all_item_manifests_valid",
+            "passed": bool(items) and all(bool(status["valid"]) for status in item_statuses),
+        },
+        {"name": "batch_version_matches", "passed": batch_manifest.get("batch_version") == 1},
+        {"name": "item_count_matches", "passed": batch_manifest.get("item_count") == expected_manifest["item_count"]},
+        {
+            "name": "total_records_matches",
+            "passed": batch_manifest.get("total_records") == expected_manifest["total_records"],
+        },
+        {
+            "name": "total_amount_matches",
+            "passed": batch_manifest.get("total_amount") == expected_manifest["total_amount"],
+        },
+        {
+            "name": "item_manifest_hashes_match",
+            "passed": batch_manifest.get("item_manifest_hashes") == expected_manifest["item_manifest_hashes"],
+        },
+        {"name": "batch_hash_matches", "passed": observed_batch_hash == recomputed_observed_batch_hash},
+        {"name": "no_duplicate_batch_records", "passed": not conflicts},
+    ]
+    return {
+        "valid": all(bool(item["passed"]) for item in checks),
+        "checks": checks,
+        "item_statuses": item_statuses,
+        "record_conflicts": conflicts,
+        "batch_hash": observed_batch_hash,
+        "expected_batch_hash": expected_batch_hash,
     }
 
 

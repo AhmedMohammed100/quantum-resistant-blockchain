@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import hashlib
 import json
 import shutil
 import unittest
@@ -237,6 +238,7 @@ class SourceExportIngestionTests(unittest.TestCase):
         self.assertEqual(batch["batch_manifest"]["total_records"], 2)
         self.assertEqual(batch["batch_manifest"]["total_amount"], 15)
         self.assertEqual(len(batch["items"]), 2)
+        self.assertTrue(service.source_export_batch_status(batch)["valid"])
 
     def test_batch_rejects_duplicate_classical_addresses_across_exports(self) -> None:
         service = self.make_service()
@@ -276,6 +278,107 @@ class SourceExportIngestionTests(unittest.TestCase):
                     },
                 ]
             )
+
+    def test_batch_rejects_duplicate_source_bindings_across_exports(self) -> None:
+        service = self.make_service()
+        first_classical_address = hashlib.sha256(b"first-claim").hexdigest()
+        second_classical_address = hashlib.sha256(b"second-claim").hexdigest()
+        shared_source_address = hashlib.sha256(b"shared-source").hexdigest()
+
+        with self.assertRaisesRegex(ValueError, "duplicate source binding"):
+            service.normalize_source_export_batch(
+                [
+                    {
+                        "source_network": "legacy-demo-ledger",
+                        "snapshot_ref": "demo-export-duplicate-source-a",
+                        "generated_at": 254.0,
+                        "provider_id": "classical_claim_demo_v1",
+                        "source_address_format": "demo_claim_address",
+                        "records": [
+                            {
+                                "classical_address": first_classical_address,
+                                "source_address": shared_source_address,
+                                "amount": 7,
+                            }
+                        ],
+                    },
+                    {
+                        "source_network": "legacy-demo-ledger",
+                        "snapshot_ref": "demo-export-duplicate-source-b",
+                        "generated_at": 255.0,
+                        "provider_id": "classical_claim_demo_v1",
+                        "source_address_format": "demo_claim_address",
+                        "records": [
+                            {
+                                "classical_address": second_classical_address,
+                                "source_address": shared_source_address,
+                                "amount": 8,
+                            }
+                        ],
+                    },
+                ]
+            )
+
+    def test_batch_status_rejects_tampered_manifest_and_records(self) -> None:
+        service = self.make_service()
+        first_key = self.secp_public_key(1)
+        second_key = self.secp_public_key(2)
+        batch = service.normalize_source_export_batch(
+            [
+                {
+                    "source_network": "legacy-btc-mainnet",
+                    "snapshot_ref": "btc-export-status-a",
+                    "generated_at": 254.0,
+                    "provider_id": "ecdsa_secp256k1_migration_v1",
+                    "source_address_format": "bitcoin_base58",
+                    "records": [
+                        {
+                            "classical_public_key": first_key,
+                            "source_address": secp_backend.derive_bitcoin_p2pkh_addresses(first_key)[0],
+                            "amount": 7,
+                        }
+                    ],
+                },
+                {
+                    "source_network": "legacy-btc-mainnet",
+                    "snapshot_ref": "btc-export-status-b",
+                    "generated_at": 255.0,
+                    "provider_id": "ecdsa_secp256k1_migration_v1",
+                    "source_address_format": "bitcoin_base58",
+                    "records": [
+                        {
+                            "classical_public_key": second_key,
+                            "source_address": secp_backend.derive_bitcoin_p2pkh_addresses(second_key)[0],
+                            "amount": 8,
+                        }
+                    ],
+                },
+            ]
+        )
+
+        tampered_manifest = json.loads(json.dumps(batch))
+        tampered_manifest["batch_manifest"]["total_amount"] = 999
+        manifest_status = service.source_export_batch_status(tampered_manifest)
+
+        self.assertFalse(manifest_status["valid"])
+        self.assertFalse(
+            next(check for check in manifest_status["checks"] if check["name"] == "total_amount_matches")["passed"]
+        )
+        self.assertFalse(
+            next(check for check in manifest_status["checks"] if check["name"] == "batch_hash_matches")["passed"]
+        )
+
+        tampered_records = json.loads(json.dumps(batch))
+        tampered_records["items"][1]["normalized_records"][0]["source_address"] = (
+            tampered_records["items"][0]["normalized_records"][0]["source_address"]
+        )
+        record_status = service.source_export_batch_status(tampered_records)
+
+        self.assertFalse(record_status["valid"])
+        self.assertFalse(
+            next(check for check in record_status["checks"] if check["name"] == "no_duplicate_batch_records")["passed"]
+        )
+        self.assertEqual(record_status["record_conflicts"][0]["kind"], "duplicate_source_binding")
 
     def test_builds_source_ingestion_runbook(self) -> None:
         service = self.make_service()

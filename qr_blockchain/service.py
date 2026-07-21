@@ -45,6 +45,7 @@ from .source_ingestion import (
     normalize_source_export_batch,
     validate_ingestion_approval,
     validate_ingestion_manifest,
+    validate_source_export_batch,
 )
 from .storage import SQLiteChainStore
 from .verification import verify_transaction_inputs
@@ -4388,6 +4389,9 @@ class NodeService:
 
     def normalize_source_export_batch(self, payloads: list[dict[str, object]]) -> dict[str, object]:
         return normalize_source_export_batch(payloads)
+
+    def source_export_batch_status(self, normalized_batch: dict[str, object]) -> dict[str, object]:
+        return validate_source_export_batch(normalized_batch)
 
     def source_ingestion_runbook(self, normalized_payload: dict[str, object]) -> dict[str, object]:
         return build_source_ingestion_runbook(normalized_payload)
