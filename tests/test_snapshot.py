@@ -53,6 +53,27 @@ class MigrationSnapshotTests(unittest.TestCase):
         self.assertEqual(first.manifest_hash, second.manifest_hash)
         self.assertEqual(first.entries_root(), second.entries_root())
 
+    def test_rejects_ambiguous_snapshot_refs(self) -> None:
+        for snapshot_ref in (
+            "Snapshot-Upper",
+            " snapshot-space",
+            "snapshot-space ",
+            "snapshot/ref",
+            "snapshot\\ref",
+            "snapshot..ref",
+            "x" * 97,
+        ):
+            with self.subTest(snapshot_ref=snapshot_ref):
+                with self.assertRaisesRegex(ValueError, "snapshot_ref"):
+                    validate_snapshot_bundle(
+                        MigrationSnapshotBundle(
+                            source_network="legacy-ledger",
+                            snapshot_ref=snapshot_ref,
+                            generated_at=100.0,
+                            entries=(MigrationSnapshotEntry(self.demo_address("addr-a"), "classical_claim_demo_v1", 5),),
+                        )
+                    )
+
     def test_imports_snapshot_and_exposes_snapshot_backed_sources(self) -> None:
         service = self.make_service()
         addr_a = self.demo_address("addr-a")

@@ -4434,17 +4434,76 @@ class NodeService:
             blockers.append("existing_sources_would_change")
         if reconciliation["summary"]["review_conflicts"]:
             blockers.append("review_conflicts")
+        idempotency_evidence = self._source_ingestion_idempotency_evidence(
+            reconciliation,
+            approval_status=approval_status,
+            approval_required=approval is not None,
+        )
         return {
             "ready": not blockers,
             "blockers": blockers,
             "manifest_status": manifest_status,
             "approval_status": approval_status,
             "reconciliation": reconciliation,
+            "idempotency_evidence": idempotency_evidence,
             "actions": {
                 "would_import": reconciliation["summary"]["would_add"],
                 "would_skip_unchanged": reconciliation["summary"]["unchanged"],
                 "would_block_changed": reconciliation["summary"]["changed"],
+                "safe_noop": idempotency_evidence["safe_noop"],
             },
+        }
+
+    def _source_ingestion_idempotency_evidence(
+        self,
+        reconciliation: dict[str, object],
+        *,
+        approval_status: dict[str, object],
+        approval_required: bool,
+    ) -> dict[str, object]:
+        summary = dict(reconciliation.get("summary", {}))
+        existing_snapshot = dict(reconciliation.get("existing_snapshot", {}))
+        manifest_matches = bool(reconciliation.get("manifest_matches"))
+        would_add = int(summary.get("would_add", 0))
+        changed = int(summary.get("changed", 0))
+        review_conflicts = int(summary.get("review_conflicts", 0))
+        local_missing = int(summary.get("local_missing_from_incoming", 0))
+        unchanged = int(summary.get("unchanged", 0))
+        approval_accepted = bool(approval_status.get("accepted"))
+        safe_noop = (
+            bool(existing_snapshot)
+            and manifest_matches
+            and would_add == 0
+            and changed == 0
+            and review_conflicts == 0
+            and local_missing == 0
+            and unchanged == int(reconciliation.get("incoming_entry_count", 0))
+            and (not approval_required or approval_accepted)
+        )
+        if safe_noop:
+            classification = "safe_noop"
+        elif changed or review_conflicts or local_missing:
+            classification = "blocked_or_needs_review"
+        elif would_add:
+            classification = "new_import"
+        else:
+            classification = "not_idempotent"
+        return {
+            "classification": classification,
+            "safe_noop": safe_noop,
+            "approval_required": approval_required,
+            "approval_accepted": approval_accepted,
+            "existing_snapshot_ref": str(existing_snapshot.get("snapshot_ref", "")),
+            "incoming_snapshot_ref": str(reconciliation.get("snapshot_ref", "")),
+            "manifest_matches": manifest_matches,
+            "existing_manifest_hash": str(existing_snapshot.get("manifest_hash", "")),
+            "incoming_manifest_hash": str(reconciliation.get("incoming_manifest_hash", "")),
+            "incoming_entries_root": str(reconciliation.get("incoming_entries_root", "")),
+            "unchanged_source_count": unchanged,
+            "would_add": would_add,
+            "would_block_changed": changed,
+            "review_conflicts": review_conflicts,
+            "local_missing_from_incoming": local_missing,
         }
 
     def import_approved_source_ingestion(
@@ -4659,16 +4718,19 @@ class NodeService:
             for address, item in sorted(existing_sources.items())
             if item["snapshot_ref"] == bundle.snapshot_ref and address not in incoming_by_address
         ]
+        finalized = bundle.finalized()
         existing_snapshot = existing_snapshots.get(bundle.snapshot_ref)
         manifest_matches = (
             existing_snapshot is not None
-            and existing_snapshot.get("manifest_hash") == bundle.finalized().manifest_hash
-            and existing_snapshot.get("entries_root") == bundle.finalized().entries_root()
+            and existing_snapshot.get("manifest_hash") == finalized.manifest_hash
+            and existing_snapshot.get("entries_root") == finalized.entries_root()
         )
 
         return {
             "source_network": bundle.source_network,
             "snapshot_ref": bundle.snapshot_ref,
+            "incoming_manifest_hash": finalized.manifest_hash,
+            "incoming_entries_root": finalized.entries_root(),
             "incoming_entry_count": len(bundle.entries),
             "has_signed_envelope": envelope is not None,
             "existing_snapshot": existing_snapshot or {},

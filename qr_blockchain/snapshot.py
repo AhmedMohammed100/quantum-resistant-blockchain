@@ -3,11 +3,34 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
+import re
 import time
+
+
+SNAPSHOT_REF_MAX_LENGTH = 96
+_SNAPSHOT_REF_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,95}$")
 
 
 def canonical_json(data: object) -> str:
     return json.dumps(data, sort_keys=True, separators=(",", ":"))
+
+
+def validate_snapshot_ref(snapshot_ref: str) -> str:
+    if not snapshot_ref:
+        raise ValueError("Migration snapshot snapshot_ref is required.")
+    if len(snapshot_ref) > SNAPSHOT_REF_MAX_LENGTH:
+        raise ValueError(f"Migration snapshot snapshot_ref must be at most {SNAPSHOT_REF_MAX_LENGTH} characters.")
+    if snapshot_ref != snapshot_ref.strip():
+        raise ValueError("Migration snapshot snapshot_ref must not contain surrounding whitespace.")
+    if snapshot_ref.lower() != snapshot_ref:
+        raise ValueError("Migration snapshot snapshot_ref must be lowercase.")
+    if not _SNAPSHOT_REF_PATTERN.fullmatch(snapshot_ref):
+        raise ValueError(
+            "Migration snapshot snapshot_ref must use only lowercase letters, numbers, '.', '_', or '-'."
+        )
+    if ".." in snapshot_ref:
+        raise ValueError("Migration snapshot snapshot_ref must not contain '..'.")
+    return snapshot_ref
 
 
 @dataclass(frozen=True)
@@ -149,8 +172,7 @@ def snapshot_manifest_claims(bundle: MigrationSnapshotBundle) -> dict[str, objec
 def validate_snapshot_bundle(bundle: MigrationSnapshotBundle) -> MigrationSnapshotBundle:
     if not bundle.source_network:
         raise ValueError("Migration snapshot source_network is required.")
-    if not bundle.snapshot_ref:
-        raise ValueError("Migration snapshot snapshot_ref is required.")
+    validate_snapshot_ref(bundle.snapshot_ref)
     if not bundle.entries:
         raise ValueError("Migration snapshot must contain at least one entry.")
 

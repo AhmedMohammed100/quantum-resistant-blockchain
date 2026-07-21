@@ -442,6 +442,19 @@ class SourceExportIngestionTests(unittest.TestCase):
         self.assertEqual(result["rollback_evidence"]["status_reversal"]["status"], "quarantined")
         self.assertEqual(result["post_import_audit_report"]["source_count"], 1)
 
+        reimport_plan = service.source_ingestion_import_plan(normalized, approval=approval)
+
+        self.assertTrue(reimport_plan["ready"])
+        self.assertEqual(reimport_plan["idempotency_evidence"]["classification"], "safe_noop")
+        self.assertTrue(reimport_plan["idempotency_evidence"]["safe_noop"])
+        self.assertEqual(reimport_plan["actions"]["would_import"], 0)
+        self.assertEqual(reimport_plan["actions"]["would_skip_unchanged"], 1)
+        self.assertTrue(reimport_plan["actions"]["safe_noop"])
+        self.assertEqual(
+            reimport_plan["idempotency_evidence"]["incoming_manifest_hash"],
+            result["imported"]["manifest_hash"],
+        )
+
     def test_import_plan_blocks_existing_source_changes(self) -> None:
         service = self.make_service()
         public_key = self.secp_public_key()
