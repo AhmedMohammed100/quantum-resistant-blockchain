@@ -2,6 +2,9 @@
 
 Quantum-Resistant Blockchain is a post-quantum-oriented blockchain node and protocol workbench for moving value from classical cryptographic systems into post-quantum-secure addresses. It combines a native capped currency, post-quantum signature provider boundaries, authenticated peer networking, persistent chain state, auditable migration snapshots, and safety tooling for stateful signing keys.
 
+The consensus-object definition for the current protocol milestone is published
+in [QBC Protocol Freeze v0.1](protocol.md).
+
 The native asset is **Quantum Blockchain Coin (QBC)**. QBC is configured with 8 decimals, a fixed 500,000,000 QBC supply cap, capped migration issuance, and height-based block rewards.
 
 ## Quick Start
