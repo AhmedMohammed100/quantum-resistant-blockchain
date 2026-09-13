@@ -683,7 +683,7 @@ class NodeService:
                 projected[(transaction.tx_id, output_index)] = output
         return self.state_root_for_utxos(projected)
 
-        @staticmethod
+    @staticmethod
     def _state_root_utxos(parent_utxos: dict[tuple[str, int], TxOutput], block: Block) -> dict[tuple[str, int], TxOutput]:
         """Return the post-block UTXO view without consulting persistent state."""
         projected = dict(parent_utxos)
