@@ -32,7 +32,7 @@ def _verify_one_input(
     signing_payload: bytes,
     task: InputVerificationTask,
 ) -> tuple[bool, str]:
-        try:
+    try:
         provider = get_signature_verifier(signature_scheme)
         if provider.address_from_public_key(task.public_key) != task.address:
             return False, f"input {task.input_index} public key does not match referenced address"
