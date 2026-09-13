@@ -32,11 +32,16 @@ def _verify_one_input(
     signing_payload: bytes,
     task: InputVerificationTask,
 ) -> tuple[bool, str]:
-    provider = get_signature_verifier(signature_scheme)
-    if provider.address_from_public_key(task.public_key) != task.address:
-        return False, f"input {task.input_index} public key does not match referenced address"
-    if not provider.verify(signing_payload, task.signature, task.public_key):
-        return False, f"input {task.input_index} quantum signature verification failed"
+        try:
+        provider = get_signature_verifier(signature_scheme)
+        if provider.address_from_public_key(task.public_key) != task.address:
+            return False, f"input {task.input_index} public key does not match referenced address"
+        if not provider.verify(signing_payload, task.signature, task.public_key):
+            return False, f"input {task.input_index} quantum signature verification failed"
+    except (TypeError, ValueError, KeyError) as error:
+        # Malformed provider payloads are invalid inputs, never a reason to
+        # abort validation of a multi-input transaction.
+        return False, f"input {task.input_index} signature payload is malformed: {error}"
     return True, ""
 
 
