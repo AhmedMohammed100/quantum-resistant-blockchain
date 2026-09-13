@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import importlib.metadata as importlib_metadata
 import json
+import math
 import os
 from collections import Counter
 from pathlib import Path
@@ -126,6 +127,9 @@ class NodeService:
         )
         block.state_root = self._state_root_after_block({}, block)
         block.mine()
+        # Creation must pass the same consensus checks used for an imported
+        # genesis block. Do not let the local bootstrap path bypass validation.
+        self.validate_block(block)
         self.store.store_block(block)
         self.store.apply_best_chain(block.block_hash)
         return block
@@ -186,9 +190,13 @@ class NodeService:
         latest = self.store.latest_block()
         if block.chain_id != self.config.chain_id:
             raise ValueError("Block belongs to a different chain.")
+            self._validate_block_timestamp(block)
         if block.compute_hash() != block.block_hash:
             raise ValueError("Block hash mismatch.")
-        if not block.block_hash.startswith("0" * block.difficulty):
+            expected_difficulty = 1 if block.index == 0 else self.config.difficulty
+        if block.difficulty != expected_difficulty:
+            raise ValueError("Block difficulty does not match the configured consensus difficulty.")
+        if not block.block_hash.startswith("0" * expected_difficulty):
             raise ValueError("Block does not satisfy proof-of-work difficulty.")
         if block.version < 2:
             raise ValueError("Unsupported block version.")
@@ -203,12 +211,25 @@ class NodeService:
                 raise ValueError("Genesis block already exists.")
             if block.previous_hash != "0" * 64:
                 raise ValueError("Genesis block previous hash mismatch.")
-            if any(transaction.chain_id != self.config.chain_id for transaction in block.transactions):
-                raise ValueError("Genesis block contains a transaction for a different chain.")
-            for transaction in block.transactions:
-                self._validate_transaction_against_view(transaction, {}, effective_height=0)
+            if block.timestamp != 0.0 or block.miner != "genesis":
+                raise ValueError("Genesis block fields are invalid.")
+            if len(block.transactions) != 1:
+                raise ValueError("Genesis block must contain exactly one allocation transaction.")
+            genesis_transaction = block.transactions[0]
+            if genesis_transaction.kind != "transfer" or genesis_transaction.inputs or genesis_transaction.fee != 0:
+                raise ValueError("Genesis allocation transaction must be inputless and fee-free.")
+            if genesis_transaction.timestamp != 0.0:
+                raise ValueError("Genesis allocation transaction timestamp is invalid.")
+            self._validate_transaction_against_view(
+                genesis_transaction,
+                {},
+                effective_height=0,
+                allow_inputless_transfer=True,
+                max_timestamp=block.timestamp,
+            )
             if block.version >= 3 and block.state_root != self._state_root_after_block({}, block):
                 raise ValueError("Block state root mismatch.")
+                self._validate_supply_invariant([block], self._state_root_utxos({}, block))
             return
 
         parent_row = self.store.block_row(block.previous_hash)
@@ -218,8 +239,21 @@ class NodeService:
         if block.index != parent_height + 1:
             raise ValueError("Unexpected block height.")
 
-        if block.transactions[0].inputs:
-            raise ValueError("First block transaction must be the reward transaction.")
+        parent = self.store.block_by_hash(block.previous_hash)
+        if parent is None:
+            raise ValueError("Block parent is unavailable.")
+        if block.timestamp <= parent.timestamp:
+            raise ValueError("Block timestamp must be greater than its parent timestamp.")
+            
+        reward_transaction = block.transactions[0]
+        if (
+            reward_transaction.kind != "transfer"
+            or reward_transaction.inputs
+            or reward_transaction.fee != 0
+            or len(reward_transaction.outputs) != 1
+            or reward_transaction.outputs[0].recipient != block.miner
+        ):
+            raise ValueError("First block transaction must be a fee-free reward to the block miner.")
 
         utxo_view = self.store.utxos_for_head(block.previous_hash)
         utxo_metadata = self._utxo_origin_metadata_for_head(block.previous_hash)
@@ -237,6 +271,8 @@ class NodeService:
                 effective_height=block.index,
                 claimed_classical_addresses=claimed_view | claimed_in_block,
                 utxo_metadata=utxo_metadata,
+                allow_inputless_transfer=index == 0,
+                max_timestamp=block.timestamp,
             )
             if index == 0:
                 for output_index, output in enumerate(transaction.outputs):
@@ -281,14 +317,16 @@ class NodeService:
                     "coinbase": False,
                 }
 
-        reward_transaction = block.transactions[0]
+        
         expected_reward = self.currency_policy().subsidy_at_height(block.index) + fee_total
         actual_reward = sum(output.amount for output in reward_transaction.outputs)
         if actual_reward != expected_reward:
             raise ValueError("Reward transaction amount is invalid.")
         if block.version >= 3 and block.state_root != self.state_root_for_utxos(utxo_view):
             raise ValueError("Block state root mismatch.")
-        self._validate_supply_limits(self._supply_for_blocks([*parent_path, block]))
+        candidate_blocks = [*parent_path, block]
+        self._validate_supply_limits(self._supply_for_blocks(candidate_blocks))
+        self._validate_supply_invariant(candidate_blocks, utxo_view)
 
     def sync_with_peer(self, peer_url: str) -> int:
         normalized = normalize_peer_url(peer_url)
@@ -645,6 +683,36 @@ class NodeService:
                 projected[(transaction.tx_id, output_index)] = output
         return self.state_root_for_utxos(projected)
 
+        @staticmethod
+    def _state_root_utxos(parent_utxos: dict[tuple[str, int], TxOutput], block: Block) -> dict[tuple[str, int], TxOutput]:
+        """Return the post-block UTXO view without consulting persistent state."""
+        projected = dict(parent_utxos)
+        for transaction in block.transactions:
+            for tx_input in transaction.inputs:
+                projected.pop((tx_input.prev_tx_id, tx_input.output_index), None)
+            for output_index, output in enumerate(transaction.outputs):
+                projected[(transaction.tx_id, output_index)] = output
+        return projected
+
+    def _validate_block_timestamp(self, block: Block) -> None:
+        if isinstance(block.timestamp, bool) or not isinstance(block.timestamp, (int, float)):
+            raise ValueError("Block timestamp is invalid.")
+        if not math.isfinite(block.timestamp) or block.timestamp < 0:
+            raise ValueError("Block timestamp is invalid.")
+        if block.index != 0 and block.timestamp > time.time() + self.config.auth_time_skew_seconds:
+            raise ValueError("Block timestamp is too far in the future.")
+
+    def _validate_supply_invariant(
+        self,
+        blocks: list[Block],
+        utxos: dict[tuple[str, int], TxOutput],
+    ) -> None:
+        """Independently reconcile issued supply with the candidate UTXO set."""
+        issued_supply = self._supply_for_blocks(blocks)["theoretical_supply"]
+        unspent_supply = sum(output.amount for output in utxos.values())
+        if unspent_supply != issued_supply:
+            raise ValueError("UTXO supply does not match independently calculated issued supply.")
+            
     def state_root_policy(self) -> dict[str, object]:
         return {
             "activation_height": self.config.state_root_activation_height,
@@ -2736,6 +2804,8 @@ class NodeService:
         ]
         recovery_count = int(self.wallet_state_store.reservation_status_counts().get("requires_recovery", 0))
         supply = self.supply_snapshot()
+        replayed_unspent_supply = sum(output.amount for output in projected_utxos.values())
+        independently_issued_supply = int(self._supply_for_blocks(canonical_blocks)["theoretical_supply"])
         checks = [
             {
                 "name": "canonical_utxo_index_matches_replay",
@@ -2761,6 +2831,11 @@ class NodeService:
                 "name": "supply_caps_intact",
                 "passed": bool(supply["within_max_money"]),
                 "detail": str(supply["theoretical_supply"]),
+            },
+            {
+                "name": "independent_supply_invariant_matches_utxo_replay",
+                "passed": replayed_unspent_supply == independently_issued_supply,
+                "detail": f"issued={independently_issued_supply}, replayed_unspent={replayed_unspent_supply}",
             },
             {
                 "name": "stateful_signer_recovery_clear",
@@ -5188,6 +5263,8 @@ class NodeService:
         effective_height: int | None = None,
         claimed_classical_addresses: set[str] | None = None,
         utxo_metadata: dict[tuple[str, int], dict[str, object]] | None = None,
+        allow_inputless_transfer: bool = False,
+        max_timestamp: float | None = None,
     ) -> None:
         if not transaction.tx_id:
             transaction.finalize()
@@ -5198,6 +5275,13 @@ class NodeService:
             raise ValueError("Transaction belongs to a different chain.")
         if transaction.kind not in {"transfer", "migration_claim"}:
             raise ValueError("Unsupported transaction kind.")
+            if isinstance(transaction.timestamp, bool) or not isinstance(transaction.timestamp, (int, float)):
+            raise ValueError("Transaction timestamp is invalid.")
+        if not math.isfinite(transaction.timestamp) or transaction.timestamp < 0:
+            raise ValueError("Transaction timestamp is invalid.")
+        timestamp_limit = time.time() + self.config.auth_time_skew_seconds if max_timestamp is None else max_timestamp
+        if transaction.timestamp > timestamp_limit:
+            raise ValueError("Transaction timestamp is too far in the future.")
         if not transaction.outputs:
             raise ValueError("Transaction must include at least one output.")
         if any(output.amount <= 0 for output in transaction.outputs):
@@ -5214,6 +5298,10 @@ class NodeService:
             return
 
         if not transaction.inputs:
+            if not allow_inputless_transfer:
+                raise ValueError("Transfer transactions must include at least one input.")
+            if transaction.fee != 0:
+                raise ValueError("Inputless reward transactions must be fee-free.")
             return
 
         verification = verify_transaction_inputs(transaction, utxo_view)
@@ -5571,6 +5659,13 @@ class NodeService:
         effective_height: int,
         claimed_classical_addresses: set[str] | None = None,
     ) -> None:
+                # These are consensus rules, not merely mempool admission policy: an
+        # imported block must not be able to smuggle a fee-bearing or UTXO-
+        # spending migration claim past the relay path.
+        if transaction.inputs:
+            raise ValueError("Migration claim transactions cannot include UTXO inputs.")
+        if transaction.fee != 0:
+            raise ValueError("Migration claim transactions cannot charge a fee.")
         classical_address = str(transaction.metadata.get("classical_address", ""))
         provider_id = str(transaction.metadata.get("classical_provider_id", ""))
         source_network = str(transaction.metadata.get("source_network", ""))
