@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+import time
 from pathlib import Path
 import shutil
 import unittest
@@ -213,7 +214,172 @@ class AdversarialAndPropertyTests(unittest.TestCase):
                 "passed"
             ]
         )
+        self.assertTrue(
+            next(
+                check
+                for check in invariants["checks"]
+                if check["name"] == "independent_supply_invariant_matches_utxo_replay"
+            )["passed"]
+        )
 
+    def test_consensus_rejects_inputless_transfer_mint_and_wrong_difficulty(self) -> None:
+        service = self.make_service("inputless-mint")
+        miner = Wallet("Miner")
+        service.create_genesis_block({"bootstrap": 10})
+        parent = service.get_block(0)
+        self.assertIsNotNone(parent)
+
+        reward = Transaction(
+            inputs=[],
+            outputs=[TxOutput(recipient=miner.create_address(), amount=10)],
+            chain_id=service.config.chain_id,
+            signature_scheme=service.config.default_signature_provider,
+            timestamp=1.0,
+        )
+        reward.finalize()
+        minted = Transaction(
+            inputs=[],
+            outputs=[TxOutput(recipient="attacker", amount=1_000_000)],
+            chain_id=service.config.chain_id,
+            signature_scheme=service.config.default_signature_provider,
+            timestamp=1.0,
+        )
+        minted.finalize()
+        block = Block(
+            index=1,
+            previous_hash=parent.block_hash,
+            transactions=[reward, minted],
+            miner=reward.outputs[0].recipient,
+            difficulty=service.config.difficulty,
+            chain_id=service.config.chain_id,
+            version=3,
+            timestamp=2.0,
+        )
+        block.state_root = service._state_root_after_block(service.store.all_utxos(), block)
+        block.mine()
+
+        with self.assertRaisesRegex(ValueError, "must include at least one input"):
+            service.import_block(block)
+
+        block.transactions = [reward]
+        block.difficulty = 0
+        block.state_root = service._state_root_after_block(service.store.all_utxos(), block)
+        block.mine()
+        with self.assertRaisesRegex(ValueError, "configured consensus difficulty"):
+            service.import_block(block)
+
+        block.difficulty = service.config.difficulty
+        reward.fee = 1
+        reward.finalize()
+        block.state_root = service._state_root_after_block(service.store.all_utxos(), block)
+        block.mine()
+        with self.assertRaisesRegex(ValueError, "fee-free reward"):
+            service.import_block(block)
+
+    def test_consensus_rejects_invalid_timestamp_genesis_and_malformed_second_signature(self) -> None:
+        service = self.make_service("consensus-boundaries")
+        alice = Wallet("Alice")
+        bob = Wallet("Bob")
+        first = alice.create_address()
+        second = alice.create_address()
+        service.create_genesis_block({first: 10, second: 10})
+
+        transaction = alice.create_transaction(service, bob.create_address(), amount=15, fee=1)
+        self.assertEqual(len(transaction.inputs), 2)
+        transaction.inputs[1].signature = {"malformed": True}
+        transaction.finalize()
+        with self.assertRaisesRegex(ValueError, "signature"):
+            service.submit_transaction(transaction)
+
+        parent = service.get_block(0)
+        self.assertIsNotNone(parent)
+        reward = Transaction(
+            inputs=[],
+            outputs=[TxOutput(recipient="miner", amount=10)],
+            chain_id=service.config.chain_id,
+            signature_scheme=service.config.default_signature_provider,
+            timestamp=0.0,
+        )
+        reward.finalize()
+        stale = Block(
+            index=1,
+            previous_hash=parent.block_hash,
+            transactions=[reward],
+            miner="miner",
+            difficulty=service.config.difficulty,
+            chain_id=service.config.chain_id,
+            version=3,
+            timestamp=0.0,
+        )
+        stale.state_root = service._state_root_after_block(service.store.all_utxos(), stale)
+        stale.mine()
+        with self.assertRaisesRegex(ValueError, "greater than its parent"):
+            service.import_block(stale)
+
+        future = Block(
+            index=1,
+            previous_hash=parent.block_hash,
+            transactions=[reward],
+            miner="miner",
+            difficulty=service.config.difficulty,
+            chain_id=service.config.chain_id,
+            version=3,
+            timestamp=time.time() + service.config.auth_time_skew_seconds + 1,
+        )
+        future.state_root = service._state_root_after_block(service.store.all_utxos(), future)
+        future.mine()
+        with self.assertRaisesRegex(ValueError, "too far in the future"):
+            service.import_block(future)
+
+        fresh_service = self.make_service("invalid-genesis")
+        allocation = Transaction(
+            inputs=[], outputs=[TxOutput(recipient="one", amount=1)], timestamp=0.0
+        )
+        allocation.finalize()
+        duplicate = Transaction(
+            inputs=[], outputs=[TxOutput(recipient="two", amount=1)], timestamp=0.0
+        )
+        duplicate.finalize()
+        invalid_genesis = Block(
+            index=0,
+            previous_hash="0" * 64,
+            transactions=[allocation, duplicate],
+            miner="genesis",
+            difficulty=1,
+            version=3,
+            timestamp=0.0,
+        )
+        invalid_genesis.state_root = fresh_service._state_root_after_block({}, invalid_genesis)
+        invalid_genesis.mine()
+        with self.assertRaisesRegex(ValueError, "exactly one allocation"):
+            fresh_service.import_block(invalid_genesis)
+
+    def test_migration_claim_input_and_fee_rules_are_enforced_outside_mempool(self) -> None:
+        service = self.make_service("migration-consensus")
+        with_input = Transaction(
+            inputs=[TxInput(prev_tx_id="missing", output_index=0)],
+            outputs=[TxOutput(recipient="pq-destination", amount=1)],
+            kind="migration_claim",
+            chain_id=service.config.chain_id,
+            fee=0,
+            timestamp=1.0,
+        )
+        with_input.finalize()
+        with self.assertRaisesRegex(ValueError, "cannot include UTXO inputs"):
+            service._validate_transaction_against_view(with_input, {}, effective_height=1)
+
+        with_fee = Transaction(
+            inputs=[],
+            outputs=[TxOutput(recipient="pq-destination", amount=1)],
+            kind="migration_claim",
+            chain_id=service.config.chain_id,
+            fee=1,
+            timestamp=1.0,
+        )
+        with_fee.finalize()
+        with self.assertRaisesRegex(ValueError, "cannot charge a fee"):
+            service._validate_transaction_against_view(with_fee, {}, effective_height=1)
+            
     def test_security_invariant_report_flags_pending_signer_recovery(self) -> None:
         service = self.make_service("recovery-invariant")
         alice = Wallet(
