@@ -193,7 +193,9 @@ class NodeService:
             self._validate_block_timestamp(block)
         if block.compute_hash() != block.block_hash:
             raise ValueError("Block hash mismatch.")
+            # 1. Define the variable first
             expected_difficulty = 1 if block.index == 0 else self.config.difficulty
+            # 2. Then check the difficulty validation
         if block.difficulty != expected_difficulty:
             raise ValueError("Block difficulty does not match the configured consensus difficulty.")
         if not block.block_hash.startswith("0" * expected_difficulty):
