@@ -5275,7 +5275,7 @@ class NodeService:
             raise ValueError("Transaction belongs to a different chain.")
         if transaction.kind not in {"transfer", "migration_claim"}:
             raise ValueError("Unsupported transaction kind.")
-            if isinstance(transaction.timestamp, bool) or not isinstance(transaction.timestamp, (int, float)):
+        if isinstance(transaction.timestamp, bool) or not isinstance(transaction.timestamp, (int, float)):
             raise ValueError("Transaction timestamp is invalid.")
         if not math.isfinite(transaction.timestamp) or transaction.timestamp < 0:
             raise ValueError("Transaction timestamp is invalid.")
