@@ -116,7 +116,9 @@ creates one UTXO at `(tx_id, its zero-based array position)`.  `recipient` is
 an address and `amount` is a positive integer number of quarks.  `fee` is a
 non-negative integer.  Defined transaction kinds are:
 
-* `transfer` — spends referenced UTXOs and creates one or more new UTXOs.
+* `transfer` — spends one or more referenced UTXOs and creates one or more new
+  UTXOs.  It MUST NOT be inputless except for the genesis allocation and the
+  first (reward) transaction in a non-genesis block.
 * `migration_claim` — creates exactly one post-quantum destination output from
   an approved classical-source claim; it has no UTXO inputs and has zero fee.
 
@@ -231,13 +233,15 @@ A consensus validator processes a transaction as follows:
 1. Recompute the transaction ID and require equality with `tx_id`.
 2. Require the configured `chain_id`, a defined kind, at least one output,
    strictly positive output amounts, and a non-negative fee.
-3. For every `transfer` input, require its referenced UTXO to exist and each
-   outpoint to occur at most once within the transaction.  Derive each input
-   address from its public key and verify its signature as §6 requires.
-4. When a `transfer` has inputs, require `sum(outputs) + fee <=
-   sum(referenced inputs)`.  Inputs may not spend a coinbase output before its
-   configured maturity, or a migration output before its configured
-   escrow/finality conditions are satisfied.
+3. Require every `transfer` to have at least one input, except the genesis
+   allocation and the first transaction of a non-genesis block.  For every
+   input, require its referenced UTXO to exist and each outpoint to occur at
+   most once within the transaction.  Derive each input address from its public
+   key and verify its signature as §6 requires.
+4. Require `sum(outputs) + fee <= sum(referenced inputs)` for every ordinary
+   transfer.  Inputs may not spend a coinbase output before its configured
+   maturity, or a migration output before its configured escrow/finality
+   conditions are satisfied.
 5. For `migration_claim`, require its no-input, one-output, zero-fee form and
    validate the approved source binding, provider, snapshot, claim window,
    conversion ratio/caps, destination attestation, and classical-address
@@ -252,12 +256,16 @@ MUST NOT cause a node to reinterpret a valid block as having a different hash.
 
 For a candidate block, a validator MUST:
 
-1. Check the chain ID, supported version, block hash, and proof-of-work target.
+1. Check the chain ID, supported version, block hash, timestamp, and the exact
+   configured proof-of-work difficulty.  Non-genesis timestamps must be greater
+   than their parent's timestamp and may not exceed the configured future-skew
+   allowance.
 2. Require at least one transaction and reject a duplicate stored block.
 3. For genesis, require index zero, the all-zero previous hash, and
    chain-matching transactions.  No second genesis block is valid.
 4. For a non-genesis block, require a known parent, contiguous height, and a
-   first transaction with no inputs.
+   first transaction that is a single-output, fee-free, inputless `transfer`
+   paying the block's `miner` address.
 5. Starting from the parent's UTXO view, validate transactions in array order.
    The first transaction creates reward UTXOs.  Each later normal transaction
    consumes its inputs and creates its outputs; a UTXO may not be consumed
