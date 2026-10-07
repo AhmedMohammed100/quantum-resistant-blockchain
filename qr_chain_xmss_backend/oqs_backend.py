@@ -324,11 +324,14 @@ def serialize_keypair(keypair: object) -> object:
 def deserialize_keypair(payload: object) -> OQSXMSSKeyPair:
     if not isinstance(payload, dict):
         raise ValueError("OQS-backed XMSS key payload must be an object.")
+    signatures_used = int(payload.get("signatures_used", 0))
+    if signatures_used < 0:
+        raise ValueError("OQS-backed XMSS key payload has an invalid signatures_used value.")
     return OQSXMSSKeyPair(
         mechanism=str(payload["mechanism"]),
         public_key_hex=str(payload["public_key_hex"]),
         secret_key_hex=str(payload["secret_key_hex"]),
-        signatures_used=int(payload.get("signatures_used", 0)),
+        signatures_used=signatures_used,
     )
 
 
@@ -343,6 +346,9 @@ def sign_with_reservation(keypair: object, message: bytes, reservation: object) 
         raise ValueError("Invalid keypair for OQS-backed XMSS backend.")
     if not isinstance(reservation, dict) or "reservation_id" not in reservation:
         raise ValueError("OQS-backed XMSS signing requires a reservation token.")
+    reservation_id = int(reservation["reservation_id"])
+    if reservation_id <= 0 or reservation_id != keypair.signatures_used + 1:
+        raise ValueError("OQS-backed XMSS reservation is stale or out of sequence.")
 
     oqs_module = _load_oqs()
     _ensure_mechanism_supported(oqs_module, keypair.mechanism)
