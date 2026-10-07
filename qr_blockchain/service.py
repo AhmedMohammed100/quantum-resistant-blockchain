@@ -128,7 +128,7 @@ class NodeService:
         block.state_root = self._state_root_after_block({}, block)
         block.mine()
         # Creation must pass the same consensus checks used for an imported
-        # genesis block. Do not let the local bootstrap path bypass validation.
+        # genesis block.  Do not let the local bootstrap path bypass validation.
         self.validate_block(block)
         self.store.store_block(block)
         self.store.apply_best_chain(block.block_hash)
@@ -190,12 +190,10 @@ class NodeService:
         latest = self.store.latest_block()
         if block.chain_id != self.config.chain_id:
             raise ValueError("Block belongs to a different chain.")
-            self._validate_block_timestamp(block)
+        self._validate_block_timestamp(block)
         if block.compute_hash() != block.block_hash:
             raise ValueError("Block hash mismatch.")
-            # 1. Define the variable first
-            expected_difficulty = 1 if block.index == 0 else self.config.difficulty
-            # 2. Then check the difficulty validation
+        expected_difficulty = 1 if block.index == 0 else self.config.difficulty
         if block.difficulty != expected_difficulty:
             raise ValueError("Block difficulty does not match the configured consensus difficulty.")
         if not block.block_hash.startswith("0" * expected_difficulty):
@@ -231,7 +229,7 @@ class NodeService:
             )
             if block.version >= 3 and block.state_root != self._state_root_after_block({}, block):
                 raise ValueError("Block state root mismatch.")
-                self._validate_supply_invariant([block], self._state_root_utxos({}, block))
+            self._validate_supply_invariant([block], self._state_root_utxos({}, block))
             return
 
         parent_row = self.store.block_row(block.previous_hash)
@@ -240,13 +238,12 @@ class NodeService:
         parent_height = int(parent_row["height"])
         if block.index != parent_height + 1:
             raise ValueError("Unexpected block height.")
-
         parent = self.store.block_by_hash(block.previous_hash)
         if parent is None:
             raise ValueError("Block parent is unavailable.")
         if block.timestamp <= parent.timestamp:
             raise ValueError("Block timestamp must be greater than its parent timestamp.")
-            
+
         reward_transaction = block.transactions[0]
         if (
             reward_transaction.kind != "transfer"
@@ -319,7 +316,6 @@ class NodeService:
                     "coinbase": False,
                 }
 
-        
         expected_reward = self.currency_policy().subsidy_at_height(block.index) + fee_total
         actual_reward = sum(output.amount for output in reward_transaction.outputs)
         if actual_reward != expected_reward:
@@ -714,7 +710,7 @@ class NodeService:
         unspent_supply = sum(output.amount for output in utxos.values())
         if unspent_supply != issued_supply:
             raise ValueError("UTXO supply does not match independently calculated issued supply.")
-            
+
     def state_root_policy(self) -> dict[str, object]:
         return {
             "activation_height": self.config.state_root_activation_height,
@@ -5661,7 +5657,7 @@ class NodeService:
         effective_height: int,
         claimed_classical_addresses: set[str] | None = None,
     ) -> None:
-                # These are consensus rules, not merely mempool admission policy: an
+        # These are consensus rules, not merely mempool admission policy: an
         # imported block must not be able to smuggle a fee-bearing or UTXO-
         # spending migration claim past the relay path.
         if transaction.inputs:
