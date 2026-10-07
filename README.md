@@ -19,8 +19,7 @@ python main.py
 Optional ML-DSA/OQS runtime path:
 
 ```powershell
-$env:PYOQS_VERSION = "0.15.0"
-python -m pip install --upgrade --force-reinstall --requirement requirements-oqs.txt
+python -m pip install --upgrade --requirement requirements-oqs.txt
 ```
 
 Useful contributor commands:
@@ -41,6 +40,18 @@ python -m qr_blockchain migration-finality-fraud
 ```
 
 The node starts an HTTP API on `127.0.0.1:8080` by default. Runtime state is stored under `data/` unless overridden with environment variables.
+
+The default development bind is loopback-only. Privileged POST operations (mining,
+peer administration, migration administration, snapshot signing/recovery, sync,
+genesis, and operational artifacts) require `Authorization: Bearer <token>` when
+the node is exposed beyond loopback or when `QR_CHAIN_DEPLOYMENT_MODE` is not
+`development`/ `test`. Configure `QR_CHAIN_API_AUTH_TOKEN` for those deployments.
+The public `POST /transactions` endpoint remains available for transaction
+submission; rate limiting and internet-scale API hardening are still future work.
+
+For production-like deployments, place the node behind TLS and do not send bearer
+tokens over plaintext HTTP.
+
 
 ## Why This Matters
 
@@ -708,6 +719,8 @@ Network and node:
 - `QR_CHAIN_DB_PATH`
 - `QR_CHAIN_HOST`
 - `QR_CHAIN_PORT`
+- `QR_CHAIN_DEPLOYMENT_MODE`
+- `QR_CHAIN_API_AUTH_TOKEN`
 - `QR_CHAIN_ID`
 - `QR_CHAIN_NODE_ID`
 - `QR_CHAIN_ADVERTISED_URL`
@@ -753,6 +766,13 @@ Consensus:
 
 - `QR_CHAIN_COINBASE_MATURITY_BLOCKS`
 - `QR_CHAIN_VALIDATOR_SET_POLICY`
+
+## License
+
+QBC is licensed under the [Apache License, Version 2.0](LICENSE).
+See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution rules and [SECURITY.md](SECURITY.md)
+for responsible vulnerability disclosure. The QBC name, logo, and other project
+marks are not granted as trademarks by the software license.
 
 ## Run Tests
 

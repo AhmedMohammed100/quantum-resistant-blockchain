@@ -379,7 +379,7 @@ class AdversarialAndPropertyTests(unittest.TestCase):
         with_fee.finalize()
         with self.assertRaisesRegex(ValueError, "cannot charge a fee"):
             service._validate_transaction_against_view(with_fee, {}, effective_height=1)
-            
+
     def test_security_invariant_report_flags_pending_signer_recovery(self) -> None:
         service = self.make_service("recovery-invariant")
         alice = Wallet(

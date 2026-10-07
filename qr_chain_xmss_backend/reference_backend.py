@@ -144,18 +144,25 @@ def verify(message: bytes, signature: object, public_key: object) -> bool:
         return False
 
     root = str(public_key.get("root", ""))
-    leaf_index = int(signature.get("leaf_index", -1))
+    try:
+        leaf_index = int(signature.get("leaf_index", -1))
+        height = int(public_key.get("height", -1))
+    except (TypeError, ValueError):
+        return False
     auth_path_raw = signature.get("auth_path", [])
     leaf_public_key_raw = signature.get("leaf_public_key", [])
     lamport_signature_raw = signature.get("lamport_signature", [])
 
-    if leaf_index < 0 or not isinstance(auth_path_raw, list):
+    if leaf_index < 0 or height <= 0 or not isinstance(auth_path_raw, list):
         return False
 
     try:
         leaf_public_key = _normalize_lamport_public_key(leaf_public_key_raw)
         lamport_signature = _normalize_lamport_signature(lamport_signature_raw)
     except ValueError:
+        return False
+
+    if len(auth_path_raw) != height or leaf_index >= (1 << height):
         return False
 
     auth_path = [str(item) for item in auth_path_raw]
@@ -199,12 +206,24 @@ def serialize_keypair(keypair: object) -> object:
 def deserialize_keypair(payload: object) -> ReferenceXMSSKeyPair:
     if not isinstance(payload, dict):
         raise ValueError("Reference XMSS key payload must be an object.")
+    height = int(payload["height"])
+    leaf_hashes = [str(item) for item in payload.get("leaf_hashes", [])]
+    auth_paths = [[str(value) for value in path] for path in payload.get("auth_paths", [])]
+    leaf_keypairs = payload.get("leaf_keypairs", [])
+    next_index = int(payload.get("next_index", 0))
+    expected_leaf_count = 2 ** height
+    if height <= 0 or len(leaf_keypairs) != expected_leaf_count or len(leaf_hashes) != expected_leaf_count:
+        raise ValueError("Reference XMSS key payload has an invalid tree shape.")
+    if len(auth_paths) != expected_leaf_count or any(len(path) != height for path in auth_paths):
+        raise ValueError("Reference XMSS key payload has invalid authentication paths.")
+    if next_index < 0 or next_index > expected_leaf_count:
+        raise ValueError("Reference XMSS key payload has an invalid next index.")
     return ReferenceXMSSKeyPair(
-        height=int(payload["height"]),
+        height=height,
         root=str(payload["root"]),
-        next_index=int(payload.get("next_index", 0)),
-        leaf_hashes=[str(item) for item in payload.get("leaf_hashes", [])],
-        auth_paths=[[str(value) for value in path] for path in payload.get("auth_paths", [])],
+        next_index=next_index,
+        leaf_hashes=leaf_hashes,
+        auth_paths=auth_paths,
         leaf_keypairs=[
             LamportKeyPair(
                 private_key=tuple((str(pair[0]), str(pair[1])) for pair in item.get("private_key", [])),
@@ -232,6 +251,10 @@ def sign_with_reservation(keypair: object, message: bytes, reservation: object) 
         raise ValueError("Reference XMSS signing requires a reserved leaf index.")
 
     leaf_index = int(reservation["leaf_index"])
+    if leaf_index < 0 or leaf_index >= len(keypair.leaf_keypairs):
+        raise ValueError("Reference XMSS reservation leaf index is out of range.")
+    if leaf_index != keypair.next_index - 1:
+        raise ValueError("Reference XMSS reservation is stale or was not issued by this keypair.")
     leaf_keypair = keypair.leaf_keypairs[leaf_index]
     signature = {
         "leaf_index": leaf_index,

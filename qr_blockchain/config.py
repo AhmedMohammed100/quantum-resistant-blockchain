@@ -37,6 +37,7 @@ class NodeConfig:
     migration_conversion_policy: str = "capped_pool_normalized_claims"
     reward_recipient_policy: str = "single_miner_or_validator"
     deployment_mode: str = "development"
+    api_auth_token: str = ""
     host: str = "127.0.0.1"
     port: int = 8080
     chain_id: str = "qr-chain-devnet"
@@ -155,6 +156,7 @@ class NodeConfig:
                 "single_miner_or_validator",
             ),
             deployment_mode=os.getenv("QR_CHAIN_DEPLOYMENT_MODE", "development"),
+            api_auth_token=os.getenv("QR_CHAIN_API_AUTH_TOKEN", ""),
             host=os.getenv("QR_CHAIN_HOST", "127.0.0.1"),
             port=int(os.getenv("QR_CHAIN_PORT", "8080")),
             chain_id=os.getenv("QR_CHAIN_ID", "qr-chain-devnet"),

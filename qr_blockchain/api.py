@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import hmac
 import json
 from urllib.parse import parse_qs, urlparse
 
@@ -13,6 +14,42 @@ from .service import NodeService
 
 class NodeRequestHandler(BaseHTTPRequestHandler):
     service: NodeService
+
+    def _operator_auth_required(self) -> bool:
+        """Require a bearer token for privileged HTTP operations.
+
+        Loopback development nodes remain convenient without a token. Any
+        non-loopback bind is denied for privileged operations unless an
+        explicit API token is configured.
+        """
+        token = str(self.service.config.api_auth_token or "")
+        bind_host = str(self.server.server_address[0])
+        loopback = bind_host in {"127.0.0.1", "::1", "localhost"}
+        secure_deployment = str(self.service.config.deployment_mode).lower() not in {"development", "test"}
+        return bool(token) or not loopback or secure_deployment
+
+    def _authorize_operator(self) -> bool:
+        if not self._operator_auth_required():
+            return True
+        expected = str(self.service.config.api_auth_token or "")
+        if not expected:
+            self._respond(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                {"error": "Privileged API operations require QR_CHAIN_API_AUTH_TOKEN on non-loopback binds."},
+                headers={"Retry-After": "0"},
+            )
+            return False
+        authorization = self.headers.get("Authorization", "")
+        prefix = "Bearer "
+        provided = authorization[len(prefix):].strip() if authorization.startswith(prefix) else ""
+        if not provided or not hmac.compare_digest(provided, expected):
+            self._respond(
+                HTTPStatus.UNAUTHORIZED,
+                {"error": "Operator authentication required."},
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+            return False
+        return True
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
@@ -245,6 +282,8 @@ class NodeRequestHandler(BaseHTTPRequestHandler):
             query = parse_qs(parsed.query)
             classical_address = query.get("classical_address", [""])[0]
             sign = query.get("sign", ["true"])[0].lower() not in {"0", "false", "no"}
+            if sign and not self._authorize_operator():
+                return
             try:
                 receipt = self.service.migration_claim_receipt(classical_address, sign=sign)
             except ValueError as error:
@@ -329,6 +368,14 @@ class NodeRequestHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         path = urlparse(self.path).path
         payload = self._read_json()
+
+        # Peer routes carry their own signed protocol envelope. All other POST
+        # routes mutate state, consume signer material, or trigger operator
+        # actions and therefore require operator authentication when the node
+        # is exposed beyond loopback.
+        public_post_paths = {"/transactions"}
+        if not path.startswith("/peer/") and path not in public_post_paths and not self._authorize_operator():
+            return
 
         if path == "/transactions":
             try:
@@ -916,12 +963,21 @@ class NodeRequestHandler(BaseHTTPRequestHandler):
         raw = self.rfile.read(content_length) if content_length else b"{}"
         return json.loads(raw.decode("utf-8")) if raw else {}
 
-    def _respond(self, status: HTTPStatus, payload: dict[str, object]) -> None:
+    def _respond(
+        self,
+        status: HTTPStatus,
+        payload: dict[str, object],
+        *,
+        headers: dict[str, str] | None = None,
+    ) -> None:
         encoded = json.dumps(payload, sort_keys=True).encode("utf-8")
         self.send_response(status.value)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(encoded)))
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
         self.end_headers()
+        self.wfile.write(encoded)
         self.wfile.write(encoded)
 
 
