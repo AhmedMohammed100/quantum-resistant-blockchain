@@ -25,7 +25,8 @@ class NodeRequestHandler(BaseHTTPRequestHandler):
         token = str(self.service.config.api_auth_token or "")
         bind_host = str(self.server.server_address[0])
         loopback = bind_host in {"127.0.0.1", "::1", "localhost"}
-        return bool(token) or not loopback
+        secure_deployment = str(self.service.config.deployment_mode).lower() not in {"development", "test"}
+        return bool(token) or not loopback or secure_deployment
 
     def _authorize_operator(self) -> bool:
         if not self._operator_auth_required():
@@ -372,7 +373,8 @@ class NodeRequestHandler(BaseHTTPRequestHandler):
         # routes mutate state, consume signer material, or trigger operator
         # actions and therefore require operator authentication when the node
         # is exposed beyond loopback.
-        if not path.startswith("/peer/") and not self._authorize_operator():
+        public_post_paths = {"/transactions"}
+        if not path.startswith("/peer/") and path not in public_post_paths and not self._authorize_operator():
             return
 
         if path == "/transactions":
