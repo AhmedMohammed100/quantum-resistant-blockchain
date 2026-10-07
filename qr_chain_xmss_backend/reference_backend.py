@@ -144,12 +144,16 @@ def verify(message: bytes, signature: object, public_key: object) -> bool:
         return False
 
     root = str(public_key.get("root", ""))
-    leaf_index = int(signature.get("leaf_index", -1))
+    try:
+        leaf_index = int(signature.get("leaf_index", -1))
+        height = int(public_key.get("height", -1))
+    except (TypeError, ValueError):
+        return False
     auth_path_raw = signature.get("auth_path", [])
     leaf_public_key_raw = signature.get("leaf_public_key", [])
     lamport_signature_raw = signature.get("lamport_signature", [])
 
-    if leaf_index < 0 or not isinstance(auth_path_raw, list):
+    if leaf_index < 0 or height <= 0 or not isinstance(auth_path_raw, list):
         return False
 
     try:
@@ -158,8 +162,7 @@ def verify(message: bytes, signature: object, public_key: object) -> bool:
     except ValueError:
         return False
 
-    height = int(public_key.get("height", -1))
-    if height <= 0 or leaf_index >= 2 ** height or len(auth_path_raw) != height:
+    if len(auth_path_raw) != height or leaf_index >= (1 << height):
         return False
 
     auth_path = [str(item) for item in auth_path_raw]
