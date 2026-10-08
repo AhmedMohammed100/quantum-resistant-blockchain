@@ -26,3 +26,30 @@ jobs:
       - name: Run service safety suite
         run: python -W error::ResourceWarning -m unittest tests.test_node_service -v
 
+  mldsa65-official-acvp:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install liboqs-python
+        run: python -m pip install --upgrade "liboqs-python>=0.12.0"
+
+      - name: Download pinned official NIST ACVP vectors
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="https://raw.githubusercontent.com/usnistgov/ACVP-Server/a7f283cdc87d2d6dd93c1bac59e5622c5f9f8324/gen-val/json-files/ML-DSA-sigVer-FIPS204"
+          mkdir -p .acvp-data/mldsa65
+          curl --fail --location --retry 3 "$base/prompt.json" --output .acvp-data/mldsa65/prompt.json
+          curl --fail --location --retry 3 "$base/expectedResults.json" --output .acvp-data/mldsa65/expectedResults.json
+
+      - name: Verify official ML-DSA-65 known-answer vectors
+        env:
+          QBC_ACVP_DATA_DIR: .acvp-data/mldsa65
+        run: python -m unittest tests.test_mldsa65_acvp_vectors -v
