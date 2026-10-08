@@ -54,5 +54,7 @@ python -W error::ResourceWarning -m unittest discover -s tests -v
 Run only this milestone's tests:
 
 ```bash
-python -m unittest tests.test_mldsa65_hardening tests.test_protocol_vectors tests.test_xmss_signer_safety -v
+python -m unittest discover -s tests -p 'test_mldsa65_hardening.py' -v
+python -m unittest discover -s tests -p 'test_protocol_vectors.py' -v
+python -m unittest discover -s tests -p 'test_xmss_signer_safety.py' -v
 ```
