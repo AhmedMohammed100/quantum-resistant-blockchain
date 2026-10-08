@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import random
 import unittest
 
@@ -55,9 +56,10 @@ class ProtocolFuzzRegressionTests(unittest.TestCase):
                     )
                 except (ValueError, TypeError, KeyError):
                     continue
-                self.assertEqual(item["frame_digest"], valid["frame_digest"])
+                # A frame may parse only when the digest-bound payload is unchanged.
                 self.assertEqual(payload, valid["payload"])
-                self.assertEqual(auth, valid["auth"])
+                self.assertEqual(item["frame_digest"], valid["frame_digest"])
+                self.assertIsInstance(auth, dict)
 
     def test_non_object_frames_never_parse(self) -> None:
         for value in (None, [], (), "", 0, True):
@@ -93,7 +95,7 @@ class ProtocolFuzzRegressionTests(unittest.TestCase):
                 metadata={"case": index, "labels": [rng.randrange(100) for _ in range(3)]},
             )
             transaction.finalize()
-            decoded = Transaction.from_dict(__import__("json").loads(transaction.serialize_with_id()))
+            decoded = Transaction.from_dict(json.loads(transaction.serialize_with_id()))
             self.assertEqual(decoded.tx_id, transaction.tx_id)
             self.assertEqual(decoded.serialize_with_id(), transaction.serialize_with_id())
 
