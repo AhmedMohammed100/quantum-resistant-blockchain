@@ -3,20 +3,33 @@
 This milestone adds regression coverage for three high-risk boundaries without
 changing the v0.1 consensus rules.
 
-## 1. ML-DSA-65 runtime verification
+## 1. ML-DSA-65 runtime and official NIST ACVP verification vectors
 
 `tests/test_mldsa65_hardening.py` exercises the configured
 `mldsa65_oqs_v1` provider when its real OQS runtime is available. It checks the
 selected mechanism, a valid sign/verify round trip, modified-message rejection,
-wrong-public-key rejection, and malformed-signature rejection. If the optional
-runtime is unavailable, the live test is skipped with the backend reason rather
-than silently substituting a test provider.
+wrong-public-key rejection, and malformed-signature rejection.
 
-**Important limitation:** these integration tests are not NIST FIPS 204
-known-answer tests (KATs). Official ACVP/KAT input files and their provenance
-must be added and validated before claiming KAT coverage or cryptographic
-certification. The repository's deterministic native test backend is not a
-replacement for ML-DSA.
+`tests/test_mldsa65_acvp_vectors.py` verifies the ML-DSA-65 pure external
+signature-verification group from the official NIST ACVP `ML-DSA-sigVer-FIPS204`
+vector set (vector-set ID 42). It compares each result, including invalid
+signatures, with NIST's `expectedResults.json`. The source is pinned to ACVP-Server
+commit `a7f283cdc87d2d6dd93c1bac59e5622c5f9f8324`; CI downloads both files from
+that exact revision and runs the test with `liboqs-python >= 0.12.0`, which
+provides context-aware ML-DSA verification.
+
+To run locally, install `liboqs-python >= 0.12.0`, download the two official
+files from the pinned source into a directory, set `QBC_ACVP_DATA_DIR` to that
+directory, then run:
+
+```bash
+python -m unittest tests.test_mldsa65_acvp_vectors -v
+```
+
+These tests provide vector-based regression coverage; they do not constitute a
+NIST cryptographic module validation or certification. They currently cover the
+ML-DSA-65 pure external sigVer group, not every ACVP mode, pre-hash group,
+key-generation group, or signature-generation group.
 
 ## 2. Deterministic protocol vectors
 
@@ -51,7 +64,7 @@ Run the complete test suite:
 python -W error::ResourceWarning -m unittest discover -s tests -v
 ```
 
-Run only this milestone's tests:
+Run the three existing focused suites:
 
 ```bash
 python -m unittest discover -s tests -p 'test_mldsa65_hardening.py' -v
