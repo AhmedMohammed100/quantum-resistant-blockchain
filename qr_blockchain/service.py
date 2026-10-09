@@ -517,7 +517,7 @@ class NodeService:
                 return session
 
         request_envelope = self.build_signed_envelope("peer_handshake_v2", {"target_url": normalized})
-        response = fetch_json(
+        response = self._fetch_peer_json(
             with_path(normalized, "/peer/handshake"),
             method="POST",
             payload=self._build_peer_request_frame(
@@ -5440,7 +5440,7 @@ class NodeService:
         for peer_url in targets:
             try:
                 session = self.ensure_peer_admission(peer_url)
-                response = fetch_json(
+                response = self._fetch_peer_json(
                     with_path(peer_url, path),
                     method="POST",
                     payload=self._build_peer_request_frame(
