@@ -12,13 +12,16 @@ This tranche hardens inbound API resource use, peer URL input handling, determin
 
 - Adds `QR_CHAIN_MAX_PUBLIC_TX_REQUESTS_PER_MINUTE` (default 60 per client IP) for `POST /transactions`.
 - Uses a synchronized fixed-window counter shared by handler threads, returns HTTP 429 with `Retry-After`, and bounds stale address bookkeeping.
-- This is an in-process guardrail, not a distributed rate limiter. Multiple worker processes or nodes each enforce their own limit. Deployments behind a reverse proxy should only use client-IP forwarding when the proxy is trusted and configured to overwrite forwarded headers; this implementation uses the socket peer address.
+- The default remains an in-process fixed-window guardrail. Set `QR_CHAIN_TRANSACTION_RATE_LIMIT_REDIS_URL` to use an atomic Redis Lua counter shared by multiple processes/nodes. Supports `redis://` and TLS `rediss://` URLs, optional username/password, and a database path. When Redis is configured but unavailable, requests fail closed with HTTP 503 rather than silently falling back to process-local limits.
+- Every participating node must use the same trusted Redis service and compatible limit configuration for a shared budget. Protect Redis with network ACLs/TLS/credentials; don't expose it publicly. Deployments behind a reverse proxy should only use client-IP forwarding when the proxy is trusted and configured to overwrite forwarded headers; this implementation uses the socket peer address.
 
 ## Priority 10 — Peer URL input validation
 
 - Normalizes bare hostnames to HTTP and accepts only HTTP/HTTPS schemes.
 - Rejects unsupported schemes, control characters, malformed ports, missing hosts, embedded credentials, query strings, and fragments.
-- Loopback/private hosts remain valid for local and private-network deployments. Internet-facing operators should enable the existing peer allowlist and restrict egress at the network layer. URL validation alone is not a complete SSRF defense and does not prevent a remote peer from redirecting a request.
+- Adds an optional exact outbound authority allowlist (`QR_CHAIN_OUTBOUND_PEER_URL_ALLOWLIST`, comma-separated `host:port` entries) and `QR_CHAIN_REQUIRE_OUTBOUND_PEER_URL_ALLOWLIST` to reject destinations before opening a socket. The strict flag can be enabled even when the list is empty; in that case all outbound peer requests fail closed.
+- Peer HTTP redirects are disabled, and backslashes are rejected because URL parsers can interpret them differently. Private/loopback addresses remain usable when explicitly allowed, for private-network deployments.
+- **Residual SSRF risk remains:** a hostname allowlist does not pin DNS resolution to the validated connection address and cannot, by itself, prevent DNS rebinding or compromised allowlisted hosts. Production deployments should use fixed peer endpoints, enable the strict allowlist, bind network connections to approved addresses where possible, and enforce outbound firewall/network policies. This is defense in depth, not a claim of complete SSRF immunity.
 
 ## Priority 11 — Deterministic property regression
 
@@ -35,6 +38,9 @@ This tranche hardens inbound API resource use, peer URL input handling, determin
 
 - `QR_CHAIN_MAX_API_REQUEST_BYTES`: default `20971520` (20 MiB).
 - `QR_CHAIN_MAX_PUBLIC_TX_REQUESTS_PER_MINUTE`: default `60` per client IP.
+- `QR_CHAIN_TRANSACTION_RATE_LIMIT_REDIS_URL`: optional Redis URL; when set, the shared limiter fails closed on backend errors.
+- `QR_CHAIN_OUTBOUND_PEER_URL_ALLOWLIST`: optional comma-separated outbound authorities such as `node-a.example:8080,node-b.example:8443` (include ports when non-default).
+- `QR_CHAIN_REQUIRE_OUTBOUND_PEER_URL_ALLOWLIST`: set to `true` to reject outbound peer requests unless their authority matches the configured allowlist.
 
 ## Validation
 
