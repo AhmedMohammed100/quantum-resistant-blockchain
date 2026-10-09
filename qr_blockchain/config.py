@@ -40,6 +40,9 @@ class NodeConfig:
     api_auth_token: str = ""
     max_api_request_bytes: int = 20971520
     max_public_transaction_requests_per_minute: int = 60
+    transaction_rate_limit_redis_url: str = ""
+    outbound_peer_url_allowlist: tuple[str, ...] = ()
+    require_outbound_peer_url_allowlist: bool = False
     host: str = "127.0.0.1"
     port: int = 8080
     chain_id: str = "qr-chain-devnet"
@@ -125,6 +128,7 @@ class NodeConfig:
         trusted_snapshot_nodes_env = os.getenv("QR_CHAIN_MIGRATION_TRUSTED_SNAPSHOT_NODES", "").strip()
         peer_allowlist_env = os.getenv("QR_CHAIN_PEER_ALLOWLIST", "").strip()
         peer_denylist_env = os.getenv("QR_CHAIN_PEER_DENYLIST", "").strip()
+        outbound_peer_url_allowlist_env = os.getenv("QR_CHAIN_OUTBOUND_PEER_URL_ALLOWLIST", "").strip()
         return NodeConfig(
             db_path=Path(os.getenv("QR_CHAIN_DB_PATH", "data/chain.db")),
             difficulty=int(os.getenv("QR_CHAIN_DIFFICULTY", "3")),
@@ -163,6 +167,15 @@ class NodeConfig:
             max_public_transaction_requests_per_minute=int(
                 os.getenv("QR_CHAIN_MAX_PUBLIC_TX_REQUESTS_PER_MINUTE", "60")
             ),
+            transaction_rate_limit_redis_url=os.getenv("QR_CHAIN_TRANSACTION_RATE_LIMIT_REDIS_URL", "").strip(),
+            outbound_peer_url_allowlist=tuple(
+                item.strip().lower().rstrip("/")
+                for item in outbound_peer_url_allowlist_env.split(",")
+                if item.strip()
+            ),
+            require_outbound_peer_url_allowlist=os.getenv(
+                "QR_CHAIN_REQUIRE_OUTBOUND_PEER_URL_ALLOWLIST", "0"
+            ).strip().lower() in {"1", "true", "yes", "on"},
             host=os.getenv("QR_CHAIN_HOST", "127.0.0.1"),
             port=int(os.getenv("QR_CHAIN_PORT", "8080")),
             chain_id=os.getenv("QR_CHAIN_ID", "qr-chain-devnet"),
