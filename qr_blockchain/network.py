@@ -18,6 +18,10 @@ def normalize_peer_url(url: str) -> str:
         raise ValueError("Peer URL cannot be empty.")
     if any(ord(char) < 32 or ord(char) == 127 for char in url):
         raise ValueError("Peer URL contains control characters.")
+    # Backslashes are interpreted inconsistently by URL parsers and can make
+    # allowlist checks disagree with the HTTP client's eventual destination.
+    if "\\" in url:
+        raise ValueError("Peer URL must not contain backslashes.")
     normalized = url.strip().rstrip("/")
     if "://" in normalized and not normalized.lower().startswith(("http://", "https://")):
         raise ValueError("Peer URL scheme must be HTTP or HTTPS.")
@@ -47,6 +51,8 @@ def fetch_json(
     payload: dict[str, object] | None = None,
     timeout: float = 10.0,
     max_response_bytes: int = DEFAULT_MAX_RESPONSE_BYTES,
+    allowed_hosts: tuple[str, ...] | None = None,
+    require_allowlist: bool = False,
 ) -> dict[str, object]:
     """Fetch a bounded JSON object from a peer.
 
@@ -60,13 +66,26 @@ def fetch_json(
         raise ValueError("Maximum peer response size must be positive.")
     # Apply the same URL policy even when callers bypass with_path().
     url = normalize_peer_url(url)
+    parsed_url = parse.urlsplit(url)
+    normalized_allowlist = {item.strip().lower().rstrip("/") for item in (allowed_hosts or ()) if item.strip()}
+    if require_allowlist and not normalized_allowlist:
+        raise ValueError("Outbound peer URL allowlist is required but empty.")
+    if normalized_allowlist and parsed_url.netloc.lower() not in normalized_allowlist:
+        raise ValueError("Outbound peer URL host is not in the configured allowlist.")
 
     data = None
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
     if payload is not None:
         data = json.dumps(payload, sort_keys=True).encode("utf-8")
     req = request.Request(url, data=data, headers=headers, method=method)
-    with request.urlopen(req, timeout=timeout) as response:
+    class _NoRedirect(request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None
+
+    # Redirects are deliberately disabled: a trusted peer URL must not be able
+    # to redirect this node to an unvalidated destination.
+    opener = request.build_opener(_NoRedirect)
+    with opener.open(req, timeout=timeout) as response:
         content_length = response.headers.get("Content-Length")
         if content_length is not None:
             try:
