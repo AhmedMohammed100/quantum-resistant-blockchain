@@ -80,7 +80,7 @@ class PeerResponseHardeningTests(unittest.TestCase):
             "http://peer.example:99999",
             "http://peer.example/path?token=secret",
             "http://peer.example/path#fragment",
-            "http://peer.example/\\nadmin",
+            "http://peer.example/\nadmin",
         )
         for url in invalid:
             with self.subTest(url=url):
