@@ -29,6 +29,9 @@ jobs:
       - name: Run priorities 4-7 regression suites
         run: python -W error::ResourceWarning -m unittest tests.test_protocol_fuzz tests.test_network_hardening tests.test_storage_recovery -v
 
+      - name: Run priorities 8-12 API and property regression suites
+        run: python -W error::ResourceWarning -m unittest tests.test_api_security tests.test_network_properties -v
+
   mldsa65-official-acvp:
     runs-on: ubuntu-latest
     steps:

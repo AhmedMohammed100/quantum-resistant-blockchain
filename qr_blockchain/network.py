@@ -8,12 +8,48 @@ DEFAULT_MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 
 
 def normalize_peer_url(url: str) -> str:
-    normalized = url.strip().rstrip("/")
-    if not normalized:
+    """Normalize a peer base URL and reject ambiguous or credential-bearing URLs.
+
+    Private and loopback addresses are intentionally not banned because local
+    development and private-network deployments are supported. Internet-facing
+    deployments should additionally enable the peer allowlist.
+    """
+    if not isinstance(url, str) or not url.strip():
         raise ValueError("Peer URL cannot be empty.")
-    if not normalized.startswith("http://") and not normalized.startswith("https://"):
+    if any(ord(char) < 32 or ord(char) == 127 for char in url):
+        raise ValueError("Peer URL contains control characters.")
+    # Backslashes are interpreted inconsistently by URL parsers and can make
+    # allowlist checks disagree with the HTTP client's eventual destination.
+    if "\\" in url:
+        raise ValueError("Peer URL must not contain backslashes.")
+    normalized = url.strip().rstrip("/")
+    if "://" in normalized and not normalized.lower().startswith(("http://", "https://")):
+        raise ValueError("Peer URL scheme must be HTTP or HTTPS.")
+    if not normalized.lower().startswith(("http://", "https://")):
         normalized = f"http://{normalized}"
+    try:
+        parsed = parse.urlsplit(normalized)
+        # Accessing .port also validates malformed/out-of-range port values.
+        _ = parsed.port
+    except ValueError as error:
+        raise ValueError("Peer URL is malformed.") from error
+    if parsed.scheme.lower() not in {"http", "https"}:
+        raise ValueError("Peer URL scheme must be HTTP or HTTPS.")
+    if not parsed.hostname:
+        raise ValueError("Peer URL must include a hostname.")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("Peer URL must not embed credentials.")
+    if parsed.query or parsed.fragment:
+        raise ValueError("Peer base URL must not include a query or fragment.")
     return normalized
+
+
+def _open_no_redirect(req: request.Request, timeout: float):
+    class _NoRedirect(request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None
+
+    return request.build_opener(_NoRedirect).open(req, timeout=timeout)
 
 
 def fetch_json(
@@ -23,6 +59,8 @@ def fetch_json(
     payload: dict[str, object] | None = None,
     timeout: float = 10.0,
     max_response_bytes: int = DEFAULT_MAX_RESPONSE_BYTES,
+    allowed_hosts: tuple[str, ...] | None = None,
+    require_allowlist: bool = False,
 ) -> dict[str, object]:
     """Fetch a bounded JSON object from a peer.
 
@@ -34,13 +72,23 @@ def fetch_json(
         raise ValueError("Peer request timeout must be positive.")
     if max_response_bytes <= 0:
         raise ValueError("Maximum peer response size must be positive.")
+    # Apply the same URL policy even when callers bypass with_path().
+    url = normalize_peer_url(url)
+    parsed_url = parse.urlsplit(url)
+    normalized_allowlist = {item.strip().lower().rstrip("/") for item in (allowed_hosts or ()) if item.strip()}
+    if require_allowlist and not normalized_allowlist:
+        raise ValueError("Outbound peer URL allowlist is required but empty.")
+    if normalized_allowlist and parsed_url.netloc.lower() not in normalized_allowlist:
+        raise ValueError("Outbound peer URL host is not in the configured allowlist.")
 
     data = None
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
     if payload is not None:
         data = json.dumps(payload, sort_keys=True).encode("utf-8")
     req = request.Request(url, data=data, headers=headers, method=method)
-    with request.urlopen(req, timeout=timeout) as response:
+    # Redirects are deliberately disabled: a trusted peer URL must not be able
+    # to redirect this node to an unvalidated destination.
+    with _open_no_redirect(req, timeout=timeout) as response:
         content_length = response.headers.get("Content-Length")
         if content_length is not None:
             try:

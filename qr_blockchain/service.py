@@ -326,11 +326,19 @@ class NodeService:
         self._validate_supply_limits(self._supply_for_blocks(candidate_blocks))
         self._validate_supply_invariant(candidate_blocks, utxo_view)
 
+    def _fetch_peer_json(self, url: str, **kwargs) -> dict[str, object]:
+        allowlist = tuple(getattr(self.config, "outbound_peer_url_allowlist", ()))
+        required = bool(getattr(self.config, "require_outbound_peer_url_allowlist", False))
+        if allowlist or required:
+            kwargs["allowed_hosts"] = allowlist
+            kwargs["require_allowlist"] = required
+        return fetch_json(url, **kwargs)
+
     def sync_with_peer(self, peer_url: str) -> int:
         normalized = normalize_peer_url(peer_url)
         session = self.ensure_peer_admission(normalized)
         try:
-            summary = fetch_json(
+            summary = self._fetch_peer_json(
                 with_path(normalized, "/peer/summary"),
                 method="POST",
                 payload=self._build_peer_request_frame(
@@ -349,7 +357,7 @@ class NodeService:
             local_height = self.store.block_count()
             imported = 0
             if remote_height > local_height:
-                response = fetch_json(
+                response = self._fetch_peer_json(
                     with_path(normalized, "/peer/blocks"),
                     method="POST",
                     payload=self._build_peer_request_frame(
@@ -509,7 +517,7 @@ class NodeService:
                 return session
 
         request_envelope = self.build_signed_envelope("peer_handshake_v2", {"target_url": normalized})
-        response = fetch_json(
+        response = self._fetch_peer_json(
             with_path(normalized, "/peer/handshake"),
             method="POST",
             payload=self._build_peer_request_frame(
@@ -5432,7 +5440,7 @@ class NodeService:
         for peer_url in targets:
             try:
                 session = self.ensure_peer_admission(peer_url)
-                response = fetch_json(
+                response = self._fetch_peer_json(
                     with_path(peer_url, path),
                     method="POST",
                     payload=self._build_peer_request_frame(
