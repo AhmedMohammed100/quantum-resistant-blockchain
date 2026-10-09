@@ -19,7 +19,7 @@ This tranche hardens inbound API resource use, peer URL input handling, determin
 
 - Normalizes bare hostnames to HTTP and accepts only HTTP/HTTPS schemes.
 - Rejects unsupported schemes, control characters, malformed ports, missing hosts, embedded credentials, query strings, and fragments.
-- Adds an optional exact outbound authority allowlist (`QR_CHAIN_OUTBOUND_PEER_URL_ALLOWLIST`, comma-separated `host:port` entries) and `QR_CHAIN_REQUIRE_OUTBOUND_PEER_URL_ALLOWLIST` to reject destinations before opening a socket. The strict flag can be enabled even when the list is empty; in that case all outbound peer requests fail closed.
+- Adds an exact outbound authority allowlist (`QR_CHAIN_OUTBOUND_PEER_URL_ALLOWLIST`, comma-separated `host:port` entries) and `QR_CHAIN_REQUIRE_OUTBOUND_PEER_URL_ALLOWLIST` to reject destinations before opening a socket. The strict flag can be enabled even when the list is empty; in that case all outbound peer requests fail closed. It defaults to required when `QR_CHAIN_DEPLOYMENT_MODE` is not `development` or `test`.
 - Peer HTTP redirects are disabled, and backslashes are rejected because URL parsers can interpret them differently. Private/loopback addresses remain usable when explicitly allowed, for private-network deployments.
 - **Residual SSRF risk remains:** a hostname allowlist does not pin DNS resolution to the validated connection address and cannot, by itself, prevent DNS rebinding or compromised allowlisted hosts. Production deployments should use fixed peer endpoints, enable the strict allowlist, bind network connections to approved addresses where possible, and enforce outbound firewall/network policies. This is defense in depth, not a claim of complete SSRF immunity.
 
