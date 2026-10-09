@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import io
 import unittest
 from unittest.mock import patch
 
-from qr_blockchain.network import fetch_json
+from qr_blockchain.network import fetch_json, normalize_peer_url
 
 
 class _FakeResponse:
@@ -66,6 +65,27 @@ class PeerResponseHardeningTests(unittest.TestCase):
             fetch_json("http://peer.invalid/summary", timeout=0)
         with self.assertRaisesRegex(ValueError, "size"):
             fetch_json("http://peer.invalid/summary", max_response_bytes=0)
+
+    def test_normalizes_bare_host_and_valid_http_urls(self) -> None:
+        self.assertEqual(normalize_peer_url("peer.example:8080/"), "http://peer.example:8080")
+        self.assertEqual(normalize_peer_url("https://peer.example:8443/api"), "https://peer.example:8443/api")
+        self.assertEqual(normalize_peer_url("http://127.0.0.1:8080"), "http://127.0.0.1:8080")
+
+    def test_rejects_ambiguous_or_credential_bearing_peer_urls(self) -> None:
+        invalid = (
+            "",
+            "ftp://peer.example",
+            "http://user:password@peer.example",
+            "http:///missing-host",
+            "http://peer.example:99999",
+            "http://peer.example/path?token=secret",
+            "http://peer.example/path#fragment",
+            "http://peer.example/\\nadmin",
+        )
+        for url in invalid:
+            with self.subTest(url=url):
+                with self.assertRaises(ValueError):
+                    normalize_peer_url(url)
 
 
 if __name__ == "__main__":
