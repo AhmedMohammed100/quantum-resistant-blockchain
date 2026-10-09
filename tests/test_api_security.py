@@ -92,6 +92,27 @@ class ApiSecurityTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     handler._read_json()
 
+    def test_redis_rate_limit_returns_shared_retry_after(self) -> None:
+        handler, capture = self.make_handler(
+            bind_host="127.0.0.1", deployment_mode="development", token=""
+        )
+        handler.service.config.transaction_rate_limit_redis_url = "redis://localhost:6379/0"
+        with patch("qr_blockchain.api.enforce_redis_rate_limit", return_value=17) as limiter:
+            self.assertFalse(handler._allow_public_transaction())
+        self.assertEqual(capture.calls[-1][0].value, 429)
+        self.assertEqual(capture.calls[-1][2]["Retry-After"], "17")
+        self.assertEqual(limiter.call_args.args[2], 60)
+
+    def test_configured_redis_rate_limit_fails_closed(self) -> None:
+        handler, capture = self.make_handler(
+            bind_host="127.0.0.1", deployment_mode="development", token=""
+        )
+        handler.service.config.transaction_rate_limit_redis_url = "redis://localhost:6379/0"
+        with patch("qr_blockchain.api.enforce_redis_rate_limit", side_effect=OSError("offline")):
+            self.assertFalse(handler._allow_public_transaction())
+        self.assertEqual(capture.calls[-1][0].value, 503)
+        self.assertEqual(capture.calls[-1][2]["Retry-After"], "5")
+
     def test_public_transaction_rate_limit_is_shared_and_returns_retry_after(self) -> None:
         handler, capture = self.make_handler(
             bind_host="127.0.0.1", deployment_mode="development", token=""
