@@ -19,7 +19,9 @@ def normalize_peer_url(url: str) -> str:
     if any(ord(char) < 32 or ord(char) == 127 for char in url):
         raise ValueError("Peer URL contains control characters.")
     normalized = url.strip().rstrip("/")
-    if not normalized.startswith(("http://", "https://")):
+    if "://" in normalized and not normalized.lower().startswith(("http://", "https://")):
+        raise ValueError("Peer URL scheme must be HTTP or HTTPS.")
+    if not normalized.lower().startswith(("http://", "https://")):
         normalized = f"http://{normalized}"
     try:
         parsed = parse.urlsplit(normalized)
