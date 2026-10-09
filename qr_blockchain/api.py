@@ -994,10 +994,17 @@ class NodeRequestHandler(BaseHTTPRequestHandler):
             # Bound bookkeeping if clients churn through many source addresses.
             expired_before = now - 60.0
             if len(handler_type._transaction_rate_windows) > 4096:
-                handler_type._transaction_rate_windows = {
+                active_windows = {
                     key: value for key, value in handler_type._transaction_rate_windows.items()
                     if value[0] > expired_before
                 }
+                if len(active_windows) > 4096:
+                    # Keep the newest windows if source-address churn exceeds
+                    # the hard bookkeeping cap.
+                    active_windows = dict(
+                        sorted(active_windows.items(), key=lambda item: item[1][0])[-2048:]
+                    )
+                handler_type._transaction_rate_windows = active_windows
             started, count = handler_type._transaction_rate_windows.get(client, (now, 0))
             if now - started >= 60.0:
                 started, count = now, 0
