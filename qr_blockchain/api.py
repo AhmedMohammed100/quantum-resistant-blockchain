@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import hashlib
 import hmac
 import json
 import threading
@@ -11,6 +12,7 @@ from urllib.parse import parse_qs, urlparse
 from .config import NodeConfig
 from .models import Block, Transaction
 from .protocol import parse_peer_frame
+from .rate_limit import enforce_redis_rate_limit
 from .service import NodeService
 
 
@@ -987,6 +989,33 @@ class NodeRequestHandler(BaseHTTPRequestHandler):
             )
             return False
         client = str(getattr(self, "client_address", ("unknown",))[0])
+        redis_url = str(getattr(self.service.config, "transaction_rate_limit_redis_url", "") or "").strip()
+        if redis_url:
+            # A configured shared backend is fail-closed. Do not silently fall
+            # back to per-process limits if Redis is unavailable.
+            client_key = hashlib.sha256(client.encode("utf-8")).hexdigest()
+            try:
+                retry_after = enforce_redis_rate_limit(
+                    redis_url,
+                    f"qbc:public-tx:{client_key}",
+                    limit,
+                    window_seconds=60,
+                )
+            except (OSError, ValueError, ConnectionError, TimeoutError):
+                self._respond(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    {"error": "Shared transaction rate limiter is unavailable."},
+                    headers={"Retry-After": "5"},
+                )
+                return False
+            if retry_after is not None:
+                self._respond(
+                    HTTPStatus.TOO_MANY_REQUESTS,
+                    {"error": "Public transaction request rate exceeded."},
+                    headers={"Retry-After": str(retry_after)},
+                )
+                return False
+            return True
         now = time.monotonic()
         retry_after = 0
         handler_type = type(self)
@@ -1063,7 +1092,6 @@ class NodeRequestHandler(BaseHTTPRequestHandler):
         for name, value in (headers or {}).items():
             self.send_header(name, value)
         self.end_headers()
-        self.wfile.write(encoded)
         self.wfile.write(encoded)
 
 
