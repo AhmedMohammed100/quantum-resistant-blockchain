@@ -4,6 +4,8 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import hmac
 import json
+import threading
+import time
 from urllib.parse import parse_qs, urlparse
 
 from .config import NodeConfig
@@ -12,8 +14,14 @@ from .protocol import parse_peer_frame
 from .service import NodeService
 
 
+class RequestBodyTooLarge(ValueError):
+    """Raised when an inbound JSON body exceeds the configured byte limit."""
+
+
 class NodeRequestHandler(BaseHTTPRequestHandler):
     service: NodeService
+    _transaction_rate_lock = threading.Lock()
+    _transaction_rate_windows: dict[str, tuple[float, int]] = {}
 
     def _operator_auth_required(self) -> bool:
         """Require a bearer token for privileged HTTP operations.
@@ -367,7 +375,18 @@ class NodeRequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path
-        payload = self._read_json()
+        # Public transaction submission is rate-limited before body parsing so
+        # floods cannot force JSON decoding and signature checks without bound.
+        if path == "/transactions" and not self._allow_public_transaction():
+            return
+        try:
+            payload = self._read_json()
+        except RequestBodyTooLarge as error:
+            self._respond(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": str(error)})
+            return
+        except (ValueError, UnicodeDecodeError) as error:
+            self._respond(HTTPStatus.BAD_REQUEST, {"error": f"Invalid JSON request: {error}"})
+            return
 
         # Peer routes carry their own signed protocol envelope. All other POST
         # routes mutate state, consume signer material, or trigger operator
@@ -958,10 +977,67 @@ class NodeRequestHandler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: object) -> None:
         return
 
+    def _allow_public_transaction(self) -> bool:
+        limit = int(getattr(self.service.config, "max_public_transaction_requests_per_minute", 60))
+        if limit <= 0:
+            self._respond(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                {"error": "Public transaction rate limit is disabled by invalid configuration."},
+                headers={"Retry-After": "60"},
+            )
+            return False
+        client = str(getattr(self, "client_address", ("unknown",))[0])
+        now = time.monotonic()
+        retry_after = 0
+        with self._transaction_rate_lock:
+            # Bound bookkeeping if clients churn through many source addresses.
+            expired_before = now - 60.0
+            if len(self._transaction_rate_windows) > 4096:
+                self._transaction_rate_windows = {
+                    key: value for key, value in self._transaction_rate_windows.items()
+                    if value[0] > expired_before
+                }
+            started, count = self._transaction_rate_windows.get(client, (now, 0))
+            if now - started >= 60.0:
+                started, count = now, 0
+            if count >= limit:
+                retry_after = max(1, int(60.0 - (now - started)) + 1)
+            else:
+                self._transaction_rate_windows[client] = (started, count + 1)
+        if retry_after:
+            self._respond(
+                HTTPStatus.TOO_MANY_REQUESTS,
+                {"error": "Public transaction request rate exceeded."},
+                headers={"Retry-After": str(retry_after)},
+            )
+            return False
+        return True
+
     def _read_json(self) -> dict[str, object]:
-        content_length = int(self.headers.get("Content-Length", "0"))
-        raw = self.rfile.read(content_length) if content_length else b"{}"
-        return json.loads(raw.decode("utf-8")) if raw else {}
+        limit = int(getattr(self.service.config, "max_api_request_bytes", 20971520))
+        if limit <= 0:
+            raise ValueError("Configured maximum API request size must be positive.")
+        raw_length = self.headers.get("Content-Length", "0")
+        try:
+            content_length = int(raw_length)
+        except (TypeError, ValueError) as error:
+            raise ValueError("Content-Length must be a valid non-negative integer.") from error
+        if content_length < 0:
+            raise ValueError("Content-Length must be a valid non-negative integer.")
+        if content_length > limit:
+            raise RequestBodyTooLarge("Request body exceeds the configured size limit.")
+        raw = self.rfile.read(content_length + 1) if content_length else b"{}"
+        if len(raw) > limit:
+            raise RequestBodyTooLarge("Request body exceeds the configured size limit.")
+        if not raw:
+            return {}
+        try:
+            decoded = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise ValueError("Body must contain valid UTF-8 JSON.") from error
+        if not isinstance(decoded, dict):
+            raise ValueError("JSON request body must be an object.")
+        return decoded
 
     def _respond(
         self,
