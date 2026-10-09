@@ -85,7 +85,7 @@ class ApiSecurityTests(unittest.TestCase):
         handler, _ = self.make_handler(
             bind_host="127.0.0.1", deployment_mode="development", token=""
         )
-        for body in (b"{", b"[]", b"null", b"\\xff"):
+        for body in (b"{", b"[]", b"null", b"\xff"):
             with self.subTest(body=body):
                 handler.headers = {"Content-Length": str(len(body))}
                 handler.rfile = io.BytesIO(body)
