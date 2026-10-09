@@ -58,6 +58,8 @@ def fetch_json(
         raise ValueError("Peer request timeout must be positive.")
     if max_response_bytes <= 0:
         raise ValueError("Maximum peer response size must be positive.")
+    # Apply the same URL policy even when callers bypass with_path().
+    url = normalize_peer_url(url)
 
     data = None
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
