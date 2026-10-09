@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import closing
 import sqlite3
 import tempfile
 import unittest
@@ -29,8 +30,12 @@ class SQLiteRecoveryTests(unittest.TestCase):
             expected_summary = service.store.summary()
 
             # SQLite's backup API includes committed WAL content, unlike a raw
-            # filesystem copy of only the main database file.
-            with sqlite3.connect(source_path) as source, sqlite3.connect(backup_path) as target:
+            # filesystem copy of only the main database file. sqlite3's
+            # context manager commits/rolls back but does not close the handle;
+            # closing explicitly is required for Windows temp-directory cleanup.
+            with closing(sqlite3.connect(source_path)) as source, closing(
+                sqlite3.connect(backup_path)
+            ) as target:
                 source.backup(target)
 
             restored = NodeService(
@@ -46,7 +51,7 @@ class SQLiteRecoveryTests(unittest.TestCase):
             self.assertEqual(restored.store.latest_block()["block_hash"], genesis.block_hash)
             self.assertEqual(restored.store.all_utxos(), expected_utxos)
             self.assertEqual(restored.store.summary()["height"], expected_summary["height"])
-            with sqlite3.connect(backup_path) as connection:
+            with closing(sqlite3.connect(backup_path)) as connection:
                 result = connection.execute("PRAGMA integrity_check").fetchone()[0]
             self.assertEqual(result, "ok")
 
