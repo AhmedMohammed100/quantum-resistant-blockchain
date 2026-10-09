@@ -44,6 +44,14 @@ def normalize_peer_url(url: str) -> str:
     return normalized
 
 
+def _open_no_redirect(req: request.Request, timeout: float):
+    class _NoRedirect(request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None
+
+    return request.build_opener(_NoRedirect).open(req, timeout=timeout)
+
+
 def fetch_json(
     url: str,
     *,
@@ -78,14 +86,9 @@ def fetch_json(
     if payload is not None:
         data = json.dumps(payload, sort_keys=True).encode("utf-8")
     req = request.Request(url, data=data, headers=headers, method=method)
-    class _NoRedirect(request.HTTPRedirectHandler):
-        def redirect_request(self, req, fp, code, msg, headers, newurl):
-            return None
-
     # Redirects are deliberately disabled: a trusted peer URL must not be able
     # to redirect this node to an unvalidated destination.
-    opener = request.build_opener(_NoRedirect)
-    with opener.open(req, timeout=timeout) as response:
+    with _open_no_redirect(req, timeout=timeout) as response:
         content_length = response.headers.get("Content-Length")
         if content_length is not None:
             try:
