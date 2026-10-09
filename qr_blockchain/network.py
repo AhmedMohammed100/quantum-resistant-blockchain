@@ -8,11 +8,33 @@ DEFAULT_MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 
 
 def normalize_peer_url(url: str) -> str:
-    normalized = url.strip().rstrip("/")
-    if not normalized:
+    """Normalize a peer base URL and reject ambiguous or credential-bearing URLs.
+
+    Private and loopback addresses are intentionally not banned because local
+    development and private-network deployments are supported. Internet-facing
+    deployments should additionally enable the peer allowlist.
+    """
+    if not isinstance(url, str) or not url.strip():
         raise ValueError("Peer URL cannot be empty.")
-    if not normalized.startswith("http://") and not normalized.startswith("https://"):
+    if any(ord(char) < 32 or ord(char) == 127 for char in url):
+        raise ValueError("Peer URL contains control characters.")
+    normalized = url.strip().rstrip("/")
+    if not normalized.startswith(("http://", "https://")):
         normalized = f"http://{normalized}"
+    try:
+        parsed = parse.urlsplit(normalized)
+        # Accessing .port also validates malformed/out-of-range port values.
+        _ = parsed.port
+    except ValueError as error:
+        raise ValueError("Peer URL is malformed.") from error
+    if parsed.scheme.lower() not in {"http", "https"}:
+        raise ValueError("Peer URL scheme must be HTTP or HTTPS.")
+    if not parsed.hostname:
+        raise ValueError("Peer URL must include a hostname.")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("Peer URL must not embed credentials.")
+    if parsed.query or parsed.fragment:
+        raise ValueError("Peer base URL must not include a query or fragment.")
     return normalized
 
 
