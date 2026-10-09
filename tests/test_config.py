@@ -8,6 +8,19 @@ from qr_blockchain.config import NodeConfig
 
 
 class NodeConfigTests(unittest.TestCase):
+
+    def test_production_defaults_to_required_outbound_peer_allowlist(self) -> None:
+        env = {
+            "QR_CHAIN_DEPLOYMENT_MODE": "production",
+            "QR_CHAIN_REQUIRE_OUTBOUND_PEER_URL_ALLOWLIST": "",
+            "QR_CHAIN_OUTBOUND_PEER_URL_ALLOWLIST": "peer.example:8080",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            os.environ.pop("QR_CHAIN_REQUIRE_OUTBOUND_PEER_URL_ALLOWLIST", None)
+            config = NodeConfig.from_env()
+        self.assertTrue(config.require_outbound_peer_url_allowlist)
+        self.assertEqual(config.outbound_peer_url_allowlist, ("peer.example:8080",))
+
     def test_from_env_overrides_defaults(self) -> None:
         env = {
             "QR_CHAIN_DB_PATH": "runtime/chain.db",
