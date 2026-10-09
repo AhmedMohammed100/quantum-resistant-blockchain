@@ -989,21 +989,22 @@ class NodeRequestHandler(BaseHTTPRequestHandler):
         client = str(getattr(self, "client_address", ("unknown",))[0])
         now = time.monotonic()
         retry_after = 0
-        with self._transaction_rate_lock:
+        handler_type = type(self)
+        with handler_type._transaction_rate_lock:
             # Bound bookkeeping if clients churn through many source addresses.
             expired_before = now - 60.0
-            if len(self._transaction_rate_windows) > 4096:
-                self._transaction_rate_windows = {
-                    key: value for key, value in self._transaction_rate_windows.items()
+            if len(handler_type._transaction_rate_windows) > 4096:
+                handler_type._transaction_rate_windows = {
+                    key: value for key, value in handler_type._transaction_rate_windows.items()
                     if value[0] > expired_before
                 }
-            started, count = self._transaction_rate_windows.get(client, (now, 0))
+            started, count = handler_type._transaction_rate_windows.get(client, (now, 0))
             if now - started >= 60.0:
                 started, count = now, 0
             if count >= limit:
                 retry_after = max(1, int(60.0 - (now - started)) + 1)
             else:
-                self._transaction_rate_windows[client] = (started, count + 1)
+                handler_type._transaction_rate_windows[client] = (started, count + 1)
         if retry_after:
             self._respond(
                 HTTPStatus.TOO_MANY_REQUESTS,
