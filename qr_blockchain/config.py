@@ -174,7 +174,9 @@ class NodeConfig:
                 if item.strip()
             ),
             require_outbound_peer_url_allowlist=os.getenv(
-                "QR_CHAIN_REQUIRE_OUTBOUND_PEER_URL_ALLOWLIST", "0"
+                "QR_CHAIN_REQUIRE_OUTBOUND_PEER_URL_ALLOWLIST",
+                "0" if os.getenv("QR_CHAIN_DEPLOYMENT_MODE", "development").strip().lower()
+                in {"development", "test"} else "1",
             ).strip().lower() in {"1", "true", "yes", "on"},
             host=os.getenv("QR_CHAIN_HOST", "127.0.0.1"),
             port=int(os.getenv("QR_CHAIN_PORT", "8080")),
