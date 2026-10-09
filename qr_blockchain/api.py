@@ -1027,7 +1027,9 @@ class NodeRequestHandler(BaseHTTPRequestHandler):
             raise ValueError("Content-Length must be a valid non-negative integer.")
         if content_length > limit:
             raise RequestBodyTooLarge("Request body exceeds the configured size limit.")
-        raw = self.rfile.read(content_length + 1) if content_length else b"{}"
+        # Respect HTTP Content-Length exactly; reading one extra byte can block
+        # waiting for the next request or consume its first byte on keep-alive.
+        raw = self.rfile.read(content_length) if content_length else b"{}"
         if len(raw) > limit:
             raise RequestBodyTooLarge("Request body exceeds the configured size limit.")
         if not raw:
