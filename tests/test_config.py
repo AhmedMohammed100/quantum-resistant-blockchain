@@ -28,6 +28,8 @@ class NodeConfigTests(unittest.TestCase):
             "QR_CHAIN_MIGRATION_CONVERSION_POLICY": "test_capped_pool",
             "QR_CHAIN_REWARD_RECIPIENT_POLICY": "test_validator_split",
             "QR_CHAIN_DEPLOYMENT_MODE": "production",
+            "QR_CHAIN_MAX_API_REQUEST_BYTES": "1048576",
+            "QR_CHAIN_MAX_PUBLIC_TX_REQUESTS_PER_MINUTE": "12",
             "QR_CHAIN_HOST": "0.0.0.0",
             "QR_CHAIN_PORT": "9000",
             "QR_CHAIN_ID": "qr-chain-testnet",
@@ -101,6 +103,8 @@ class NodeConfigTests(unittest.TestCase):
         self.assertEqual(config.migration_conversion_policy, "test_capped_pool")
         self.assertEqual(config.reward_recipient_policy, "test_validator_split")
         self.assertEqual(config.deployment_mode, "production")
+        self.assertEqual(config.max_api_request_bytes, 1048576)
+        self.assertEqual(config.max_public_transaction_requests_per_minute, 12)
         self.assertEqual(config.host, "0.0.0.0")
         self.assertEqual(config.port, 9000)
         self.assertEqual(config.chain_id, "qr-chain-testnet")
