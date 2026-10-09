@@ -1002,7 +1002,7 @@ class NodeRequestHandler(BaseHTTPRequestHandler):
             if now - started >= 60.0:
                 started, count = now, 0
             if count >= limit:
-                retry_after = max(1, int(60.0 - (now - started)) + 1)
+                retry_after = max(1, int(60.0 - (now - started)))
             else:
                 handler_type._transaction_rate_windows[client] = (started, count + 1)
         if retry_after:
