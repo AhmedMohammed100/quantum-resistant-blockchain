@@ -23,12 +23,12 @@ class _FakeResponse:
 
 class PeerResponseHardeningTests(unittest.TestCase):
     def test_accepts_json_object(self) -> None:
-        with patch("qr_blockchain.network.request.urlopen", return_value=_FakeResponse(b'{"ok":true}')):
+        with patch("qr_blockchain.network._open_no_redirect", return_value=_FakeResponse(b'{"ok":true}')):
             self.assertEqual(fetch_json("http://peer.invalid/summary"), {"ok": True})
 
     def test_rejects_oversized_declared_response_before_reading(self) -> None:
         with patch(
-            "qr_blockchain.network.request.urlopen",
+            "qr_blockchain.network._open_no_redirect",
             return_value=_FakeResponse(b'{"ok":true}', {"Content-Length": "1024"}),
         ):
             with self.assertRaisesRegex(ValueError, "size limit"):
@@ -36,7 +36,7 @@ class PeerResponseHardeningTests(unittest.TestCase):
 
     def test_rejects_oversized_body_when_length_is_missing_or_untrusted(self) -> None:
         with patch(
-            "qr_blockchain.network.request.urlopen",
+            "qr_blockchain.network._open_no_redirect",
             return_value=_FakeResponse(b"x" * 33),
         ):
             with self.assertRaisesRegex(ValueError, "size limit"):
@@ -44,7 +44,7 @@ class PeerResponseHardeningTests(unittest.TestCase):
 
     def test_rejects_invalid_content_length(self) -> None:
         with patch(
-            "qr_blockchain.network.request.urlopen",
+            "qr_blockchain.network._open_no_redirect",
             return_value=_FakeResponse(b"{}", {"Content-Length": "unknown"}),
         ):
             with self.assertRaisesRegex(ValueError, "Content-Length"):
@@ -54,11 +54,24 @@ class PeerResponseHardeningTests(unittest.TestCase):
         for body in (b"[]", b'"string"', b"\xff"):
             with self.subTest(body=body):
                 with patch(
-                    "qr_blockchain.network.request.urlopen",
+                    "qr_blockchain.network._open_no_redirect",
                     return_value=_FakeResponse(body),
                 ):
                     with self.assertRaises(ValueError):
                         fetch_json("http://peer.invalid/summary")
+
+
+    def test_outbound_allowlist_is_enforced_before_network_access(self) -> None:
+        with patch("qr_blockchain.network._open_no_redirect") as opener:
+            with self.assertRaisesRegex(ValueError, "allowlist"):
+                fetch_json("http://untrusted.example/summary", allowed_hosts=("trusted.example",))
+            opener.assert_not_called()
+
+    def test_required_outbound_allowlist_cannot_be_empty(self) -> None:
+        with patch("qr_blockchain.network._open_no_redirect") as opener:
+            with self.assertRaisesRegex(ValueError, "required but empty"):
+                fetch_json("http://peer.example/summary", require_allowlist=True)
+            opener.assert_not_called()
 
     def test_rejects_non_positive_limits(self) -> None:
         with self.assertRaisesRegex(ValueError, "timeout"):
