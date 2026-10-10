@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+from http import HTTPStatus
 import threading
 import unittest
 from email.message import Message
@@ -82,7 +83,7 @@ class HttpTransportHardeningTests(unittest.TestCase):
         handler.send_header = lambda name, value: headers.append((name, value))
         handler.end_headers = lambda: None
         handler.wfile = io.BytesIO()
-        handler._respond(200, {"status": "ok"})
+        handler._respond(HTTPStatus.OK, {"status": "ok"})
         observed = dict(headers)
         self.assertEqual(observed["Cache-Control"], "no-store")
         self.assertEqual(observed["X-Content-Type-Options"], "nosniff")
