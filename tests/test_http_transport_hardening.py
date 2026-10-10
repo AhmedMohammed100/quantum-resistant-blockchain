@@ -107,9 +107,9 @@ class HttpTransportHardeningTests(unittest.TestCase):
             handler.setup()
         self.assertEqual(handler._timeout, 10.0)
 
-    def test_peer_redirect_is_not_followed(self):
-        class RedirectResponse:
-            headers = {"Location": "http://127.0.0.1:8080/admin"}
+    def test_peer_redirect_handler_refuses_redirects(self):
+        class JsonResponse:
+            headers = {}
 
             def __enter__(self):
                 return self
@@ -118,13 +118,16 @@ class HttpTransportHardeningTests(unittest.TestCase):
                 return False
 
             def read(self, size=-1):
-                return b'{"unexpected":true}'
+                return b'{"ok":true}'
 
-        with patch("qr_blockchain.network._open_no_redirect", return_value=RedirectResponse()) as opener:
+        with patch("qr_blockchain.network.request.build_opener") as build_opener:
+            build_opener.return_value.open.return_value = JsonResponse()
             result = fetch_json("https://peer.example/summary", allowed_hosts=("peer.example",))
-        self.assertEqual(result, {"unexpected": True})
-        # The no-redirect opener is the only transport path used by fetch_json.
-        self.assertEqual(opener.call_count, 1)
+        self.assertEqual(result, {"ok": True})
+        handlers = build_opener.call_args.args
+        self.assertEqual(len(handlers), 1)
+        redirect_handler = handlers[0]
+        self.assertEqual(redirect_handler.redirect_request(None, None, 302, "Found", {}, "http://127.0.0.1/"), None)
 
 
 class TransactionRateLimitConcurrencyTests(unittest.TestCase):
