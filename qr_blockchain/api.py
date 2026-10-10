@@ -25,6 +25,15 @@ class NodeRequestHandler(BaseHTTPRequestHandler):
     _transaction_rate_lock = threading.Lock()
     _transaction_rate_windows: dict[str, tuple[float, int]] = {}
 
+    def setup(self) -> None:
+        super().setup()
+        timeout = float(getattr(self.service.config, "http_client_timeout_seconds", 10.0))
+        if timeout <= 0:
+            timeout = 10.0
+        # Bound idle header/body reads so slow clients cannot hold worker threads
+        # indefinitely. Reverse proxies should enforce their own header limits too.
+        self.connection.settimeout(timeout)
+
     def _operator_auth_required(self) -> bool:
         """Require a bearer token for privileged HTTP operations.
 
@@ -1054,6 +1063,14 @@ class NodeRequestHandler(BaseHTTPRequestHandler):
         limit = int(getattr(self.service.config, "max_api_request_bytes", 20971520))
         if limit <= 0:
             raise ValueError("Configured maximum API request size must be positive.")
+        lengths = self.headers.get_all("Content-Length", []) if hasattr(self.headers, "get_all") else []
+        if len(lengths) > 1 and len({item.strip() for item in lengths}) != 1:
+            raise ValueError("Conflicting Content-Length headers are not allowed.")
+        if self.headers.get("Transfer-Encoding") is not None:
+            raise ValueError("Transfer-Encoding is not supported by this JSON API.")
+        content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+        if content_type and content_type != "application/json":
+            raise ValueError("Content-Type must be application/json.")
         raw_length = self.headers.get("Content-Length", "0")
         try:
             content_length = int(raw_length)
@@ -1087,8 +1104,12 @@ class NodeRequestHandler(BaseHTTPRequestHandler):
     ) -> None:
         encoded = json.dumps(payload, sort_keys=True).encode("utf-8")
         self.send_response(status.value)
-        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(encoded)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
         for name, value in (headers or {}).items():
             self.send_header(name, value)
         self.end_headers()
