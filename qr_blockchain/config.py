@@ -39,6 +39,7 @@ class NodeConfig:
     deployment_mode: str = "development"
     api_auth_token: str = ""
     max_api_request_bytes: int = 20971520
+    http_client_timeout_seconds: float = 10.0
     max_public_transaction_requests_per_minute: int = 60
     transaction_rate_limit_redis_url: str = ""
     outbound_peer_url_allowlist: tuple[str, ...] = ()
@@ -164,6 +165,7 @@ class NodeConfig:
             deployment_mode=os.getenv("QR_CHAIN_DEPLOYMENT_MODE", "development"),
             api_auth_token=os.getenv("QR_CHAIN_API_AUTH_TOKEN", ""),
             max_api_request_bytes=int(os.getenv("QR_CHAIN_MAX_API_REQUEST_BYTES", "20971520")),
+            http_client_timeout_seconds=float(os.getenv("QR_CHAIN_HTTP_CLIENT_TIMEOUT_SECONDS", "10")),
             max_public_transaction_requests_per_minute=int(
                 os.getenv("QR_CHAIN_MAX_PUBLIC_TX_REQUESTS_PER_MINUTE", "60")
             ),
