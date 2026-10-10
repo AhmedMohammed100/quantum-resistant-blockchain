@@ -83,7 +83,7 @@ class HttpTransportHardeningTests(unittest.TestCase):
         handler.send_header = lambda name, value: headers.append((name, value))
         handler.end_headers = lambda: None
         handler.wfile = io.BytesIO()
-        handler._respond(HTTPStatus.OK, {"status": "ok"})
+        NodeRequestHandler._respond(handler, HTTPStatus.OK, {"status": "ok"})
         observed = dict(headers)
         self.assertEqual(observed["Cache-Control"], "no-store")
         self.assertEqual(observed["X-Content-Type-Options"], "nosniff")
@@ -126,7 +126,7 @@ class HttpTransportHardeningTests(unittest.TestCase):
         self.assertEqual(result, {"ok": True})
         handlers = build_opener.call_args.args
         self.assertEqual(len(handlers), 1)
-        redirect_handler = handlers[0]
+        redirect_handler = handlers[0]()
         self.assertEqual(redirect_handler.redirect_request(None, None, 302, "Found", {}, "http://127.0.0.1/"), None)
 
 
