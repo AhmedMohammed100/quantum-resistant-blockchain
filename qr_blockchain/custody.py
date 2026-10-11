@@ -186,6 +186,8 @@ def build_wallet_custody_provider(config: WalletCustodyConfig) -> WalletCustodyP
     if mode == "windows_dpapi":
         return WindowsDpapiCustodyProvider(scope=config.scope)
     if mode == "plaintext":
+        if config.deployment_mode.strip().lower() not in {"development", "test"}:
+            raise RuntimeError("Plaintext wallet custody is forbidden outside development/test mode.")
         return PlaintextCustodyProvider()
     raise ValueError(
         "Unsupported wallet custody mode. Expected one of: auto, windows_dpapi, plaintext."
