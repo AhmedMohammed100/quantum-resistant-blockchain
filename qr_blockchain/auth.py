@@ -36,6 +36,7 @@ class NodeIdentityManager:
             custody_config=WalletCustodyConfig(
                 mode=self.config.wallet_custody_mode,
                 scope=self.config.wallet_custody_scope,
+                deployment_mode=self.config.deployment_mode,
             ),
             reservation_ttl_seconds=self.config.wallet_reservation_ttl_seconds,
         )
