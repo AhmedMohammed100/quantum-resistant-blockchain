@@ -1025,6 +1025,14 @@ class NodeRequestHandler(BaseHTTPRequestHandler):
                 )
                 return False
             return True
+        deployment_mode = str(getattr(self.service.config, "deployment_mode", "development")).strip().lower()
+        if deployment_mode not in {"development", "test"}:
+            self._respond(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                {"error": "A shared Redis transaction rate limiter is required outside development/test mode."},
+                headers={"Retry-After": "5"},
+            )
+            return False
         now = time.monotonic()
         retry_after = 0
         handler_type = type(self)
