@@ -21,9 +21,15 @@ class WalletCustodyPolicyTests(unittest.TestCase):
                     )
 
     @unittest.skipIf(os.name == "nt", "Windows auto mode uses DPAPI")
-    def test_plaintext_custody_requires_explicit_mode_outside_auto(self) -> None:
+    def test_plaintext_custody_is_forbidden_in_production_even_when_explicit(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "forbidden outside development/test"):
+            build_wallet_custody_provider(
+                WalletCustodyConfig(mode="plaintext", deployment_mode="production")
+            )
+
+    def test_explicit_plaintext_custody_remains_available_in_development(self) -> None:
         provider = build_wallet_custody_provider(
-            WalletCustodyConfig(mode="plaintext", deployment_mode="production")
+            WalletCustodyConfig(mode="plaintext", deployment_mode="development")
         )
         self.assertIsInstance(provider, PlaintextCustodyProvider)
         self.assertIn("warning", provider.status())
