@@ -113,6 +113,14 @@ class ApiSecurityTests(unittest.TestCase):
         self.assertEqual(capture.calls[-1][0].value, 503)
         self.assertEqual(capture.calls[-1][2]["Retry-After"], "5")
 
+    def test_production_requires_shared_rate_limit_backend(self) -> None:
+        handler, capture = self.make_handler(
+            bind_host="0.0.0.0", deployment_mode="production", token="secret"
+        )
+        self.assertFalse(handler._allow_public_transaction())
+        self.assertEqual(capture.calls[-1][0].value, 503)
+        self.assertIn("shared Redis", capture.calls[-1][1]["error"])
+
     def test_public_transaction_rate_limit_is_shared_and_returns_retry_after(self) -> None:
         handler, capture = self.make_handler(
             bind_host="127.0.0.1", deployment_mode="development", token=""

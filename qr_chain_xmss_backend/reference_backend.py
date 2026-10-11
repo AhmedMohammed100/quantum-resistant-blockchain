@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+import secrets
+import threading
 
 from .contract import EXPECTED_ALGORITHM_FAMILY, EXPECTED_SCHEME_ID, XMSS_BACKEND_API_VERSION
 from qr_blockchain.lamport import LamportKeyPair, address_from_public_key as lamport_address_from_public_key, sha256_hex, verify_signature
@@ -26,6 +28,9 @@ class ReferenceXMSSKeyPair:
     auth_paths: list[list[str]]
     root: str
     next_index: int = 0
+    reservations: dict[str, int] = field(default_factory=dict)
+    consumed_reservations: set[str] = field(default_factory=set)
+    _reservation_lock: object = field(default_factory=threading.RLock, repr=False, compare=False)
 
 
 XMSS_BACKEND_MANIFEST = {
@@ -191,6 +196,8 @@ def serialize_keypair(keypair: object) -> object:
         "height": keypair.height,
         "root": keypair.root,
         "next_index": keypair.next_index,
+        "reservations": dict(keypair.reservations),
+        "consumed_reservations": sorted(keypair.consumed_reservations),
         "leaf_hashes": list(keypair.leaf_hashes),
         "auth_paths": [list(path) for path in keypair.auth_paths],
         "leaf_keypairs": [
@@ -222,6 +229,8 @@ def deserialize_keypair(payload: object) -> ReferenceXMSSKeyPair:
         height=height,
         root=str(payload["root"]),
         next_index=next_index,
+        reservations={str(token): int(index) for token, index in payload.get("reservations", {}).items()},
+        consumed_reservations={str(token) for token in payload.get("consumed_reservations", [])},
         leaf_hashes=leaf_hashes,
         auth_paths=auth_paths,
         leaf_keypairs=[
@@ -237,29 +246,43 @@ def deserialize_keypair(payload: object) -> ReferenceXMSSKeyPair:
 def reserve_signing_material(keypair: object) -> object:
     if not isinstance(keypair, ReferenceXMSSKeyPair):
         raise ValueError("Invalid keypair for reference XMSS backend.")
-    if keypair.next_index >= len(keypair.leaf_keypairs):
-        raise ValueError("Reference XMSS keypair has exhausted all one-time leaves.")
-    leaf_index = keypair.next_index
-    keypair.next_index += 1
-    return {"leaf_index": leaf_index}
+    # Allocate atomically so concurrent callers cannot reserve the same leaf.
+    with keypair._reservation_lock:
+        if keypair.next_index >= len(keypair.leaf_keypairs):
+            raise ValueError("Reference XMSS keypair has exhausted all one-time leaves.")
+        leaf_index = keypair.next_index
+        keypair.next_index += 1
+        token = secrets.token_urlsafe(32)
+        keypair.reservations[token] = leaf_index
+        return {"leaf_index": leaf_index, "reservation_id": token}
 
 
 def sign_with_reservation(keypair: object, message: bytes, reservation: object) -> tuple[object, object]:
     if not isinstance(keypair, ReferenceXMSSKeyPair):
         raise ValueError("Invalid keypair for reference XMSS backend.")
-    if not isinstance(reservation, dict) or "leaf_index" not in reservation:
-        raise ValueError("Reference XMSS signing requires a reserved leaf index.")
-
-    leaf_index = int(reservation["leaf_index"])
+    if not isinstance(reservation, dict) or "leaf_index" not in reservation or not isinstance(reservation.get("reservation_id"), str):
+        raise ValueError("Reference XMSS signing requires an issued reservation token.")
+    try:
+        leaf_index = int(reservation["leaf_index"])
+    except (TypeError, ValueError) as error:
+        raise ValueError("Reference XMSS reservation leaf index is invalid.") from error
+    token = reservation["reservation_id"]
     if leaf_index < 0 or leaf_index >= len(keypair.leaf_keypairs):
         raise ValueError("Reference XMSS reservation leaf index is out of range.")
-    if leaf_index != keypair.next_index - 1:
-        raise ValueError("Reference XMSS reservation is stale or was not issued by this keypair.")
-    leaf_keypair = keypair.leaf_keypairs[leaf_index]
-    signature = {
-        "leaf_index": leaf_index,
-        "leaf_public_key": [list(row) for row in leaf_keypair.public_key],
-        "lamport_signature": leaf_keypair.sign(message),
-        "auth_path": list(keypair.auth_paths[leaf_index]),
-    }
+
+    # Consume before using the one-time private key. Failed attempts burn a leaf
+    # rather than making it reusable. Serialized state retains this tombstone.
+    with keypair._reservation_lock:
+        reserved_index = keypair.reservations.get(token)
+        if token in keypair.consumed_reservations or reserved_index is None or reserved_index != leaf_index:
+            raise ValueError("Reference XMSS reservation is stale, forged, or already consumed.")
+        del keypair.reservations[token]
+        keypair.consumed_reservations.add(token)
+        leaf_keypair = keypair.leaf_keypairs[leaf_index]
+        signature = {
+            "leaf_index": leaf_index,
+            "leaf_public_key": [list(row) for row in leaf_keypair.public_key],
+            "lamport_signature": leaf_keypair.sign(message),
+            "auth_path": list(keypair.auth_paths[leaf_index]),
+        }
     return export_public_key(keypair), signature

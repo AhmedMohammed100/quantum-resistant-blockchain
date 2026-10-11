@@ -1985,9 +1985,16 @@ class NodeServiceTests(unittest.TestCase):
         self.assertEqual(row[0], "__protected__")
         self.assertIsNotNone(row[1])
         self.assertGreater(len(bytes(row[1])), 0)
-        self.assertNotIn(b"private_key", bytes(row[1]))
-        self.assertNotIn(b"leaf_keypairs", bytes(row[1]))
-        self.assertEqual(row[2], "windows_dpapi")
+        expected_backend = "windows_dpapi" if os.name == "nt" else "plaintext"
+        self.assertEqual(row[2], expected_backend)
+        if expected_backend == "windows_dpapi":
+            self.assertNotIn(b"private_key", bytes(row[1]))
+            self.assertNotIn(b"leaf_keypairs", bytes(row[1]))
+        else:
+            # Development mode may explicitly use the plaintext provider on
+            # platforms without a native encrypted provider. Production mode
+            # is covered separately and must fail closed instead.
+            self.assertIn(b"private_key", bytes(row[1]))
 
     def test_wallet_store_migrates_legacy_plaintext_rows(self) -> None:
         wallet_db = self.wallet_state_db_path("legacy_wallet_state.db")
@@ -2033,7 +2040,7 @@ class NodeServiceTests(unittest.TestCase):
         self.assertIsNotNone(row)
         self.assertEqual(row[0], "__protected__")
         self.assertIsNotNone(row[1])
-        self.assertEqual(row[2], "windows_dpapi")
+        self.assertEqual(row[2], "windows_dpapi" if os.name == "nt" else "plaintext")
 
     def test_reservation_completion_persists_stateful_oqs_progress(self) -> None:
         service, _ = self.make_service()
@@ -2136,7 +2143,10 @@ class NodeServiceTests(unittest.TestCase):
         providers = {item["provider_id"]: item for item in status["providers"]}
 
         self.assertEqual(status["default_signature_provider"], service.config.default_signature_provider)
-        self.assertEqual(status["wallet_custody"]["backend_id"], "windows_dpapi")
+        expected_backend = "windows_dpapi" if os.name == "nt" else "plaintext"
+        self.assertEqual(status["wallet_custody"]["backend_id"], expected_backend)
+        if expected_backend == "plaintext":
+            self.assertIn("warning", status["wallet_custody"])
         self.assertIn("xmss_merkle_lamport_v1", providers)
         self.assertIn("xmss_nist_v1", providers)
         self.assertIn("module_path", providers["xmss_nist_v1"])

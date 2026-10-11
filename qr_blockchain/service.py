@@ -62,6 +62,7 @@ class NodeService:
             custody_config=WalletCustodyConfig(
                 mode=config.wallet_custody_mode,
                 scope=config.wallet_custody_scope,
+                deployment_mode=config.deployment_mode,
             ),
             reservation_ttl_seconds=config.wallet_reservation_ttl_seconds,
         )

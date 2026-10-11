@@ -167,6 +167,7 @@ class WindowsDpapiCustodyProvider(WalletCustodyProvider):
 class WalletCustodyConfig:
     mode: str = "auto"
     scope: str = "current_user"
+    deployment_mode: str = "development"
 
 
 def build_wallet_custody_provider(config: WalletCustodyConfig) -> WalletCustodyProvider:
@@ -174,10 +175,19 @@ def build_wallet_custody_provider(config: WalletCustodyConfig) -> WalletCustodyP
     if mode == "auto":
         if os.name == "nt":
             return WindowsDpapiCustodyProvider(scope=config.scope)
+        deployment_mode = config.deployment_mode.strip().lower()
+        if deployment_mode not in {"development", "test"}:
+            raise RuntimeError(
+                "Automatic wallet custody has no encrypted provider on this platform. "
+                "Configure an audited encryption provider or explicitly choose plaintext "
+                "only for non-production development."
+            )
         return PlaintextCustodyProvider()
     if mode == "windows_dpapi":
         return WindowsDpapiCustodyProvider(scope=config.scope)
     if mode == "plaintext":
+        if config.deployment_mode.strip().lower() not in {"development", "test"}:
+            raise RuntimeError("Plaintext wallet custody is forbidden outside development/test mode.")
         return PlaintextCustodyProvider()
     raise ValueError(
         "Unsupported wallet custody mode. Expected one of: auto, windows_dpapi, plaintext."
