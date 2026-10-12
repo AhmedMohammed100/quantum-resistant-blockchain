@@ -47,10 +47,25 @@ genesis, and operational artifacts) require `Authorization: Bearer <token>` when
 the node is exposed beyond loopback or when `QR_CHAIN_DEPLOYMENT_MODE` is not
 `development`/ `test`. Configure `QR_CHAIN_API_AUTH_TOKEN` for those deployments.
 The public `POST /transactions` endpoint remains available for transaction
-submission; rate limiting and internet-scale API hardening are still future work.
+submission and is rate-limited. Non-development deployments must configure
+`QR_CHAIN_TRANSACTION_RATE_LIMIT_REDIS_URL`; the endpoint fails closed with
+HTTP 503 if the shared limiter is missing or unavailable.
 
-For production-like deployments, place the node behind TLS and do not send bearer
-tokens over plaintext HTTP.
+## Production deployment security gate
+
+Environment-loaded nodes default to `QR_CHAIN_DEPLOYMENT_MODE=production`.
+Set `QR_CHAIN_DEPLOYMENT_MODE=development` or `test` explicitly only for
+isolated development/test environments. Production-like deployments must:
+
+- Set `QR_CHAIN_API_AUTH_TOKEN` to a strong secret and keep privileged endpoints off the public internet where possible.
+- Configure `QR_CHAIN_TRANSACTION_RATE_LIMIT_REDIS_URL` for a shared Redis-backed transaction limiter.
+- Configure `QR_CHAIN_OUTBOUND_PEER_URL_ALLOWLIST` with exact IP-literal authorities, including ports (for example, `203.0.113.10:8443`), and keep `QR_CHAIN_REQUIRE_OUTBOUND_PEER_URL_ALLOWLIST=true`. Hostnames are rejected for outbound peer requests in non-development modes to avoid DNS rebinding; use stable peer IPs.
+- Use HTTPS with certificates valid for the peer IP addresses, and enforce outbound egress restrictions with host/firewall/network policy.
+- Use a supported encrypted wallet-custody provider for the deployment platform. Do not enable plaintext custody in production.
+
+These controls reduce specific risks but do not make the experimental chain suitable
+for production custody or real user funds. Keep the node behind TLS and do not send
+bearer tokens over plaintext HTTP.
 
 
 ## Why This Matters
