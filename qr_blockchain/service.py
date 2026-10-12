@@ -330,9 +330,13 @@ class NodeService:
     def _fetch_peer_json(self, url: str, **kwargs) -> dict[str, object]:
         allowlist = tuple(getattr(self.config, "outbound_peer_url_allowlist", ()))
         required = bool(getattr(self.config, "require_outbound_peer_url_allowlist", False))
+        deployment_mode = str(getattr(self.config, "deployment_mode", "development")).strip().lower()
+        require_ip_literal = deployment_mode not in {"development", "test"}
         if allowlist or required:
             kwargs["allowed_hosts"] = allowlist
             kwargs["require_allowlist"] = required
+        if require_ip_literal:
+            kwargs["require_ip_literal"] = True
         return fetch_json(url, **kwargs)
 
     def sync_with_peer(self, peer_url: str) -> int:
