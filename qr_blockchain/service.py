@@ -329,14 +329,17 @@ class NodeService:
 
     def _fetch_peer_json(self, url: str, **kwargs) -> dict[str, object]:
         allowlist = tuple(getattr(self.config, "outbound_peer_url_allowlist", ()))
-        required = bool(getattr(self.config, "require_outbound_peer_url_allowlist", False))
         deployment_mode = str(getattr(self.config, "deployment_mode", "development")).strip().lower()
         require_ip_literal = deployment_mode not in {"development", "test"}
+        # Production cannot opt out of destination allowlisting via a weaker
+        # configuration flag; an empty allowlist fails closed in fetch_json.
+        required = bool(getattr(self.config, "require_outbound_peer_url_allowlist", False)) or require_ip_literal
         if allowlist or required:
             kwargs["allowed_hosts"] = allowlist
             kwargs["require_allowlist"] = required
         if require_ip_literal:
             kwargs["require_ip_literal"] = True
+            kwargs["require_https"] = True
         return fetch_json(url, **kwargs)
 
     def sync_with_peer(self, peer_url: str) -> int:
