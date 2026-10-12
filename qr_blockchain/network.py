@@ -63,6 +63,7 @@ def fetch_json(
     allowed_hosts: tuple[str, ...] | None = None,
     require_allowlist: bool = False,
     require_ip_literal: bool = False,
+    require_https: bool = False,
 ) -> dict[str, object]:
     """Fetch a bounded JSON object from a peer.
 
@@ -77,6 +78,8 @@ def fetch_json(
     # Apply the same URL policy even when callers bypass with_path().
     url = normalize_peer_url(url)
     parsed_url = parse.urlsplit(url)
+    if require_https and parsed_url.scheme.lower() != "https":
+        raise ValueError("Production outbound peer URLs must use HTTPS.")
     if require_ip_literal:
         try:
             ipaddress.ip_address(parsed_url.hostname or "")
