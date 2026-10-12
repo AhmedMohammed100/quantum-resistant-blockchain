@@ -9,6 +9,12 @@ from qr_blockchain.config import NodeConfig
 
 class NodeConfigTests(unittest.TestCase):
 
+    def test_omitted_deployment_mode_defaults_to_production(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            config = NodeConfig.from_env()
+        self.assertEqual(config.deployment_mode, "production")
+        self.assertTrue(config.require_outbound_peer_url_allowlist)
+
     def test_production_defaults_to_required_outbound_peer_allowlist(self) -> None:
         env = {
             "QR_CHAIN_DEPLOYMENT_MODE": "production",
