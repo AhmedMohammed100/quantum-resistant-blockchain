@@ -18,7 +18,7 @@ This tranche focuses on HTTP transport behavior, deterministic abuse regressions
 ## Priority 15 — Peer transport regression coverage
 
 - Adds regression coverage for request framing and the invariant that outbound peer requests use the redirect-disabled transport path.
-- The existing outbound authority allowlist still compares the configured authority before connecting. **DNS rebinding remains a residual risk** because hostname resolution is not pinned to an approved IP address by this tranche. Use fixed peer endpoints and network egress controls in production.
+- Production peer transport now requires IP-literal destinations (IPv4 or IPv6) as well as the configured exact authority allowlist. This avoids hostname DNS resolution at the HTTP client and prevents hostname-based DNS rebinding in that path. Deployments must configure each peer using its fixed IP and port; for HTTPS, certificates must validate for the IP address. Keep network egress restrictions enabled as defense in depth.
 
 ## Priority 16 — Concurrent abuse regression
 

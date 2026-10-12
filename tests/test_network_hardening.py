@@ -73,6 +73,46 @@ class PeerResponseHardeningTests(unittest.TestCase):
                 fetch_json("http://peer.example/summary", require_allowlist=True)
             opener.assert_not_called()
 
+    def test_production_mode_rejects_hostname_even_if_allowlisted(self) -> None:
+        with patch("qr_blockchain.network._open_no_redirect") as opener:
+            with self.assertRaisesRegex(ValueError, "IP-literal"):
+                fetch_json(
+                    "https://peer.example/summary",
+                    allowed_hosts=("peer.example",),
+                    require_allowlist=True,
+                    require_ip_literal=True,
+                )
+            opener.assert_not_called()
+
+    def test_production_mode_accepts_allowlisted_ip_literal(self) -> None:
+        with patch(
+            "qr_blockchain.network._open_no_redirect",
+            return_value=_FakeResponse(b'{"ok":true}'),
+        ) as opener:
+            self.assertEqual(
+                fetch_json(
+                    "https://192.0.2.10:8443/summary",
+                    allowed_hosts=("192.0.2.10:8443",),
+                    require_allowlist=True,
+                    require_ip_literal=True,
+                    require_https=True,
+                ),
+                {"ok": True},
+            )
+            opener.assert_called_once()
+
+    def test_production_mode_rejects_plain_http_even_for_ip_literal(self) -> None:
+        with patch("qr_blockchain.network._open_no_redirect") as opener:
+            with self.assertRaisesRegex(ValueError, "HTTPS"):
+                fetch_json(
+                    "http://192.0.2.10:8443/summary",
+                    allowed_hosts=("192.0.2.10:8443",),
+                    require_allowlist=True,
+                    require_ip_literal=True,
+                    require_https=True,
+                )
+            opener.assert_not_called()
+
     def test_rejects_non_positive_limits(self) -> None:
         with self.assertRaisesRegex(ValueError, "timeout"):
             fetch_json("http://peer.invalid/summary", timeout=0)

@@ -20,8 +20,11 @@ jobs:
       - name: Compile package
         run: python -m compileall qr_blockchain
 
+      - name: Run complete regression suite
+        run: python -W error::ResourceWarning -m unittest discover -s tests -v
+
       - name: Run focused hardening suites
-        run: python -W error::ResourceWarning -m unittest tests.test_config tests.test_source_ingestion tests.test_cli tests.test_adversarial -v
+        run: python -W error::ResourceWarning -m unittest tests.test_config tests.test_source_ingestion tests.test_cli tests.test_adversarial tests.test_xmss_security tests.test_custody_security -v
 
       - name: Run service safety suite
         run: python -W error::ResourceWarning -m unittest tests.test_node_service -v
