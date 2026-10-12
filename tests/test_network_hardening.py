@@ -95,10 +95,23 @@ class PeerResponseHardeningTests(unittest.TestCase):
                     allowed_hosts=("192.0.2.10:8443",),
                     require_allowlist=True,
                     require_ip_literal=True,
+                    require_https=True,
                 ),
                 {"ok": True},
             )
             opener.assert_called_once()
+
+    def test_production_mode_rejects_plain_http_even_for_ip_literal(self) -> None:
+        with patch("qr_blockchain.network._open_no_redirect") as opener:
+            with self.assertRaisesRegex(ValueError, "HTTPS"):
+                fetch_json(
+                    "http://192.0.2.10:8443/summary",
+                    allowed_hosts=("192.0.2.10:8443",),
+                    require_allowlist=True,
+                    require_ip_literal=True,
+                    require_https=True,
+                )
+            opener.assert_not_called()
 
     def test_rejects_non_positive_limits(self) -> None:
         with self.assertRaisesRegex(ValueError, "timeout"):
