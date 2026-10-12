@@ -162,7 +162,7 @@ class NodeConfig:
                 "QR_CHAIN_REWARD_RECIPIENT_POLICY",
                 "single_miner_or_validator",
             ),
-            deployment_mode=os.getenv("QR_CHAIN_DEPLOYMENT_MODE", "development"),
+            deployment_mode=os.getenv("QR_CHAIN_DEPLOYMENT_MODE", "production"),
             api_auth_token=os.getenv("QR_CHAIN_API_AUTH_TOKEN", ""),
             max_api_request_bytes=int(os.getenv("QR_CHAIN_MAX_API_REQUEST_BYTES", "20971520")),
             http_client_timeout_seconds=float(os.getenv("QR_CHAIN_HTTP_CLIENT_TIMEOUT_SECONDS", "10")),
@@ -177,7 +177,7 @@ class NodeConfig:
             ),
             require_outbound_peer_url_allowlist=os.getenv(
                 "QR_CHAIN_REQUIRE_OUTBOUND_PEER_URL_ALLOWLIST",
-                "0" if os.getenv("QR_CHAIN_DEPLOYMENT_MODE", "development").strip().lower()
+                "0" if os.getenv("QR_CHAIN_DEPLOYMENT_MODE", "production").strip().lower()
                 in {"development", "test"} else "1",
             ).strip().lower() in {"1", "true", "yes", "on"},
             host=os.getenv("QR_CHAIN_HOST", "127.0.0.1"),
