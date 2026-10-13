@@ -5,6 +5,15 @@ import ssl
 from urllib.parse import unquote, urlsplit
 
 
+def _create_redis_tls_context() -> ssl.SSLContext:
+    """Create a verified Redis TLS context with a modern protocol floor."""
+    context = ssl.create_default_context()
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    context.check_hostname = True
+    context.verify_mode = ssl.CERT_REQUIRED
+    return context
+
+
 def _resp_command(*parts: str) -> bytes:
     encoded = [part.encode("utf-8") for part in parts]
     return b"*" + str(len(encoded)).encode() + b"\r\n" + b"".join(
@@ -90,7 +99,7 @@ def enforce_redis_rate_limit(redis_url: str, key: str, limit: int, window_second
     )
     timeout = 2.0
     with socket.create_connection((parsed.hostname, port), timeout=timeout) as raw_sock:
-        sock = ssl.create_default_context().wrap_socket(raw_sock, server_hostname=parsed.hostname) if parsed.scheme == "rediss" else raw_sock
+        sock = _create_redis_tls_context().wrap_socket(raw_sock, server_hostname=parsed.hostname) if parsed.scheme == "rediss" else raw_sock
         with sock:
             sock.settimeout(timeout)
             if password:
