@@ -243,25 +243,47 @@ class XMSSMerkleLamportSignatureProvider(SignatureProvider):
         if not isinstance(public_key, dict) or not isinstance(signature, dict):
             return False
 
-        root = str(public_key.get("root", ""))
-        leaf_index = int(signature.get("leaf_index", -1))
-        auth_path_raw = signature.get("auth_path", [])
-        leaf_public_key_raw = signature.get("leaf_public_key", [])
-        lamport_signature_raw = signature.get("lamport_signature", [])
+        root = public_key.get("root")
+        height = public_key.get("height")
+        leaf_index = signature.get("leaf_index")
+        auth_path_raw = signature.get("auth_path")
+        leaf_public_key_raw = signature.get("leaf_public_key")
+        lamport_signature_raw = signature.get("lamport_signature")
 
-        if leaf_index < 0 or not isinstance(auth_path_raw, list):
+        # The leaf index is part of the one-time-signature identity. Checking
+        # only the low bits used by the authentication path would allow an
+        # index >= 2**height to alias an in-range leaf.
+        if (
+            not isinstance(root, str)
+            or not root
+            or isinstance(height, bool)
+            or not isinstance(height, int)
+            or height <= 0
+            or height > 64
+            or isinstance(leaf_index, bool)
+            or not isinstance(leaf_index, int)
+            or leaf_index < 0
+            or leaf_index >= (1 << height)
+            or not isinstance(auth_path_raw, list)
+            or len(auth_path_raw) != height
+            or any(not isinstance(item, str) for item in auth_path_raw)
+        ):
             return False
 
-        leaf_public_key = _normalize_lamport_public_key(leaf_public_key_raw)
-        lamport_signature = _normalize_lamport_signature(lamport_signature_raw)
-        auth_path = [str(item) for item in auth_path_raw]
+        try:
+            leaf_public_key = _normalize_lamport_public_key(leaf_public_key_raw)
+            lamport_signature = _normalize_lamport_signature(lamport_signature_raw)
+            auth_path = list(auth_path_raw)
+            if not verify_signature(message, lamport_signature, leaf_public_key):
+                return False
 
-        if not verify_signature(message, lamport_signature, leaf_public_key):
+            leaf_hash = _leaf_hash(leaf_public_key)
+            derived_root = _root_from_auth_path(leaf_hash, leaf_index, auth_path)
+            return derived_root == root
+        except (TypeError, ValueError, IndexError, KeyError, OverflowError):
+            # Malformed untrusted signature data is a verification failure,
+            # not an exception that should escape the verification boundary.
             return False
-
-        leaf_hash = _leaf_hash(leaf_public_key)
-        derived_root = _root_from_auth_path(leaf_hash, leaf_index, auth_path)
-        return derived_root == root
 
     def address_from_public_key(self, public_key: object) -> str:
         if not isinstance(public_key, dict):
