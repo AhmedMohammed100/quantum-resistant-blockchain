@@ -7,7 +7,17 @@ on:
 
 jobs:
   python-hardening:
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python-version: "3.11"
+          - os: ubuntu-latest
+            python-version: "3.12"
+          - os: windows-latest
+            python-version: "3.11"
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -15,7 +25,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
 
       - name: Compile package
         run: python -m compileall qr_blockchain
@@ -24,7 +34,7 @@ jobs:
         run: python -W error::ResourceWarning -m unittest discover -s tests -v
 
       - name: Run focused hardening suites
-        run: python -W error::ResourceWarning -m unittest tests.test_config tests.test_source_ingestion tests.test_cli tests.test_adversarial tests.test_xmss_security tests.test_custody_security tests.test_rate_limit_security -v
+        run: python -W error::ResourceWarning -m unittest tests.test_config tests.test_source_ingestion tests.test_cli tests.test_adversarial tests.test_xmss_security tests.test_custody_security tests.test_rate_limit_security tests.test_crypto_verification_hardening -v
 
       - name: Run service safety suite
         run: python -W error::ResourceWarning -m unittest tests.test_node_service -v
