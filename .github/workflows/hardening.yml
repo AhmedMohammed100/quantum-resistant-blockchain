@@ -30,8 +30,14 @@ jobs:
       - name: Compile package
         run: python -m compileall qr_blockchain
 
-      - name: Run complete regression suite
-        run: python -W error::ResourceWarning -m unittest discover -s tests -v
+      - name: Install coverage reporter
+        run: python -m pip install coverage
+
+      - name: Run complete regression suite with branch coverage
+        run: python -W error::ResourceWarning -m coverage run --branch --source=qr_blockchain -m unittest discover -s tests -v
+
+      - name: Report coverage for critical modules
+        run: python -m coverage report --include="qr_blockchain/crypto.py,qr_blockchain/signer.py,qr_blockchain/service.py,qr_blockchain/api.py" -m
 
       - name: Run focused hardening suites
         run: python -W error::ResourceWarning -m unittest tests.test_config tests.test_source_ingestion tests.test_cli tests.test_adversarial tests.test_xmss_security tests.test_custody_security tests.test_rate_limit_security tests.test_crypto_verification_hardening -v
