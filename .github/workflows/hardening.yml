@@ -24,7 +24,7 @@ jobs:
         run: python -W error::ResourceWarning -m unittest discover -s tests -v
 
       - name: Run focused hardening suites
-        run: python -W error::ResourceWarning -m unittest tests.test_config tests.test_source_ingestion tests.test_cli tests.test_adversarial tests.test_xmss_security tests.test_custody_security -v
+        run: python -W error::ResourceWarning -m unittest tests.test_config tests.test_source_ingestion tests.test_cli tests.test_adversarial tests.test_xmss_security tests.test_custody_security tests.test_rate_limit_security -v
 
       - name: Run service safety suite
         run: python -W error::ResourceWarning -m unittest tests.test_node_service -v
@@ -33,7 +33,7 @@ jobs:
         run: python -W error::ResourceWarning -m unittest tests.test_protocol_fuzz tests.test_network_hardening tests.test_storage_recovery -v
 
       - name: Run priorities 8-12 API and property regression suites
-        run: python -W error::ResourceWarning -m unittest tests.test_api_security tests.test_network_properties -v
+        run: python -W error::ResourceWarning -m unittest tests.test_api_security tests.test_network_properties tests.test_rate_limit_security -v
 
       - name: Run priorities 13-18 HTTP transport and concurrency regressions
         run: python -W error::ResourceWarning -m unittest tests.test_http_transport_hardening -v
