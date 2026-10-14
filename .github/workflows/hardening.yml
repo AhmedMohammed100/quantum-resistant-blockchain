@@ -18,6 +18,10 @@ jobs:
           - os: windows-latest
             python-version: "3.11"
     runs-on: ${{ matrix.os }}
+    # CLI integration tests need an explicit non-production custody mode on Linux,
+    # where no OS-backed encrypted provider is available. Never set this for deployments.
+    env:
+      QR_CHAIN_DEPLOYMENT_MODE: test
     steps:
       - name: Checkout
         uses: actions/checkout@v4
