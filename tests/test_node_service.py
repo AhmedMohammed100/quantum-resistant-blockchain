@@ -2,15 +2,21 @@
 
 import unittest
 
-from node_service_reports_tests import NodeServiceReportTests
-from node_service_chain_tests import NodeServiceChainTests
-from node_service_migration_tests import NodeServiceMigrationTests
-from node_service_network_tests import NodeServiceNetworkTests
-from node_service_wallet_tests import NodeServiceWalletTests
+import node_service_reports_tests as reports
+import node_service_chain_tests as chain
+import node_service_migration_tests as migration
+import node_service_network_tests as network
+import node_service_wallet_tests as wallet
 
 
-# Preserve the historical import name for existing test runners and scripts.
-NodeServiceTests = NodeServiceReportTests
+class NodeServiceTests(
+    reports.NodeServiceReportTests,
+    chain.NodeServiceChainTests,
+    migration.NodeServiceMigrationTests,
+    network.NodeServiceNetworkTests,
+    wallet.NodeServiceWalletTests,
+):
+    """Aggregate all focused suites under the historical test class name."""
 
 
 if __name__ == "__main__":
