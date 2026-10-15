@@ -2,8 +2,8 @@
 
 Imported by test_node_service.py to preserve the existing unittest entry point.
 """
-from node_service_test_support import *
-from node_service_test_support import _connect_test_db, _secp256k1_sign
+from tests.node_service_test_support import *
+from tests.node_service_test_support import _connect_test_db, _secp256k1_sign
 
 
 class NodeServiceMigrationTests(NodeServiceTestSupport):
