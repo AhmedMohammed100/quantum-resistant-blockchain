@@ -76,11 +76,20 @@ All hashes and signature messages use canonical JSON encoded as UTF-8:
 6. Optional fields are not omitted from a v0.1 transaction or block preimage;
    use their specified empty value instead.
 
-This definition corresponds to Python `json.dumps(value, sort_keys=True,
-separators=(",", ":"))`.  Implementations in other languages MUST produce the
-same UTF-8 byte sequence.  Because JSON number rendering can vary among
-languages, a production successor MUST replace timestamp floats with integer
-microseconds before cross-language consensus use.
+The reference implementation calls Python `json.dumps(value, sort_keys=True,
+separators=(",", ":"))` with the remaining standard-library defaults. In
+particular, non-ASCII characters are escaped as JSON `\\u` sequences by the
+default `ensure_ascii=True`, and floating-point values use Python's JSON
+number rendering. The resulting string is encoded as UTF-8 before hashing.
+Implementations MUST NOT normalize Unicode, reorder arrays, or silently coerce
+numbers when reproducing v0.1 hashes.
+
+**Portability limitation:** this defines the v0.1 reference-node behavior, but
+does not yet provide a sufficiently language-neutral number-formatting
+algorithm for independently written implementations. A portable successor
+MUST use integer microseconds for timestamps and specify canonical JSON number
+rendering without inheriting a language runtime's defaults. Do not change the
+v0.1 encoding in place: changing it requires a versioned protocol upgrade.
 
 ## 4. Transaction structure
 
@@ -190,13 +199,46 @@ resolved by choosing the lexicographically greater head hash.
 ### 5.1 State root
 
 At and after the configured state-root activation height (zero in v0.1), blocks
-MUST be version 3 or later and MUST commit to a non-empty post-block UTXO state
-root.  Validators derive the root after applying all transactions in order and
-MUST reject a mismatching root.  The exact UTXO-root encoding is presently an
-implementation-defined compatibility boundary; v0.1 freezes the commitment
-requirement but does **not** yet provide a portable Merkle encoding.  Nodes
-must therefore use the reference implementation for cross-node validation until
-a successor freeze specifies that encoding.
+MUST be version 3 or later and MUST commit to the post-block UTXO state root.
+The root is a SHA-256 digest of the canonical JSON UTF-8 encoding of an array
+containing every unspent output. Each array item has exactly these fields:
+`tx_id`, `output_index`, `recipient`, and `amount`.
+
+The array MUST be sorted by the tuple `(tx_id, output_index)` in ascending
+order. `tx_id` is a 64-character lowercase hexadecimal transaction ID;
+`output_index` is a non-negative integer; `recipient` is the exact address
+string; and `amount` is a positive integer number of quarks. Object keys are
+serialized by the canonical JSON rules in §3. The root of an empty UTXO set is
+SHA-256 of the UTF-8 sequence `[]`, namely
+`4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945`.
+
+Validators MUST calculate the root from the complete post-block UTXO view after
+applying transactions in block order and MUST reject a mismatch. This is a
+deterministic flat-list commitment, **not a Merkle tree**; no inclusion proofs
+are implied. See `docs/QBC_PROTOCOL_VECTORS_V0_1.md` for a non-empty state-root
+vector.
+
+### 5.2 Proof of work and difficulty
+
+The v0.1 reference node uses fixed configured difficulty; it does not retarget
+difficulty based on timestamps or observed block intervals. Genesis MUST use
+difficulty `1`. Every non-genesis block MUST use exactly the node's configured
+consensus difficulty. A production network manifest MUST publish that value
+before the network accepts public value, and nodes on the same network MUST
+configure the same value.
+
+A valid block hash is the lowercase 64-character hexadecimal SHA-256 block hash
+and MUST begin with at least `difficulty` hexadecimal `0` characters. For
+v0.1, the reference implementation's per-block work is
+`16 ** max(difficulty, 0)`; valid configured difficulty MUST be a positive
+integer, so its work is `16 ** difficulty`. Cumulative work is the sum of
+per-block work along the candidate branch. Nodes MUST select the branch with
+the greatest cumulative work; if cumulative work ties, select the branch whose
+head hash is lexicographically greater as a lowercase hexadecimal string.
+
+This is a fixed-difficulty development consensus rule, not a complete economic
+or adversarially calibrated difficulty-adjustment design. A future retargeting
+algorithm requires a separately versioned protocol change.
 
 ## 6. Addresses and signatures
 
