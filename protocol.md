@@ -78,7 +78,7 @@ All hashes and signature messages use canonical JSON encoded as UTF-8:
 
 The reference implementation calls Python `json.dumps(value, sort_keys=True,
 separators=(",", ":"))` with the remaining standard-library defaults. In
-particular, non-ASCII characters are escaped as JSON `\\u` sequences by the
+particular, non-ASCII characters are escaped as JSON `\u` sequences by the
 default `ensure_ascii=True`, and floating-point values use Python's JSON
 number rendering. The resulting string is encoded as UTF-8 before hashing.
 Implementations MUST NOT normalize Unicode, reorder arrays, or silently coerce
