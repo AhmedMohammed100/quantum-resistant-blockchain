@@ -4,6 +4,7 @@ import unittest
 
 from qr_blockchain.models import TxOutput
 from qr_blockchain.service import NodeService
+from qr_blockchain.storage import block_work
 
 
 class QBCStateRootVectorTests(unittest.TestCase):
@@ -12,6 +13,10 @@ class QBCStateRootVectorTests(unittest.TestCase):
             NodeService.state_root_for_utxos({}),
             "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
         )
+
+    def test_fixed_difficulty_work_vectors(self) -> None:
+        self.assertEqual(block_work(1), 16)
+        self.assertEqual(block_work(3), 4096)
 
     def test_non_empty_utxo_state_root_vector_is_order_independent(self) -> None:
         first = ("11" * 32, 0)
