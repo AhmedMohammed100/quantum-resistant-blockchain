@@ -107,7 +107,7 @@ Domain: `test-vector`.
 Expected SHA-256:
 
 ```text
-f0620f3f72a593f3413dc535205a31bb3c45e39806e5d54dba3286c017e9ba98
+cdec297e501cac92be6bfeaae2439cfb694e7dd2dcae9f63ca2df866b9923a3c
 ```
 
 ### Vector C — empty object
