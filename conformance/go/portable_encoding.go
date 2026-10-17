@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"regexp"
 	"sort"
 	"strconv"
@@ -108,7 +107,7 @@ func appendString(out *bytes.Buffer, s string) error {
 		switch r {
 		case '"':
 			out.WriteString(`\"`)
-		case '\':
+		case '\\':
 			out.WriteString(`\\`)
 		default:
 			if r <= 0x1f {
@@ -191,7 +190,7 @@ func parseValue(dec *json.Decoder) (any, error) {
 			return nil, errors.New("non-integer or negative-zero number")
 		}
 		n, err := strconv.ParseInt(s, 10, 64)
-		if err != nil || math.MinInt64 > n {
+		if err != nil {
 			return nil, errors.New("integer outside signed 64-bit range")
 		}
 		return n, nil
