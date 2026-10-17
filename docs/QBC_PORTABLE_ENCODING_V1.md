@@ -120,6 +120,73 @@ SHA-256 of the canonical bytes alone (not domain-separated):
 44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a
 ```
 
+
+## 4.1 Versioned consensus-object schema vectors (proposal)
+
+These vectors exercise the encoding profile with representative **version 2**
+schemas. They are conformance fixtures, not an activation of these schemas or
+a replacement for the v0.1 protocol. All hashes use the domain-separated
+qbc-cjson-v1 construction and the domain named for each object.
+
+### Vector D — versioned transaction
+
+Logical fields: version 2, chain ID qr-chain-devnet, transfer, integer-microsecond
+timestamp, fee 2, one input (outpoint a…a:1), one output (qbc1alice, 100 quarks),
+empty metadata, and signature scheme mldsa65.
+
+Canonical bytes:
+
+    {"chain_id":"qr-chain-devnet","fee":2,"inputs":[{"output_index":1,"prev_tx_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}],"kind":"transfer","metadata":{},"outputs":[{"amount":100,"recipient":"qbc1alice"}],"signature_scheme":"mldsa65","timestamp_us":1700000000123456,"version":2}
+
+Domain: transaction-v2  
+Expected digest: 898a1b493358e23d7bce1bd4b9cb3f2b45471b8e48f048569a04d98a39e79398
+
+### Vector E — versioned block
+
+The fixture commits to version, chain, height, parent hash, integer-microsecond
+timestamp, difficulty, nonce, ordered transaction references, and state root.
+
+Canonical bytes:
+
+    {"chain_id":"qr-chain-devnet","difficulty":2,"height":7,"nonce":9,"previous_hash":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","state_root":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","timestamp_us":1700000001123456,"transactions":[{"tx_id":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}],"version":2}
+
+Domain: block-v2  
+Expected digest: e265097b5b46d1ca8a55f3fddf04a2c3cee5657e80f614fbc0e95006f9112481
+
+### Vector F — signature preimage
+
+This envelope binds the chain ID and signing-relevant transaction fields,
+including outpoints, outputs, fee, timestamp, metadata, scheme, and version.
+Public keys and signatures are intentionally absent from the preimage.
+
+Canonical bytes:
+
+    {"chain_id":"qr-chain-devnet","transaction":{"fee":2,"inputs":[{"output_index":1,"prev_tx_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}],"kind":"transfer","metadata":{},"outputs":[{"amount":100,"recipient":"qbc1alice"}],"signature_scheme":"mldsa65","timestamp_us":1700000000123456,"version":2},"version":2}
+
+Domain: signature-preimage-v2  
+Expected digest: b5f703c9ae8298cdf633254078bf82ef4b2c7b34fd8f78474d74afe70628aab9
+
+### Vector G — state root
+
+The logical value is an array of UTXO entries sorted by (tx_id, output_index).
+Each entry contains exactly tx_id, output_index, recipient, and amount. This
+successor vector uses a domain-separated digest, unlike the legacy v0.1 flat-list
+root.
+
+Canonical bytes:
+
+    [{"amount":100,"output_index":1,"recipient":"qbc1alice","tx_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},{"amount":50,"output_index":0,"recipient":"qbc1bob","tx_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}]
+
+Domain: state-root-v2  
+Expected digest: 14239324cd984646f8169f15ec490d4599b0d8ec4e6c1dac3635a1f8946d18d3
+
+The Python reference suite and independent Go suite both test exact bytes and
+hashes for vectors D–G. A future activation must additionally define strict
+field-level schema validation, transaction-ID derivation, block transaction
+commitment semantics, signature-provider encodings, state-root sorting rules,
+and network-specific activation height/genesis. Passing encoding vectors alone
+does not authorize consensus activation.
+
 ## 5. Conformance requirements
 
 An implementation claiming `qbc-cjson-v1` support MUST:
