@@ -346,3 +346,21 @@ transaction-ID recomputation, chain-bound signature replay rejection,
 address/public-key binding, duplicate-input rejection, reward accounting,
 proof-of-work validation, state-root mismatch rejection, and version/activation
 boundaries.
+
+
+## 11. Portable encoding successor proposal (not active in v0.1)
+
+The proposed `qbc-cjson-v1` profile is documented in
+`docs/QBC_PORTABLE_ENCODING_V1.md` and implemented as an opt-in utility in
+`qr_blockchain/portable_encoding.py`. It defines a language-neutral JSON
+subset with UTF-8 bytewise key ordering, explicit string escaping, signed
+64-bit integers only, integer-microsecond timestamp fields, strict canonical
+input parsing, and domain-separated SHA-256 vectors.
+
+This profile is **not activated for consensus**. Nodes MUST continue using the
+v0.1 serialization and existing transaction IDs, block hashes, signature
+payloads, peer-frame digests, and state roots exactly as frozen above. No
+existing hash or vector may be changed as part of this proposal. Adoption
+requires a separately versioned protocol/object schema, explicit network
+activation, cross-language implementations that pass the published vectors,
+and a reviewed migration/rollback policy.
