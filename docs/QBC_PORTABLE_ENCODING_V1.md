@@ -83,7 +83,7 @@ Canonical UTF-8 text (the sequence `\u000a` is six ASCII characters after
 the backslash; `é` is encoded as UTF-8 bytes C3 A9):
 
 ```text
-{"a":"é\\u000a","b":true,"n":-12,"z":0}
+{"a":"é\u000a","b":true,"n":-12,"z":0}
 ```
 
 SHA-256 preimage domain: `test-vector`.
