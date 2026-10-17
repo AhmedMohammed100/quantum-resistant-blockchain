@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import unittest
 
-from qr_blockchain.portable_encoding import canonical_json_v1, hash_canonical_v1
+from qr_blockchain.portable_encoding import (
+    canonical_json_v1,
+    hash_canonical_v1,
+    parse_canonical_json_v1,
+)
 
 
 class PortableEncodingV1Tests(unittest.TestCase):
@@ -14,6 +18,7 @@ class PortableEncodingV1Tests(unittest.TestCase):
             hash_canonical_v1("test-vector", value),
             "80895643fef93bf20130c21775db0765051092bdc393f17d8627a3e615b2a0a2",
         )
+        self.assertEqual(parse_canonical_json_v1(expected), value)
 
     def test_object_key_order_is_independent_of_insertion_order(self) -> None:
         left = {"z": [1, None, False], "a": {"β": 2, "a": 1}}
@@ -64,6 +69,20 @@ class PortableEncodingV1Tests(unittest.TestCase):
         for value in ("\ud800", {"\udfff": 1}):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 canonical_json_v1(value)
+
+    def test_parser_rejects_duplicate_keys(self) -> None:
+        with self.assertRaises(ValueError):
+            parse_canonical_json_v1(b'{"a":1,"a":2}')
+
+    def test_parser_rejects_noncanonical_json(self) -> None:
+        for raw in (b'{ "a":1}', b'{"b":1,"a":2}', b'{"a":1.0}', b'{"a":"\\n"}'):
+            with self.subTest(raw=raw), self.assertRaises(ValueError):
+                parse_canonical_json_v1(raw)
+
+    def test_parser_rejects_invalid_utf8_and_surrogates(self) -> None:
+        for raw in (b'\xff', b'"\\ud800"'):
+            with self.subTest(raw=raw), self.assertRaises(ValueError):
+                parse_canonical_json_v1(raw)
 
     def test_hash_domain_must_be_lowercase_ascii_token(self) -> None:
         for domain in ("", "Upper", "has space", "é", "x" * 65):
