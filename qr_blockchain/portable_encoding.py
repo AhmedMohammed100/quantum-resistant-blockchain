@@ -98,15 +98,15 @@ def parse_canonical_json_v1(data: bytes | str) -> Any:
     Rejects duplicate keys, floats, invalid Unicode scalar strings, non-canonical
     whitespace/escaping/key order, and invalid UTF-8 rather than normalizing them.
     """
-    if isinstance(data, bytes):
-        raw = data
-        text = data.decode("utf-8", errors="strict")
-    elif isinstance(data, str):
-        text = data
-        raw = data.encode("utf-8", errors="strict")
-    else:
-        raise ValueError("Input must be UTF-8 bytes or text.")
     try:
+        if isinstance(data, bytes):
+            raw = data
+            text = data.decode("utf-8", errors="strict")
+        elif isinstance(data, str):
+            text = data
+            raw = data.encode("utf-8", errors="strict")
+        else:
+            raise ValueError("Input must be UTF-8 bytes or text.")
         value = json.loads(
             text,
             object_pairs_hook=_reject_duplicate_pairs,
