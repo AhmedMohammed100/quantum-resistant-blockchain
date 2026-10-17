@@ -76,10 +76,10 @@ and semantic validation.
 Logical value:
 
 ```json
-{"z":0,"a":"é\\n","n":-12,"b":true}
+{"z":0,"a":"é\n","n":-12,"b":true}
 ```
 
-Canonical UTF-8 text (the sequence `\\u000a` is six ASCII characters after
+Canonical UTF-8 text (the sequence `\u000a` is six ASCII characters after
 the backslash; `é` is encoded as UTF-8 bytes C3 A9):
 
 ```text
