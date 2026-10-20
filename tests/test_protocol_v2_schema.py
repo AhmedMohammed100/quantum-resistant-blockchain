@@ -49,6 +49,11 @@ class ProtocolV2SchemaTests(unittest.TestCase):
         with self.assertRaises(V2SchemaError): validate_tx(tx)
         tx = fixture_tx(); tx["kind"] = "unregistered"
         with self.assertRaises(V2SchemaError): validate_tx(tx)
+        tx = fixture_tx(); tx["kind"] = "reward"
+        with self.assertRaisesRegex(V2SchemaError, "only the ordinary transfer"):
+            validate_transaction_v2(tx, chain_id="qr-chain-devnet",
+                kinds={"transfer": lambda metadata: None, "reward": lambda metadata: None},
+                providers={"mldsa65": lambda pk, sig: None}, address_validator=lambda address: True)
         tx = fixture_tx(); tx["outputs"][0]["recipient"] = "invalid"
         with self.assertRaises(V2SchemaError): validate_tx(tx)
 

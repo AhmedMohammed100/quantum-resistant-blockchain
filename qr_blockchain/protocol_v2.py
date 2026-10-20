@@ -109,9 +109,11 @@ def validate_transaction_v2(
 ) -> str:
     """Validate a manifest-defined signed transaction and return recomputed tx_id.
 
-    `kinds[kind]` validates kind-specific metadata and semantics. Provider
+    `kinds["transfer"]` validates transfer metadata and semantics. Provider
     callbacks validate each (public_key, signature) payload pair. No signature
-    cryptography or live consensus operation is performed here.
+    cryptography or live consensus operation is performed here. Special
+    inputless/reward/migration schemas are deliberately rejected until their
+    exact manifest-defined field rules are supplied in a later change.
     """
     fields = {"version", "chain_id", "kind", "timestamp_us", "fee", "inputs", "outputs", "metadata", "signature_scheme", "tx_id"}
     tx = _object(tx, fields, "transaction")
@@ -121,6 +123,7 @@ def validate_transaction_v2(
     kind = _string(tx["kind"], "kind")
     if not isinstance(tx["signature_scheme"], str): raise V2SchemaError("signature_scheme must be a string")
     if kind not in kinds: raise V2SchemaError("transaction kind is not registered by the manifest")
+    if kind != "transfer": raise V2SchemaError("only the ordinary transfer schema is implemented")
     _integer(tx["timestamp_us"], "timestamp_us"); _integer(tx["fee"], "fee")
     inputs, outputs = tx["inputs"], tx["outputs"]
     if not isinstance(inputs, list) or not 1 <= len(inputs) <= 256: raise V2SchemaError("transfer inputs must contain 1–256 entries")
