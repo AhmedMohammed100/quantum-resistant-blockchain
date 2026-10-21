@@ -57,6 +57,36 @@ func TestNormativeV2KBlockHashPreimage(t *testing.T) {
 	assertNormativeV2Vector(t, "block-v2", value, want, "8409f50017640fea77542ad9bfffe42a173b9d740f6381ab805c4f485d810ac4")
 }
 
+func TestNormativeV2NetworkManifestDigest(t *testing.T) {
+	value := map[string]any{
+		"activation": map[string]any{"mode": "genesis"},
+		"block_schema_version": int64(2),
+		"chain_id": "qbc-v2-fixture",
+		"consensus_profile": map[string]any{
+			"parameters": map[string]any{"fixture": "consensus-parameters"},
+			"profile_id": "fixture-pow", "profile_version": "1",
+		},
+		"encoding_profile": "qbc-cjson-v1",
+		"genesis_hash": strings.Repeat("a", 64),
+		"limits": map[string]any{
+			"max_block_bytes": int64(4194304), "max_inputs": int64(256),
+			"max_metadata_bytes": int64(16384), "max_outputs": int64(256),
+			"max_transaction_bytes": int64(1048576), "max_transactions_per_block": int64(4096),
+		},
+		"manifest_version": int64(1),
+		"signature_providers": []any{map[string]any{
+			"max_public_key_bytes": int64(4096), "max_signature_bytes": int64(4096),
+			"provider_id": "fixture_pq_v1", "provider_version": "1.0.0",
+			"public_key_schema": "fixture-key-v1", "signature_schema": "fixture-signature-v1",
+			"signing_mode": "canonical-bytes",
+		}},
+		"transaction_kinds": []any{"transfer"},
+		"transaction_schema_version": int64(2),
+	}
+	want := []byte("{\"activation\":{\"mode\":\"genesis\"},\"block_schema_version\":2,\"chain_id\":\"qbc-v2-fixture\",\"consensus_profile\":{\"parameters\":{\"fixture\":\"consensus-parameters\"},\"profile_id\":\"fixture-pow\",\"profile_version\":\"1\"},\"encoding_profile\":\"qbc-cjson-v1\",\"genesis_hash\":\"" + strings.Repeat("a", 64) + "\",\"limits\":{\"max_block_bytes\":4194304,\"max_inputs\":256,\"max_metadata_bytes\":16384,\"max_outputs\":256,\"max_transaction_bytes\":1048576,\"max_transactions_per_block\":4096},\"manifest_version\":1,\"signature_providers\":[{\"max_public_key_bytes\":4096,\"max_signature_bytes\":4096,\"provider_id\":\"fixture_pq_v1\",\"provider_version\":\"1.0.0\",\"public_key_schema\":\"fixture-key-v1\",\"signature_schema\":\"fixture-signature-v1\",\"signing_mode\":\"canonical-bytes\"}],\"transaction_kinds\":[\"transfer\"],\"transaction_schema_version\":2}")
+	assertNormativeV2Vector(t, "network-manifest-v2", value, want, "dcaee8df5e114551a305bf44b2a6ee21f53f439faca7f0f05502a3955311649c")
+}
+
 func assertNormativeV2Vector(t *testing.T, domain string, value any, wantBytes []byte, wantHash string) {
 	t.Helper()
 	gotBytes, err := CanonicalJSONV1(value)

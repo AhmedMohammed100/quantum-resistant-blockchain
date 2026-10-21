@@ -143,6 +143,8 @@ A v2 test-network manifest must pin:
 
 Nodes must refuse a manifest that disagrees with their configured network. No activation by wall-clock time, peer assertion, or software version. Do not use this candidate to upgrade an existing network without a separate activation specification, boundary/reorganization rules, mixed-version tests, and independent review.
 
+The complete field layout, digest construction, fixture vector, and open design choices for the current opt-in implementation are recorded in [`QBC_PROTOCOL_V2_MANIFEST_CANDIDATE.md`](QBC_PROTOCOL_V2_MANIFEST_CANDIDATE.md). The normative requirements above remain authoritative; the candidate's concrete schema and digest domain require protocol review before activation.
+
 ## 9. Candidate vectors and conformance
 
 Vectors H–K in `docs/QBC_PROTOCOL_V2_VECTORS.md` cover:
