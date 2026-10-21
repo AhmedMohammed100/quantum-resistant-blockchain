@@ -104,6 +104,25 @@ class ProtocolV2ManifestTests(unittest.TestCase):
             consensus_profiles={("fixture-pow", "1"): mutate})
         self.assertEqual(manifest, before)
 
+    def test_independent_validators_converge_and_reject_network_mismatch(self):
+        manifest = fixture_manifest()
+        validators = [
+            {
+                "expected_chain_id": "qbc-v2-fixture",
+                "expected_genesis_hash": "a" * 64,
+                "supported_kinds": {"transfer"},
+                "provider_profiles": {("fixture_pq_v1", "1.0.0"): lambda _: None},
+                "consensus_profiles": {("fixture-pow", "1"): lambda _: None},
+            }
+            for _ in range(3)
+        ]
+        digests = [validate_v2_network_manifest(manifest, **config) for config in validators]
+        self.assertEqual(digests, [manifest["manifest_digest"]] * len(validators))
+
+        validators[2]["expected_genesis_hash"] = "b" * 64
+        with self.assertRaisesRegex(V2SchemaError, "genesis_hash"):
+            validate_v2_network_manifest(manifest, **validators[2])
+
 
 if __name__ == "__main__":
     unittest.main()
