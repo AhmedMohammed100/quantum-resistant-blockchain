@@ -81,7 +81,7 @@ The project is not trying to fork Bitcoin, Ethereum, or another existing chain. 
 - **Auditable source snapshots:** migration data is imported as deterministic bundles with manifest hashes, review status, reconciliation, approval artifacts, and rollback evidence.
 - **Stateful signer safety:** wallet state supports protected persistence and durable reservation coordination to avoid reusing one-time signing material.
 - **Authenticated node sync:** peers use signed identities, admitted sessions, replay protection, framed requests, and chain-bound payloads.
-- **Supply discipline:** QBC has a fixed 500M cap with explicit buckets for emissions, migration, treasury, security reserve, and public goods.
+- **Supply discipline:** QBC has a fixed 500M cap split across genesis, migration, and emissions. Treasury, security reserve, and public goods are subdivisions of genesis, not additional mintable categories.
 
 ## What Makes It Different
 
@@ -399,13 +399,25 @@ Fast lattice-based signatures are the practical default direction for normal use
 
 QBC uses a fixed supply cap of 500,000,000 coins.
 
-| Bucket | Amount |
+The mintable supply categories are:
+
+| Mintable category | Amount |
 | --- | ---: |
+| Genesis allocation | 125,000,000 QBC |
 | Migration pool | 200,000,000 QBC |
 | Miner/validator emissions | 175,000,000 QBC |
+| **Total** | **500,000,000 QBC** |
+
+The following planning caps are suballocations within the 125,000,000 QBC genesis category. They are not extra supply categories:
+
+| Genesis suballocation | Amount |
+| --- | ---: |
 | Ecosystem treasury | 75,000,000 QBC |
 | Security reserve | 25,000,000 QBC |
 | Public goods and liquidity | 25,000,000 QBC |
+| **Genesis suballocation total** | **125,000,000 QBC** |
+
+These suballocations describe the supply plan; current genesis validation enforces the overall genesis cap, but does not reserve individual suballocation balances or restrict which addresses receive them.
 
 Default emission policy:
 

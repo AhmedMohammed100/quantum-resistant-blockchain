@@ -34,8 +34,17 @@ The native currency is **Quantum Blockchain Coin** (`QBC`):
 | Genesis allocation cap | 125,000,000 QBC |
 | Migration pool cap | 200,000,000 QBC |
 | Emission cap | 175,000,000 QBC |
+| Mintable category total | 500,000,000 QBC |
 | Initial block subsidy | 175 QBC |
 | Subsidy halving interval | 500,000 blocks |
+
+The genesis cap is subdivided for supply-plan accounting as 75,000,000 QBC
+treasury, 25,000,000 QBC security reserve, and 25,000,000 QBC public goods
+and liquidity. These are suballocations of genesis, not additional mintable
+categories; the three mintable categories (genesis, migration, and emissions)
+sum to the maximum supply. In v0.1, consensus enforces the overall genesis,
+migration, emission, and maximum-supply caps. It does not separately reserve
+or destination-restrict the genesis suballocations.
 
 Amounts, fees, rewards, and UTXO values are non-negative integers of quarks;
 floating-point arithmetic MUST NOT be used for value accounting.  A production
