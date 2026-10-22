@@ -7,9 +7,11 @@ from pathlib import Path
 
 COIN = 100000000
 QBC_MAX_MONEY = 500000000 * COIN
+# The mintable categories are genesis + migration + emissions = max money.
 QBC_GENESIS_SUPPLY_CAP = 125000000 * COIN
 QBC_MIGRATION_POOL_CAP = 200000000 * COIN
 QBC_EMISSION_SUPPLY_CAP = 175000000 * COIN
+# These are accounting suballocations within the genesis cap, not new supply.
 QBC_TREASURY_ALLOCATION_CAP = 75000000 * COIN
 QBC_SECURITY_RESERVE_CAP = 25000000 * COIN
 QBC_PUBLIC_GOODS_ALLOCATION_CAP = 25000000 * COIN

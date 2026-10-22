@@ -75,13 +75,23 @@ class CurrencyTests(unittest.TestCase):
         self.assertEqual(policy.max_money, QBC_MAX_MONEY)
         self.assertEqual(policy.migration_pool_cap, QBC_MIGRATION_POOL_CAP)
         self.assertEqual(policy.emission_supply_cap, QBC_EMISSION_SUPPLY_CAP)
-        self.assertEqual(sum(policy.allocation_plan()[key] for key in (
-            "emission_supply_cap",
-            "migration_pool_cap",
-            "treasury_allocation_cap",
-            "security_reserve_cap",
-            "public_goods_allocation_cap",
-        )), QBC_MAX_MONEY)
+        allocation = policy.allocation_plan()
+        self.assertEqual(
+            sum(allocation[key] for key in (
+                "genesis_allocation_cap",
+                "migration_pool_cap",
+                "emission_supply_cap",
+            )),
+            QBC_MAX_MONEY,
+        )
+        self.assertEqual(
+            sum(allocation[key] for key in (
+                "treasury_allocation_cap",
+                "security_reserve_cap",
+                "public_goods_allocation_cap",
+            )),
+            policy.genesis_supply_cap,
+        )
 
     def test_mining_uses_height_based_subsidy_and_supply_snapshot(self) -> None:
         service = self.make_service(reward=100, halving=2)
