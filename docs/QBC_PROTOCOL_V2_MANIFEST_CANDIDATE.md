@@ -50,6 +50,10 @@ the remaining object. This self-excluding construction gives the fixture below
 the digest
 `dcaee8df5e114551a305bf44b2a6ee21f53f439faca7f0f05502a3955311649c`.
 The matching canonical bytes and digest are asserted in Python and Go tests.
+The Go conformance module also independently validates this manifest schema
+and has positive and negative cases for network mismatch, unsupported profiles,
+unknown fields, activation, and limits. These checks are still opt-in library
+calls; they do not activate or connect network nodes.
 The fixture profile and schema labels are test values only, not supported
 cryptographic providers or production consensus parameters.
 
