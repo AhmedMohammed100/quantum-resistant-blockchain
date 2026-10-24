@@ -57,6 +57,14 @@ calls; they do not activate or connect network nodes.
 The fixture profile and schema labels are test values only, not supported
 cryptographic providers or production consensus parameters.
 
+`tests/test_protocol_v2_manifest_cross_runtime.py` invokes the Python and Go
+validators against the same canonical fixture bytes and configured network
+expectations. It checks matching acceptance/digests and matching rejection for
+network mismatch and semantic mutations. This is a validator interoperability
+gate only: it does not exercise node-to-node transport, transaction/block
+acceptance, restart, reorganization, or mixed-version behavior, and it does not
+resolve the open protocol choices below.
+
 The validator also requires the manifest chain ID and genesis hash to match
 locally configured expectations. This function is a schema/configuration check;
 it is not wired into node startup or consensus in this stage.

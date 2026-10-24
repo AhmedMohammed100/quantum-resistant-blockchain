@@ -71,6 +71,22 @@ jobs:
         working-directory: conformance/go
         run: go test -v ./...
 
+  v2-manifest-cross-runtime:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22.x"
+      - name: Run cross-runtime v2 manifest checks
+        run: python -m unittest tests.test_protocol_v2_manifest_cross_runtime -v
+
   mldsa65-official-acvp:
     runs-on: ubuntu-latest
     steps:
