@@ -1,14 +1,13 @@
 # QBC v2 test-network manifest candidate
 
-**Status:** opt-in implementation proposal for protocol review. This document
+**Status:** repository-selected opt-in test-network profile. This document
 does not activate v2 or define a production network. It leaves v0.1 serialization,
-hashes, and consensus behavior unchanged.
+hashes, and consensus behavior unchanged. Choices are fixed for isolated
+`qbc-pow-fixed@1` conformance, pending independent review.
 
-The normative v2 specification requires a versioned genesis manifest and lists
-the values it must pin, but it does not yet define a complete manifest schema,
-digest domain, or encoding vector. This candidate supplies those missing details
-for review and tests. They must be approved before any implementation relies on
-them for network activation.
+This document fixes a concrete manifest schema, digest domain, and encoding
+vector for the isolated test-network implementation. It does not authorize
+activation of v2 on any existing network.
 
 ## Candidate schema
 
@@ -60,21 +59,21 @@ cryptographic providers or production consensus parameters.
 `tests/test_protocol_v2_manifest_cross_runtime.py` invokes the Python and Go
 validators against the same canonical fixture bytes and configured network
 expectations. It checks matching acceptance/digests and matching rejection for
-network mismatch and semantic mutations. This is a validator interoperability
-gate only: it does not exercise node-to-node transport, transaction/block
-acceptance, restart, reorganization, or mixed-version behavior, and it does not
-resolve the open protocol choices below.
+network mismatch and semantic mutations. The separate `QBC_PROTOCOL_V2_TESTNET_CONSENSUS.md` profile and node tests
+exercise isolated node-to-node transport, transaction/block acceptance, restart,
+forks, reorganization, and peer-version/configuration mismatch.
 
 The validator also requires the manifest chain ID and genesis hash to match
-locally configured expectations. This function is a schema/configuration check;
-it is not wired into node startup or consensus in this stage.
+locally configured expectations. The isolated `V2ConsensusNode` validates the manifest and genesis before accepting v2 blocks. It is not connected to the live v0.1 node path.
 
-## Open protocol decisions
+## Resolved test-profile choices and remaining release gate
 
-The normative document does not define whether to allow activation modes other
-than genesis for isolated v2 networks, how `consensus_profile.parameters` are
-encoded for each real consensus profile, whether provider IDs or profile IDs
-need a global namespace, or whether the listed schema ceilings are final
-network-wide maxima. This candidate chooses genesis-only activation, local
-versioned registries, and the existing v2 schema ceilings as validation maxima.
-Protocol review should resolve these choices before activation work.
+For this implementation, activation is genesis-only on a new isolated chain;
+`qbc-pow-fixed@1` uses the exact parameters in
+`QBC_PROTOCOL_V2_TESTNET_CONSENSUS.md`; identifiers resolve only through local
+versioned registries; schema ceilings above are hard validator maxima; transfer
+metadata is exactly `{}`; fees are burned; there is no reward or post-genesis
+issuance; state roots commit to a sorted flat UTXO list capped at 100,000 entries.
+These are repository-selected test-profile rules, not ecosystem-wide standards.
+Production launch still requires independent review and production cryptographic
+providers and vectors.

@@ -18,8 +18,9 @@ MAX_I64 = (1 << 63) - 1
 MAX_TX_BYTES = 1 << 20
 MAX_BLOCK_BYTES = 4 << 20
 MAX_METADATA_BYTES = 16 << 10
+MAX_STATE_UTXOS = 100_000
 _HEX64 = re.compile(r"[0-9a-f]{64}\Z")
-_PROVIDER_ID = re.compile(r"[a-z0-9]{1,64}\Z")
+_PROVIDER_ID = re.compile(r"[a-z0-9][a-z0-9_.-]{0,63}\Z")
 
 
 class V2SchemaError(ValueError):
@@ -102,60 +103,169 @@ def parse_canonical_v2(data: bytes, *, maximum: int) -> Any:
     return value
 
 
-def validate_transaction_v2(
+def _validate_transaction_with_owners_v2(
     tx: Any, *, chain_id: str, kinds: Mapping[str, Callable[[dict[str, Any]], None]],
-    providers: Mapping[str, Callable[[Any, Any], None]],
+    providers: Mapping[str, Callable[[Any, Any, bytes], str]],
+    provider_modes: Mapping[str, tuple[str, str | None]],
     address_validator: Callable[[str], bool],
-) -> str:
+) -> tuple[str, list[str]]:
     """Validate a manifest-defined signed transaction and return recomputed tx_id.
 
-    `kinds["transfer"]` validates transfer metadata and semantics. Provider
-    callbacks validate each (public_key, signature) payload pair. No signature
-    cryptography or live consensus operation is performed here. Special
-    inputless/reward/migration schemas are deliberately rejected until their
-    exact manifest-defined field rules are supplied in a later change.
+    `kinds["transfer"]` validates transfer metadata. Provider callbacks receive
+    the exact signature message and return the address derived from the verified
+    public key. This function checks object-level rules; UTXO ownership and value
+    conservation are applied by `apply_transfer_v2`.
     """
     fields = {"version", "chain_id", "kind", "timestamp_us", "fee", "inputs", "outputs", "metadata", "signature_scheme", "tx_id"}
     tx = _object(tx, fields, "transaction")
     if type(tx["version"]) is not int or tx["version"] != 2: raise V2SchemaError("version must be integer 2")
-    if tx["chain_id"] != chain_id: raise V2SchemaError("chain_id does not match configured network")
+    if not isinstance(tx["chain_id"], str) or tx["chain_id"] != chain_id: raise V2SchemaError("chain_id does not match configured network")
     _string(tx["chain_id"], "chain_id", limit=64, ascii_only=True)
     kind = _string(tx["kind"], "kind")
-    if not isinstance(tx["signature_scheme"], str): raise V2SchemaError("signature_scheme must be a string")
+    scheme = _string(tx["signature_scheme"], "signature_scheme", limit=64, ascii_only=True)
+    if not _PROVIDER_ID.fullmatch(scheme): raise V2SchemaError("signature_scheme must be lowercase ASCII provider ID")
     if kind not in kinds: raise V2SchemaError("transaction kind is not registered by the manifest")
     if kind != "transfer": raise V2SchemaError("only the ordinary transfer schema is implemented")
+    if scheme not in providers or scheme not in provider_modes:
+        raise V2SchemaError("signature provider is not registered by the manifest")
     _integer(tx["timestamp_us"], "timestamp_us"); _integer(tx["fee"], "fee")
     inputs, outputs = tx["inputs"], tx["outputs"]
     if not isinstance(inputs, list) or not 1 <= len(inputs) <= 256: raise V2SchemaError("transfer inputs must contain 1–256 entries")
     if not isinstance(outputs, list) or not 1 <= len(outputs) <= 256: raise V2SchemaError("outputs must contain 1–256 entries")
+    if tx["metadata"] != {}:
+        raise V2SchemaError("transfer metadata must be an empty object in v2 schema 2")
+    _object(tx["metadata"], set(), "transfer metadata")
+    preimage = signature_preimage_v2(tx)
+    mode, domain = provider_modes[scheme]
+    message = signature_message_v2(preimage, mode=mode, domain=domain)
     seen: set[tuple[str, int]] = set()
+    input_owners: list[str] = []
     for item in inputs:
         item = _object(item, {"prev_tx_id", "output_index", "public_key", "signature"}, "input")
         outpoint = (_digest(item["prev_tx_id"], "prev_tx_id"), _integer(item["output_index"], "output_index"))
         if outpoint in seen: raise V2SchemaError("duplicate input outpoint")
         seen.add(outpoint)
-        provider = tx["signature_scheme"]
-        if provider not in providers: raise V2SchemaError("signature provider is not registered by the manifest")
-        providers[provider](item["public_key"], item["signature"])
+        owner = providers[scheme](item["public_key"], item["signature"], message)
+        owner = _string(owner, "provider-derived address", limit=256)
+        if not address_validator(owner): raise V2SchemaError("provider-derived address is invalid")
+        input_owners.append(owner)
     for item in outputs:
         item = _object(item, {"recipient", "amount"}, "output")
         recipient = _string(item["recipient"], "recipient", limit=256)
         if not address_validator(recipient): raise V2SchemaError("recipient address is invalid")
         _integer(item["amount"], "amount", minimum=1)
-    metadata = _object(tx["metadata"], set(tx["metadata"]) if isinstance(tx["metadata"], dict) else set(), "metadata")
-    _canonical_size(metadata, MAX_METADATA_BYTES, "metadata")
-    scheme = _string(tx["signature_scheme"], "signature_scheme", limit=64, ascii_only=True)
-    if not _PROVIDER_ID.fullmatch(scheme): raise V2SchemaError("signature_scheme must be lowercase ASCII provider ID")
-    kinds[kind](metadata)
+    _canonical_size(tx["metadata"], MAX_METADATA_BYTES, "metadata")
+    kinds[kind](tx["metadata"])
     _canonical_size(tx, MAX_TX_BYTES, "signed transaction")
     preimage = {k: v for k, v in tx.items() if k != "tx_id"}
     tx_id = hash_canonical_v1("transaction-v2", preimage)
     if _digest(tx["tx_id"], "tx_id") != tx_id: raise V2SchemaError("tx_id does not match transaction preimage")
+    return tx_id, input_owners
+
+
+def validate_transaction_v2(
+    tx: Any, *, chain_id: str, kinds: Mapping[str, Callable[[dict[str, Any]], None]],
+    providers: Mapping[str, Callable[[Any, Any, bytes], str]],
+    provider_modes: Mapping[str, tuple[str, str | None]],
+    address_validator: Callable[[str], bool],
+) -> str:
+    """Validate a complete v2 transfer and return its recomputed transaction ID."""
+    tx_id, _ = _validate_transaction_with_owners_v2(
+        tx, chain_id=chain_id, kinds=kinds, providers=providers,
+        provider_modes=provider_modes, address_validator=address_validator,
+    )
     return tx_id
+
+
+def signature_preimage_v2(tx: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the exact v2 transaction-wide signature preimage projection."""
+    return {
+        "version": tx["version"],
+        "chain_id": tx["chain_id"],
+        "kind": tx["kind"],
+        "timestamp_us": tx["timestamp_us"],
+        "fee": tx["fee"],
+        "inputs": [
+            {"prev_tx_id": item["prev_tx_id"], "output_index": item["output_index"]}
+            for item in tx["inputs"]
+        ],
+        "outputs": tx["outputs"],
+        "metadata": tx["metadata"],
+        "signature_scheme": tx["signature_scheme"],
+    }
+
+
+def signature_message_v2(
+    preimage: Mapping[str, Any], *, mode: str, domain: str | None,
+) -> bytes:
+    """Build the provider message selected by its immutable manifest descriptor."""
+    if mode == "canonical-bytes" and domain is None:
+        return canonical_json_v1(dict(preimage))
+    if mode == "provider-digest" and isinstance(domain, str):
+        return bytes.fromhex(hash_canonical_v1(domain, dict(preimage)))
+    raise V2SchemaError("invalid manifest signature mode/domain pairing")
+
+
+def validate_transaction_with_owners_v2(
+    tx: Any, *, chain_id: str, kinds: Mapping[str, Callable[[dict[str, Any]], None]],
+    providers: Mapping[str, Callable[[Any, Any, bytes], str]],
+    provider_modes: Mapping[str, tuple[str, str | None]],
+    address_validator: Callable[[str], bool],
+) -> tuple[str, list[str]]:
+    """Validate a signed transfer and return its ID plus verified input owners."""
+    return _validate_transaction_with_owners_v2(
+        tx, chain_id=chain_id, kinds=kinds, providers=providers,
+        provider_modes=provider_modes, address_validator=address_validator,
+    )
+
+
+def apply_transfer_v2(
+    tx: Mapping[str, Any], *, tx_id: str, input_owners: Sequence[str],
+    utxos: Mapping[tuple[str, int], Mapping[str, Any]],
+) -> dict[tuple[str, int], dict[str, Any]]:
+    """Apply one validated transfer to a copy of UTXO state with no side effects."""
+    if len(input_owners) != len(tx["inputs"]):
+        raise V2SchemaError("verified input owner count does not match transaction")
+    updated = {key: dict(value) for key, value in utxos.items()}
+    input_total = 0
+    outpoints: list[tuple[str, int]] = []
+    for item, expected_owner in zip(tx["inputs"], input_owners, strict=True):
+        outpoint = (item["prev_tx_id"], item["output_index"])
+        coin = updated.get(outpoint)
+        if coin is None:
+            raise V2SchemaError("transfer input is missing or already spent")
+        if coin["recipient"] != expected_owner:
+            raise V2SchemaError("input signing address does not own the referenced UTXO")
+        input_total += coin["amount"]
+        if input_total > MAX_I64:
+            raise V2SchemaError("transfer input sum overflows signed 64-bit range")
+        outpoints.append(outpoint)
+    output_total = 0
+    for output in tx["outputs"]:
+        output_total += output["amount"]
+        if output_total > MAX_I64:
+            raise V2SchemaError("transfer output sum overflows signed 64-bit range")
+    required = output_total + tx["fee"]
+    if required > MAX_I64 or input_total != required:
+        raise V2SchemaError("transfer input value must equal outputs plus burned fee")
+    for outpoint in outpoints:
+        del updated[outpoint]
+    for output_index, output in enumerate(tx["outputs"]):
+        outpoint = (tx_id, output_index)
+        if outpoint in updated:
+            raise V2SchemaError("transaction would duplicate an existing UTXO outpoint")
+        updated[outpoint] = {
+            "tx_id": tx_id,
+            "output_index": output_index,
+            "recipient": output["recipient"],
+            "amount": output["amount"],
+        }
+    return updated
 
 
 def validate_state_utxos_v2(utxos: Any, *, address_validator: Callable[[str], bool]) -> str:
     if not isinstance(utxos, list): raise V2SchemaError("state-root preimage must be an array")
+    if len(utxos) > MAX_STATE_UTXOS: raise V2SchemaError(f"state-root preimage exceeds {MAX_STATE_UTXOS} UTXOs")
     seen: set[tuple[str, int]] = set(); previous: tuple[str, int] | None = None
     for item in utxos:
         item = _object(item, {"tx_id", "output_index", "recipient", "amount"}, "UTXO")
@@ -199,3 +309,33 @@ def validate_block_header_v2(
     result = hash_canonical_v1("block-v2", preimage)
     if _digest(block["block_hash"], "block_hash") != result: raise V2SchemaError("block_hash does not match preimage")
     return result
+
+
+def validate_block_context_v2(
+    block: Any, *, parent: Mapping[str, Any], chain_id: str,
+    transaction_ids: Sequence[str], difficulty_bits: int,
+    max_timestamp_step_us: int, address_validator: Callable[[str], bool],
+) -> str:
+    """Validate a non-genesis block's linkage, fixed proof of work, and time rule."""
+    if not 1 <= difficulty_bits <= 16:
+        raise V2SchemaError("difficulty_bits must be in [1, 16]")
+    if not 1 <= max_timestamp_step_us <= 120_000_000:
+        raise V2SchemaError("max_timestamp_step_us must be in [1, 120000000]")
+    block = _object(block, {"version", "chain_id", "height", "previous_hash", "timestamp_us", "difficulty", "nonce", "miner", "transactions", "state_root", "block_hash"}, "block")
+    if block["height"] != parent["height"] + 1:
+        raise V2SchemaError("block height must be parent height plus one")
+    if block["previous_hash"] != parent["block_hash"]:
+        raise V2SchemaError("previous_hash does not match parent block")
+    if type(block["difficulty"]) is not int or block["difficulty"] != difficulty_bits:
+        raise V2SchemaError("block difficulty does not match fixed network difficulty")
+    if block["timestamp_us"] <= parent["timestamp_us"]:
+        raise V2SchemaError("block timestamp must be greater than parent timestamp")
+    if block["timestamp_us"] - parent["timestamp_us"] > max_timestamp_step_us:
+        raise V2SchemaError("block timestamp exceeds the configured parent-time step")
+    block_hash = validate_block_header_v2(
+        block, chain_id=chain_id, transaction_ids=transaction_ids,
+        address_validator=address_validator,
+    )
+    if int(block_hash, 16).bit_length() > 256 - difficulty_bits:
+        raise V2SchemaError("block hash does not satisfy fixed proof of work")
+    return block_hash
