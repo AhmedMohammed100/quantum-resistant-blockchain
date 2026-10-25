@@ -88,6 +88,8 @@ jobs:
         run: python -m unittest tests.test_protocol_v2_manifest_cross_runtime -v
       - name: Run isolated v2 node-to-node consensus checks
         run: python -W error::ResourceWarning -m unittest tests.test_protocol_v2_node_consensus -v
+      - name: Compare Python and Go v2 consensus results
+        run: python -W error::ResourceWarning -m unittest tests.test_protocol_v2_cross_runtime_consensus -v
 
   mldsa65-official-acvp:
     runs-on: ubuntu-latest

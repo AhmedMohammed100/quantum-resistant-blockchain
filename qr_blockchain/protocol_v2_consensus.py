@@ -12,6 +12,7 @@ from .portable_encoding import canonical_json_v1, hash_canonical_v1
 from .protocol_v2 import (
     MAX_I64,
     V2SchemaError,
+    _canonical_size,
     _integer,
     _string,
     _validate_transaction_with_owners_v2,
@@ -144,6 +145,11 @@ class V2ConsensusNode:
             entry["provider_id"]: (entry["signing_mode"], entry.get("signing_domain"))
             for entry in self.manifest["signature_providers"]
         }
+        self.provider_payload_limits = {
+            entry["provider_id"]: (entry["max_public_key_bytes"], entry["max_signature_bytes"])
+            for entry in self.manifest["signature_providers"]
+        }
+        self.limits = self.manifest["limits"]
         self.blocks: dict[str, dict[str, Any]] = {}
         self.states: dict[str, dict[tuple[str, int], dict[str, Any]]] = {}
         self.branch_txids: dict[str, frozenset[str]] = {}
@@ -254,6 +260,9 @@ class V2ConsensusNode:
         block = dict(candidate)
         if set(block) != _GENESIS_FIELDS:
             raise V2SchemaError("block fields mismatch")
+        _canonical_size(block, self.limits["max_block_bytes"], "block")
+        if not isinstance(block.get("transactions"), list) or len(block["transactions"]) > self.limits["max_transactions_per_block"]:
+            raise V2SchemaError("block transaction count exceeds manifest limit")
         parent_hash = block.get("previous_hash")
         parent = self.blocks.get(parent_hash)
         if parent is None:
@@ -266,6 +275,7 @@ class V2ConsensusNode:
                 tx, chain_id=self.chain_id,
                 kinds={"transfer": lambda metadata: None}, providers=self.providers,
                 provider_modes=self.provider_modes, address_validator=self.address_validator,
+                limits=self.limits, provider_payload_limits=self.provider_payload_limits,
             )
             if txid in branch_txids or txid in transaction_ids:
                 raise V2SchemaError("transaction ID is already present on this branch")
