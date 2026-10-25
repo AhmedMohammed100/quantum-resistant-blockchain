@@ -131,8 +131,8 @@ def _validate_transaction_with_owners_v2(
     if scheme not in providers or scheme not in provider_modes:
         raise V2SchemaError("signature provider is not registered by the manifest")
     _integer(tx["timestamp_us"], "timestamp_us"); _integer(tx["fee"], "fee")
-    limits = limits or {"max_transaction_bytes": MAX_TX_BYTES, "max_metadata_bytes": MAX_METADATA_BYTES, "max_inputs": 256, "max_outputs": 256}
     inputs, outputs = tx["inputs"], tx["outputs"]
+    limits = limits or {"max_transaction_bytes": MAX_TX_BYTES, "max_metadata_bytes": MAX_METADATA_BYTES, "max_inputs": 256, "max_outputs": 256}
     if not isinstance(inputs, list) or not 1 <= len(inputs) <= limits["max_inputs"]: raise V2SchemaError("transfer input count exceeds manifest limit")
     if not isinstance(outputs, list) or not 1 <= len(outputs) <= limits["max_outputs"]: raise V2SchemaError("transfer output count exceeds manifest limit")
     if tx["metadata"] != {}:
