@@ -27,7 +27,9 @@ def fixture_tx():
 def validate_tx(tx):
     return validate_transaction_v2(
         tx, chain_id="qr-chain-devnet", kinds={"transfer": lambda metadata: None},
-        providers={"mldsa65": lambda pk, sig: None}, address_validator=lambda address: address.startswith("qbc1"),
+        providers={"mldsa65": lambda pk, sig, message: "qbc1alice"},
+        provider_modes={"mldsa65": ("canonical-bytes", None)},
+        address_validator=lambda address: address.startswith("qbc1"),
     )
 
 
@@ -53,7 +55,9 @@ class ProtocolV2SchemaTests(unittest.TestCase):
         with self.assertRaisesRegex(V2SchemaError, "only the ordinary transfer"):
             validate_transaction_v2(tx, chain_id="qr-chain-devnet",
                 kinds={"transfer": lambda metadata: None, "reward": lambda metadata: None},
-                providers={"mldsa65": lambda pk, sig: None}, address_validator=lambda address: True)
+                providers={"mldsa65": lambda pk, sig, message: "qbc1alice"},
+                provider_modes={"mldsa65": ("canonical-bytes", None)},
+                address_validator=lambda address: True)
         tx = fixture_tx(); tx["outputs"][0]["recipient"] = "invalid"
         with self.assertRaises(V2SchemaError): validate_tx(tx)
 

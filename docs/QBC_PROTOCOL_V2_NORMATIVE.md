@@ -1,12 +1,12 @@
-# QBC v2 Consensus Schemas — Stage 2.5 Candidate
+# QBC v2 Consensus Schemas — opt-in test-network profile
 
-**Status:** proposed normative candidate; requires protocol review and is NOT activated.
+**Status:** repository-selected conformance profile; opt-in and NOT activated on v0.1.
 **Encoding:** `qbc-cjson-v1` (QBC-CJSON-V1).
 **Scope:** object schemas and preimages for a future v2 test network only.
 
-This document resolves the design choices raised in Stage 2.4 into a concrete candidate. It does not change v0.1 or activate v2 consensus. Existing `models.canonical_json`, transaction IDs, signature payloads, block hashes, state roots, peer frames, and vectors remain unchanged.
+This document records the concrete v2 rules exercised by the isolated test-network implementation. It does not change v0.1 or activate v2 consensus. Existing `models.canonical_json`, transaction IDs, signature payloads, block hashes, state roots, peer frames, and vectors remain unchanged. The profile is not production-approved.
 
-## 1. Decisions proposed for review
+## 1. Test-profile decisions
 
 1. **Transaction ID:** hash the complete signed transaction preimage, including each input's public-key and signature payload, but excluding `tx_id` itself. This preserves the current implementation's broad identity model. Providers SHOULD use canonical signature encodings; a different valid signature payload produces a different transaction ID.
 2. **Block commitment:** hash an ordered array of recomputed transaction-ID strings, not serialized transaction JSON strings. Validate every complete transaction independently before accepting the block.
@@ -14,7 +14,7 @@ This document resolves the design choices raised in Stage 2.4 into a concrete ca
 4. **State root:** hash the canonical flat array of all post-block UTXOs under the `state-root-v2` domain. This is not a Merkle tree and supplies no inclusion proofs.
 5. **Version and activation:** every v2 object is explicitly versioned. First deployment is a separate test network with a new chain ID and genesis manifest. Do not add implicit v0.1 fallback after activation.
 
-These choices are reviewable protocol decisions, not a claim of independent approval.
+These rules are fixed for the repository's isolated `qbc-pow-fixed@1` test profile, not a claim of independent approval.
 
 ## 2. Shared encoding and primitive rules
 
@@ -31,7 +31,7 @@ These choices are reviewable protocol decisions, not a claim of independent appr
 
 ## 3. Signed transaction wire object
 
-The v2 signed transaction wire object has exactly these top-level fields:
+For the initial `qbc-pow-fixed@1` profile, the v2 signed transaction wire object has exactly these top-level fields:
 
 | Field | Type and rule |
 |---|---|
@@ -42,13 +42,13 @@ The v2 signed transaction wire object has exactly these top-level fields:
 | `fee` | integer, 0 through 2^63−1 |
 | `inputs` | ordered array; ordinary transfer requires 1–256 entries |
 | `outputs` | ordered array of 1–256 entries |
-| `metadata` | object governed by a kind-specific allowlist; canonical encoding at most 16 KiB |
+| `metadata` | exactly `{}` for transfer in schema version 2; canonical encoding at most 16 KiB |
 | `signature_scheme` | registered provider ID, 1–64 lowercase ASCII characters |
 | `tx_id` | 64 lowercase hexadecimal characters; omitted from transaction-ID preimage |
 
 Each input has exactly `prev_tx_id`, `output_index`, `public_key`, and `signature`. The outpoint hash must be a valid transaction ID, and `output_index` is a non-negative signed-64-bit integer. Public-key and signature payloads are JSON values supported by the registered provider; their provider-specific schema and size limits must be part of the network manifest. Each output has exactly `recipient` and `amount`; recipient is a non-empty validated address string of at most 256 UTF-8 bytes, and amount is an integer from 1 through 2^63−1.
 
-The canonical encoded signed transaction must not exceed 1 MiB. Implementations must enforce size and collection limits before expensive cryptographic verification. The v2 transfer schema rejects duplicate input outpoints. Kind-specific schemas define special inputless transactions, reward transactions, and migration claims explicitly; they must not bypass these base validation rules by relying on a missing field or an implicit default.
+The canonical encoded signed transaction must not exceed 1 MiB. Implementations must enforce size and collection limits before expensive cryptographic verification. The v2 transfer schema rejects duplicate input outpoints. This profile implements no reward transaction, issuance, or migration claim. Any such kind requires an explicit schema/profile revision; it cannot be inferred or enabled by a manifest alone.
 
 ### 3.1 Transaction-ID preimage
 
@@ -76,7 +76,7 @@ It excludes `tx_id`, all input public keys, and all input signatures. It include
 
 `hash_canonical_v1("signature-preimage-v2", signature_preimage)`
 
-A provider's signing contract must state whether it signs these exact canonical bytes or a provider-specific digest derived from them. That rule and the provider's public-key/signature encoding must be pinned by the network manifest. Every input of an ordinary transfer verifies against the same transaction-wide signing message. Provider-specific signature validation remains mandatory; the encoding vectors below use clearly marked fixture payloads and do not constitute valid cryptographic signatures.
+A provider's signing contract must state whether it signs these exact canonical bytes or a provider-specific digest derived from them. That rule and the provider's public-key/signature encoding must be pinned by the network manifest. The isolated profile permits `canonical-bytes` and `provider-digest`; the latter signs the bytes of the domain-separated digest using the manifest's `signing_domain`. Every input of an ordinary transfer verifies against the same transaction-wide signing message. Provider-specific signature validation remains mandatory; the encoding vectors below use clearly marked fixture payloads and do not constitute valid cryptographic signatures.
 
 ## 5. Block wire object and block-hash preimage
 
@@ -116,6 +116,8 @@ Sort the array ascending by transaction ID's lowercase ASCII bytes, then by nume
 
 The root of the empty list under this domain is the domain-separated digest of canonical bytes `[]`, not the legacy v0.1 state-root digest. This is a flat-list commitment, not a Merkle tree.
 
+The v2 schema has a protocol-wide hard ceiling of 100,000 UTXOs per state-root preimage. This ceiling is not lowerable by a manifest in schema version 2; changing it requires a schema/profile version change.
+
 ## 7. Consensus validation order
 
 For a candidate v2 transaction/block, validators must at minimum:
@@ -143,7 +145,7 @@ A v2 test-network manifest must pin:
 
 Nodes must refuse a manifest that disagrees with their configured network. No activation by wall-clock time, peer assertion, or software version. Do not use this candidate to upgrade an existing network without a separate activation specification, boundary/reorganization rules, mixed-version tests, and independent review.
 
-The complete field layout, digest construction, fixture vector, and open design choices for the current opt-in implementation are recorded in [`QBC_PROTOCOL_V2_MANIFEST_CANDIDATE.md`](QBC_PROTOCOL_V2_MANIFEST_CANDIDATE.md). The normative requirements above remain authoritative; the candidate's concrete schema and digest domain require protocol review before activation.
+The concrete manifest schema and digest are in [`QBC_PROTOCOL_V2_MANIFEST_CANDIDATE.md`](QBC_PROTOCOL_V2_MANIFEST_CANDIDATE.md); fixed-work parameters, genesis allocation rules, state-root ceiling, peer agreement, and activation rules are in [`QBC_PROTOCOL_V2_TESTNET_CONSENSUS.md`](QBC_PROTOCOL_V2_TESTNET_CONSENSUS.md). These choices apply only to the repository's isolated test profile and require independent review before production activation.
 
 ## 9. Candidate vectors and conformance
 
@@ -153,8 +155,8 @@ Vectors H–K in `docs/QBC_PROTOCOL_V2_VECTORS.md` cover:
 - J: sorted state-root preimage;
 - K: block-hash preimage referencing the transaction ID and state root from H/J.
 
-Python and Go tests must assert exact canonical bytes and domain-separated digest for every vector. The fixture payloads in H are placeholders only: they test encoding and hashing, not cryptographic signature validity. Positive/negative semantic schema tests and full multi-node consensus tests remain required before activation.
+Python and Go tests must assert exact canonical bytes and domain-separated digest for every vector. The fixture payloads in H are placeholders only: they test encoding and hashing, not cryptographic signature validity. Positive/negative semantic schema tests and loopback multi-node consensus tests exercise the test profile; mixed-version/downgrade tests and independent review remain required before any activation.
 
 ## 10. Compatibility and release gate
 
-This candidate is opt-in and does not replace or modify any v0.1 path. Do not merge an activation change solely because these golden-vector tests pass. Before activation, require strict schema validators, negative vectors, provider-specific cryptographic vectors, manifest tests, multi-node and reorganization tests, mixed-version/downgrade tests, and independent protocol/security review.
+This profile is opt-in and does not replace or modify any v0.1 path. Do not activate a network solely because these tests pass. Before deployment, require production provider-specific cryptographic vectors, mixed-version/downgrade tests, and independent protocol/security and operational review.
