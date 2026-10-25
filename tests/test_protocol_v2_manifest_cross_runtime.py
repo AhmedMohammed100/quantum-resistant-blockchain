@@ -27,16 +27,11 @@ class ProtocolV2ManifestCrossRuntimeTests(unittest.TestCase):
         runtime_dir = ROOT / "test_runtime"
         runtime_dir.mkdir(exist_ok=True)
         cls.binary_dir = tempfile.TemporaryDirectory(prefix="qbc-manifestcheck-", dir=runtime_dir)
-        cls.go_env = os.environ.copy()
-        cls.go_env["GOCACHE"] = str(runtime_dir / "go-cache")
-        cls.go_env["GOTMPDIR"] = str(runtime_dir / "go-tmp")
-        Path(cls.go_env["GOTMPDIR"]).mkdir(exist_ok=True)
         binary_name = "manifestcheck.exe" if os.name == "nt" else "manifestcheck"
         cls.binary = Path(cls.binary_dir.name) / binary_name
         subprocess.run(
-            ["go", "build", "-o", str(cls.binary), "./cmd/manifestcheck"],
+            ["go", "build", "-buildvcs=false", "-o", str(cls.binary), "./cmd/manifestcheck"],
             cwd=GO_MODULE,
-            env=cls.go_env,
             check=True,
             capture_output=True,
             text=True,

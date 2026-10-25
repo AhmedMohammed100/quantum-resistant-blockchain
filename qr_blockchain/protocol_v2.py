@@ -108,6 +108,8 @@ def _validate_transaction_with_owners_v2(
     providers: Mapping[str, Callable[[Any, Any, bytes], str]],
     provider_modes: Mapping[str, tuple[str, str | None]],
     address_validator: Callable[[str], bool],
+    limits: Mapping[str, int] | None = None,
+    provider_payload_limits: Mapping[str, tuple[int, int]] | None = None,
 ) -> tuple[str, list[str]]:
     """Validate a manifest-defined signed transaction and return recomputed tx_id.
 
@@ -130,8 +132,9 @@ def _validate_transaction_with_owners_v2(
         raise V2SchemaError("signature provider is not registered by the manifest")
     _integer(tx["timestamp_us"], "timestamp_us"); _integer(tx["fee"], "fee")
     inputs, outputs = tx["inputs"], tx["outputs"]
-    if not isinstance(inputs, list) or not 1 <= len(inputs) <= 256: raise V2SchemaError("transfer inputs must contain 1–256 entries")
-    if not isinstance(outputs, list) or not 1 <= len(outputs) <= 256: raise V2SchemaError("outputs must contain 1–256 entries")
+    limits = limits or {"max_transaction_bytes": MAX_TX_BYTES, "max_metadata_bytes": MAX_METADATA_BYTES, "max_inputs": 256, "max_outputs": 256}
+    if not isinstance(inputs, list) or not 1 <= len(inputs) <= limits["max_inputs"]: raise V2SchemaError("transfer input count exceeds manifest limit")
+    if not isinstance(outputs, list) or not 1 <= len(outputs) <= limits["max_outputs"]: raise V2SchemaError("transfer output count exceeds manifest limit")
     if tx["metadata"] != {}:
         raise V2SchemaError("transfer metadata must be an empty object in v2 schema 2")
     _object(tx["metadata"], set(), "transfer metadata")
@@ -142,6 +145,10 @@ def _validate_transaction_with_owners_v2(
     input_owners: list[str] = []
     for item in inputs:
         item = _object(item, {"prev_tx_id", "output_index", "public_key", "signature"}, "input")
+        if provider_payload_limits is not None:
+            max_key, max_signature = provider_payload_limits[scheme]
+            _canonical_size(item["public_key"], max_key, "provider public key")
+            _canonical_size(item["signature"], max_signature, "provider signature")
         outpoint = (_digest(item["prev_tx_id"], "prev_tx_id"), _integer(item["output_index"], "output_index"))
         if outpoint in seen: raise V2SchemaError("duplicate input outpoint")
         seen.add(outpoint)
@@ -154,9 +161,9 @@ def _validate_transaction_with_owners_v2(
         recipient = _string(item["recipient"], "recipient", limit=256)
         if not address_validator(recipient): raise V2SchemaError("recipient address is invalid")
         _integer(item["amount"], "amount", minimum=1)
-    _canonical_size(tx["metadata"], MAX_METADATA_BYTES, "metadata")
+    _canonical_size(tx["metadata"], limits["max_metadata_bytes"], "metadata")
     kinds[kind](tx["metadata"])
-    _canonical_size(tx, MAX_TX_BYTES, "signed transaction")
+    _canonical_size(tx, limits["max_transaction_bytes"], "signed transaction")
     preimage = {k: v for k, v in tx.items() if k != "tx_id"}
     tx_id = hash_canonical_v1("transaction-v2", preimage)
     if _digest(tx["tx_id"], "tx_id") != tx_id: raise V2SchemaError("tx_id does not match transaction preimage")
@@ -168,11 +175,14 @@ def validate_transaction_v2(
     providers: Mapping[str, Callable[[Any, Any, bytes], str]],
     provider_modes: Mapping[str, tuple[str, str | None]],
     address_validator: Callable[[str], bool],
+    limits: Mapping[str, int] | None = None,
+    provider_payload_limits: Mapping[str, tuple[int, int]] | None = None,
 ) -> str:
     """Validate a complete v2 transfer and return its recomputed transaction ID."""
     tx_id, _ = _validate_transaction_with_owners_v2(
         tx, chain_id=chain_id, kinds=kinds, providers=providers,
         provider_modes=provider_modes, address_validator=address_validator,
+        limits=limits, provider_payload_limits=provider_payload_limits,
     )
     return tx_id
 
@@ -211,11 +221,14 @@ def validate_transaction_with_owners_v2(
     providers: Mapping[str, Callable[[Any, Any, bytes], str]],
     provider_modes: Mapping[str, tuple[str, str | None]],
     address_validator: Callable[[str], bool],
+    limits: Mapping[str, int] | None = None,
+    provider_payload_limits: Mapping[str, tuple[int, int]] | None = None,
 ) -> tuple[str, list[str]]:
     """Validate a signed transfer and return its ID plus verified input owners."""
     return _validate_transaction_with_owners_v2(
         tx, chain_id=chain_id, kinds=kinds, providers=providers,
         provider_modes=provider_modes, address_validator=address_validator,
+        limits=limits, provider_payload_limits=provider_payload_limits,
     )
 
 
