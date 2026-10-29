@@ -82,6 +82,10 @@ class GetRoutesMixin:
             self._respond(HTTPStatus.OK, self.service.adversarial_performance_readiness_report())
             return
         if path == "/testing/load-chaos":
+            # The harness allocates temporary databases and performs CPU-heavy signing/verification.
+            # Keep it behind the operator boundary on exposed nodes.
+            if not self._authorize_operator():
+                return
             query = parse_qs(parsed.query)
             try:
                 report = self.service.load_chaos_harness_report(
