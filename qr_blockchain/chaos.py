@@ -20,6 +20,30 @@ from .signer import Wallet
 from .verification import verify_transaction_inputs
 
 
+MAX_LOAD_CHAOS_NODE_COUNT = 8
+MAX_LOAD_CHAOS_MEMPOOL_TRANSACTIONS = 100
+MAX_LOAD_CHAOS_MIGRATION_CLAIMS = 100
+MAX_LOAD_CHAOS_VERIFICATION_BATCH_SIZE = 256
+
+
+def _validate_load_chaos_limits(
+    *,
+    node_count: int,
+    mempool_transactions: int,
+    migration_claims: int,
+    verification_batch_size: int,
+) -> None:
+    limits = (
+        ("node_count", node_count, 2, MAX_LOAD_CHAOS_NODE_COUNT),
+        ("mempool_transactions", mempool_transactions, 1, MAX_LOAD_CHAOS_MEMPOOL_TRANSACTIONS),
+        ("migration_claims", migration_claims, 1, MAX_LOAD_CHAOS_MIGRATION_CLAIMS),
+        ("verification_batch_size", verification_batch_size, 1, MAX_LOAD_CHAOS_VERIFICATION_BATCH_SIZE),
+    )
+    for name, value, minimum, maximum in limits:
+        if value < minimum or value > maximum:
+            raise ValueError(f"{name} must be between {minimum} and {maximum}.")
+
+
 def run_load_chaos_harness(
     *,
     base_config: NodeConfig,
@@ -30,6 +54,14 @@ def run_load_chaos_harness(
     verification_batch_size: int = 8,
     work_dir: Path | None = None,
 ) -> dict[str, object]:
+    # Validate before touching the default harness directory: invalid or hostile
+    # requests must not trigger recursive cleanup or unbounded resource use.
+    _validate_load_chaos_limits(
+        node_count=node_count,
+        mempool_transactions=mempool_transactions,
+        migration_claims=migration_claims,
+        verification_batch_size=verification_batch_size,
+    )
     root = work_dir or (base_config.db_path.parent / "chaos_harness")
     created_temp = work_dir is None
     if created_temp and root.exists():
