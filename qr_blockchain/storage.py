@@ -89,6 +89,7 @@ class SQLiteChainStore:
                     seen_at REAL NOT NULL,
                     PRIMARY KEY (node_id, nonce)
                 );
+                CREATE INDEX IF NOT EXISTS idx_peer_nonces_seen_at ON peer_nonces(seen_at);
                 CREATE TABLE IF NOT EXISTS peer_sessions (
                     session_id TEXT PRIMARY KEY,
                     node_id TEXT NOT NULL,
@@ -1266,8 +1267,27 @@ class SQLiteChainStore:
                     (score_delta, time.time(), node_id),
                 )
 
-    def mark_peer_nonce(self, node_id: str, nonce: str, seen_at: float) -> None:
+    def mark_peer_nonce(
+        self,
+        node_id: str,
+        nonce: str,
+        seen_at: float,
+        *,
+        retention_seconds: int,
+    ) -> None:
+        if retention_seconds <= 0:
+            raise ValueError("Peer nonce retention must be positive.")
         with self._connect() as connection:
+            # A timestamp within the configured skew can remain valid for up to
+            # twice that skew after first receipt. The service adds a one-second
+            # margin when choosing this retention period.
+            connection.execute(
+                "DELETE FROM peer_nonces WHERE seen_at < ?",
+                (seen_at - retention_seconds,),
+            )
+            # Commit pruning independently so a duplicate nonce insert cannot
+            # roll back cleanup of rows that are already outside the replay window.
+            connection.commit()
             connection.execute(
                 "INSERT INTO peer_nonces (node_id, nonce, seen_at) VALUES (?, ?, ?)",
                 (node_id, nonce, seen_at),

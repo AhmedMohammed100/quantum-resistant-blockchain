@@ -78,6 +78,41 @@ class NodeServiceNetworkTests(NodeServiceTestSupport):
         with self.assertRaisesRegex(ValueError, "already been used"):
             target.authenticated_chain_summary(envelope)
 
+    def test_authenticated_request_rejects_oversized_or_malformed_nonces(self) -> None:
+        source = self.make_additional_service("nonce-source")
+        target = self.make_additional_service("nonce-target")
+
+        for nonce in ("n" * 129, "", 123, True):
+            with self.subTest(nonce_type=type(nonce).__name__, nonce_length=len(nonce) if isinstance(nonce, str) else None):
+                envelope = source.build_signed_envelope(
+                    "peer_handshake_ack_v2",
+                    {"target_url": target.config.advertised_url, "nonce": nonce},
+                )
+                with self.assertRaisesRegex(ValueError, "Peer request nonce"):
+                    target._authenticate_peer_envelope(
+                        envelope,
+                        expected_purpose="peer_handshake_ack_v2",
+                        require_existing_peer=False,
+                        require_session=False,
+                    )
+
+    def test_authenticated_request_accepts_nonce_at_byte_limit(self) -> None:
+        source = self.make_additional_service("nonce-boundary-source")
+        target = self.make_additional_service("nonce-boundary-target")
+        envelope = source.build_signed_envelope(
+            "peer_handshake_ack_v2",
+            {"target_url": target.config.advertised_url, "nonce": "n" * 128},
+        )
+
+        identity = target._authenticate_peer_envelope(
+            envelope,
+            expected_purpose="peer_handshake_ack_v2",
+            require_existing_peer=False,
+            require_session=False,
+        )
+
+        self.assertEqual(identity["nonce"], "n" * 128)
+
     def test_authenticated_request_rejects_invalid_session_binding(self) -> None:
         source = self.make_additional_service("source")
         target = self.make_additional_service("target")

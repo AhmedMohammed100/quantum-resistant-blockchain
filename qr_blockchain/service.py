@@ -53,6 +53,9 @@ from .verification import verify_transaction_inputs
 from .wallet_store import SQLiteWalletStateStore
 
 
+MAX_PEER_NONCE_BYTES = 128
+
+
 class NodeService:
     def __init__(self, config: NodeConfig):
         self.config = config
@@ -5581,6 +5584,16 @@ class NodeService:
             time_skew_seconds=self.config.auth_time_skew_seconds,
         )
         claims = peer_identity["claims"]
+        nonce = claims.get("nonce")
+        if not isinstance(nonce, str) or not nonce:
+            raise ValueError("Peer request nonce must be a non-empty string.")
+        try:
+            nonce_size = len(nonce.encode("utf-8"))
+        except UnicodeEncodeError as error:
+            raise ValueError("Peer request nonce must be valid UTF-8.") from error
+        if nonce_size > MAX_PEER_NONCE_BYTES:
+            raise ValueError(f"Peer request nonce exceeds {MAX_PEER_NONCE_BYTES} UTF-8 bytes.")
+
         expected_target = normalize_peer_url(self.config.advertised_url)
         if claims.get("target_url") != expected_target:
             raise ValueError("Peer request target does not match this node.")
@@ -5623,8 +5636,14 @@ class NodeService:
                 expires_at=now + self.config.peer_session_ttl_seconds,
             )
 
+        nonce_retention_seconds = max(1, 2 * int(self.config.auth_time_skew_seconds) + 1)
         try:
-            self.store.mark_peer_nonce(peer_identity["node_id"], peer_identity["nonce"], time.time())
+            self.store.mark_peer_nonce(
+                peer_identity["node_id"],
+                nonce,
+                time.time(),
+                retention_seconds=nonce_retention_seconds,
+            )
         except sqlite3.IntegrityError as error:
             raise ValueError("Peer request nonce has already been used.") from error
 
