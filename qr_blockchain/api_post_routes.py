@@ -11,10 +11,19 @@ from .protocol import parse_peer_frame
 class PostRoutesMixin:
     def do_POST(self) -> None:
         path = urlparse(self.path).path
-        # Public transaction submission is rate-limited before body parsing so
-        # floods cannot force JSON decoding and signature checks without bound.
+        # Peer routes carry their own signed protocol envelope. Public
+        # transaction submission is rate-limited. Every other route requires
+        # operator authentication before an untrusted body is read or decoded.
+        public_post_paths = {"/transactions"}
         if path == "/transactions" and not self._allow_public_transaction():
+            self.close_connection = True
             return
+        if not path.startswith("/peer/") and path not in public_post_paths:
+            if not self._authorize_operator():
+                # The request body is intentionally unread; close the socket so
+                # it cannot be interpreted as another HTTP request.
+                self.close_connection = True
+                return
         try:
             payload = self._read_json()
         except RequestBodyTooLarge as error:
@@ -24,13 +33,6 @@ class PostRoutesMixin:
             self._respond(HTTPStatus.BAD_REQUEST, {"error": f"Invalid JSON request: {error}"})
             return
 
-        # Peer routes carry their own signed protocol envelope. All other POST
-        # routes mutate state, consume signer material, or trigger operator
-        # actions and therefore require operator authentication when the node
-        # is exposed beyond loopback.
-        public_post_paths = {"/transactions"}
-        if not path.startswith("/peer/") and path not in public_post_paths and not self._authorize_operator():
-            return
 
         if path == "/transactions":
             try:
