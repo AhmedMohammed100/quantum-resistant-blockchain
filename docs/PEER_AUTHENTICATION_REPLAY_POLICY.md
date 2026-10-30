@@ -1,6 +1,6 @@
 # Peer Request Nonce Replay Retention
 
-Each signed peer request must carry a non-empty UTF-8 nonce no longer than 128 bytes. Nonce uniqueness is enforced per peer identity.
+Each signed peer request must carry a non-empty UTF-8 nonce no longer than 128 bytes. Nonce uniqueness is enforced per peer identity, with at most 4,096 unexpired nonce records per identity. Requests are rejected at that identity's quota until older records expire.
 
 A node retains nonce records for 2 * auth_time_skew_seconds + 1 seconds after receipt. This covers the full validity interval of an accepted signed timestamp, including timestamps that were at the future edge of the allowed skew. On each accepted peer request, expired records are deleted before the new nonce is inserted. A timestamp-expired envelope is rejected before nonce processing.
 

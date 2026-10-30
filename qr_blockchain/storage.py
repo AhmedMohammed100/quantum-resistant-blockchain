@@ -19,6 +19,9 @@ def block_work(difficulty: int) -> int:
     return 16 ** max(difficulty, 0)
 
 
+MAX_PEER_NONCES_PER_IDENTITY = 4096
+
+
 class SQLiteChainStore:
     def __init__(self, db_path: Path):
         self.db_path = db_path
@@ -1288,6 +1291,22 @@ class SQLiteChainStore:
             # Commit pruning independently so a duplicate nonce insert cannot
             # roll back cleanup of rows that are already outside the replay window.
             connection.commit()
+            # Serialize capacity checks with inserts across concurrent HTTP workers.
+            connection.execute("BEGIN IMMEDIATE")
+            duplicate = connection.execute(
+                "SELECT 1 FROM peer_nonces WHERE node_id = ? AND nonce = ?",
+                (node_id, nonce),
+            ).fetchone()
+            if duplicate is not None:
+                raise sqlite3.IntegrityError("Peer request nonce has already been used.")
+            peer_nonce_count = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM peer_nonces WHERE node_id = ?",
+                    (node_id,),
+                ).fetchone()[0]
+            )
+            if peer_nonce_count >= MAX_PEER_NONCES_PER_IDENTITY:
+                raise ValueError("Peer nonce replay window is at capacity for this identity.")
             connection.execute(
                 "INSERT INTO peer_nonces (node_id, nonce, seen_at) VALUES (?, ?, ?)",
                 (node_id, nonce, seen_at),
