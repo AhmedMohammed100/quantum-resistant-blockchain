@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import closing
 import sqlite3
 import tempfile
 import unittest
@@ -16,7 +17,7 @@ class PeerNonceStorageTests(unittest.TestCase):
             store.mark_peer_nonce("peer-b", "retained", 105.0, retention_seconds=10)
             store.mark_peer_nonce("peer-a", "new", 111.0, retention_seconds=10)
 
-            with sqlite3.connect(store.db_path) as connection:
+            with closing(sqlite3.connect(store.db_path)) as connection:
                 rows = connection.execute(
                     "SELECT node_id, nonce FROM peer_nonces ORDER BY node_id, nonce"
                 ).fetchall()
