@@ -3,7 +3,7 @@ from __future__ import annotations
 import io
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from qr_blockchain.api import NodeRequestHandler
 
@@ -72,6 +72,54 @@ class ApiSecurityTests(unittest.TestCase):
         self.assertTrue(handler._operator_auth_required())
         self.assertFalse(handler._authorize_operator())
         self.assertEqual(capture.calls[-1][0].value, 503)
+
+    def test_privileged_post_authenticates_before_reading_body(self) -> None:
+        handler, capture = self.make_handler(
+            bind_host="0.0.0.0",
+            deployment_mode="production",
+            token="secret",
+        )
+        handler.path = "/mine"
+        handler._read_json = Mock(side_effect=AssertionError("body must not be parsed"))
+        handler.close_connection = False
+
+        handler.do_POST()
+
+        handler._read_json.assert_not_called()
+        self.assertTrue(handler.close_connection)
+        self.assertEqual(capture.calls[-1][0].value, 401)
+
+    def test_privileged_post_reads_body_after_valid_authentication(self) -> None:
+        handler, capture = self.make_handler(
+            bind_host="0.0.0.0",
+            deployment_mode="production",
+            token="secret",
+            authorization="Bearer secret",
+        )
+        handler.path = "/mine"
+        handler._read_json = Mock(return_value={"miner_address": "miner"})
+        block = SimpleNamespace(index=1, block_hash="ab" * 32, transactions=[])
+        handler.service.mine_pending_transactions = Mock(return_value=block)
+
+        handler.do_POST()
+
+        handler._read_json.assert_called_once_with()
+        handler.service.mine_pending_transactions.assert_called_once_with("miner")
+        self.assertEqual(capture.calls[-1][0].value, 201)
+
+    def test_rate_limited_public_post_does_not_read_body_or_keep_connection_open(self) -> None:
+        handler, _ = self.make_handler(
+            bind_host="127.0.0.1", deployment_mode="development", token=""
+        )
+        handler.path = "/transactions"
+        handler._allow_public_transaction = Mock(return_value=False)
+        handler._read_json = Mock(side_effect=AssertionError("body must not be parsed"))
+        handler.close_connection = False
+
+        handler.do_POST()
+
+        handler._read_json.assert_not_called()
+        self.assertTrue(handler.close_connection)
 
     def test_rejects_request_body_over_configured_limit(self) -> None:
         handler, _ = self.make_handler(

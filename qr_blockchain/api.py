@@ -17,6 +17,41 @@ from .rate_limit import enforce_redis_rate_limit
 from .service import NodeService
 
 
+class BoundedThreadingHTTPServer(ThreadingHTTPServer):
+    """Threaded HTTP server with a hard cap on concurrent request handlers."""
+
+    def __init__(
+        self,
+        server_address,
+        RequestHandlerClass,
+        *,
+        max_concurrent_requests: int = 64,
+        **kwargs,
+    ) -> None:
+        if max_concurrent_requests <= 0:
+            raise ValueError("Maximum concurrent HTTP requests must be positive.")
+        self._request_slots = threading.BoundedSemaphore(max_concurrent_requests)
+        super().__init__(server_address, RequestHandlerClass, **kwargs)
+
+    def process_request(self, request, client_address) -> None:
+        if not self._request_slots.acquire(blocking=False):
+            # Refuse excess work promptly instead of creating more handler
+            # threads while existing requests occupy the configured limit.
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self._request_slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._request_slots.release()
+
+
 class NodeRequestHandler(GetRoutesMixin, PostRoutesMixin, BaseHTTPRequestHandler):
     service: NodeService
     _transaction_rate_lock = threading.Lock()
@@ -214,6 +249,10 @@ def serve(config: NodeConfig) -> None:
         pass
 
     Handler.service = service
-    server = ThreadingHTTPServer((config.host, config.port), Handler)
+    server = BoundedThreadingHTTPServer(
+        (config.host, config.port),
+        Handler,
+        max_concurrent_requests=config.max_http_concurrent_requests,
+    )
     print(f"Quantum-resistant node listening on http://{config.host}:{config.port}")
     server.serve_forever()
