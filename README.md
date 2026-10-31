@@ -60,6 +60,7 @@ isolated development/test environments. Production-like deployments must:
 - Set `QR_CHAIN_API_AUTH_TOKEN` to a strong secret and keep privileged endpoints off the public internet where possible.
 - Configure `QR_CHAIN_TRANSACTION_RATE_LIMIT_REDIS_URL` for a shared Redis-backed transaction limiter.
 - Configure `QR_CHAIN_OUTBOUND_PEER_URL_ALLOWLIST` with exact IP-literal authorities, including ports (for example, `203.0.113.10:8443`), and keep `QR_CHAIN_REQUIRE_OUTBOUND_PEER_URL_ALLOWLIST=true`. Hostnames are rejected for outbound peer requests in non-development modes to avoid DNS rebinding; use stable peer IPs.
+- Serve the inbound API over TLS. Direct production binds outside loopback must set `QR_CHAIN_TLS_CERT_FILE` and `QR_CHAIN_TLS_KEY_FILE`; the node rejects a public production bind when either file is missing. The server uses TLS 1.2 or newer. Keep the private key readable only by the node service account. For TLS termination at a reverse proxy, bind the node to loopback so the local HTTP hop stays private, and enforce HTTPS at the proxy.
 - Use HTTPS with certificates valid for the peer IP addresses, and enforce outbound egress restrictions with host/firewall/network policy.
 - Use a supported encrypted wallet-custody provider for the deployment platform. Do not enable plaintext custody in production.
 
