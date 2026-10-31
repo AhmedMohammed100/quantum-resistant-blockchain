@@ -244,6 +244,11 @@ class NodeRequestHandler(GetRoutesMixin, PostRoutesMixin, BaseHTTPRequestHandler
 
 def serve(config: NodeConfig) -> None:
     tls_enabled = config.validate_inbound_tls()
+    tls_context = None
+    if tls_enabled:
+        tls_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        tls_context.minimum_version = ssl.TLSVersion.TLSv1_2
+        tls_context.load_cert_chain(config.tls_cert_file, config.tls_key_file)
     service = NodeService(config)
     service.enforce_security_policy_profile()
 
@@ -256,10 +261,7 @@ def serve(config: NodeConfig) -> None:
         Handler,
         max_concurrent_requests=config.max_http_concurrent_requests,
     )
-    if tls_enabled:
-        tls_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        tls_context.minimum_version = ssl.TLSVersion.TLSv1_2
-        tls_context.load_cert_chain(config.tls_cert_file, config.tls_key_file)
+    if tls_context is not None:
         server.socket = tls_context.wrap_socket(server.socket, server_side=True)
     scheme = "https" if tls_enabled else "http"
     print(f"Quantum-resistant node listening on {scheme}://{config.host}:{config.port}")
