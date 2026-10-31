@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import ipaddress
 import os
 from pathlib import Path
 
@@ -49,6 +50,8 @@ class NodeConfig:
     require_outbound_peer_url_allowlist: bool = False
     host: str = "127.0.0.1"
     port: int = 8080
+    tls_cert_file: str = ""
+    tls_key_file: str = ""
     chain_id: str = "qr-chain-devnet"
     node_id: str = "node-local"
     advertised_url: str = "http://127.0.0.1:8080"
@@ -113,6 +116,24 @@ class NodeConfig:
     min_fee_per_kib: int = 1
     coinbase_maturity_blocks: int = 0
     validator_set_policy: str = "open_pow_dev"
+
+    def validate_inbound_tls(self) -> bool:
+        cert_file = self.tls_cert_file.strip()
+        key_file = self.tls_key_file.strip()
+        if bool(cert_file) != bool(key_file):
+            raise ValueError("Inbound TLS requires both QR_CHAIN_TLS_CERT_FILE and QR_CHAIN_TLS_KEY_FILE.")
+        host = self.host.strip().strip("[]")
+        try:
+            loopback = ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            loopback = host.lower() == "localhost"
+        deployment_mode = self.deployment_mode.strip().lower()
+        if deployment_mode not in {"development", "test"} and not loopback and not cert_file:
+            raise ValueError(
+                "Production non-loopback binds require inbound TLS certificate and key files; "
+                "use QR_CHAIN_TLS_CERT_FILE and QR_CHAIN_TLS_KEY_FILE."
+            )
+        return bool(cert_file)
 
     @staticmethod
     def from_env() -> "NodeConfig":
@@ -186,6 +207,8 @@ class NodeConfig:
             ).strip().lower() in {"1", "true", "yes", "on"},
             host=os.getenv("QR_CHAIN_HOST", "127.0.0.1"),
             port=int(os.getenv("QR_CHAIN_PORT", "8080")),
+            tls_cert_file=os.getenv("QR_CHAIN_TLS_CERT_FILE", "").strip(),
+            tls_key_file=os.getenv("QR_CHAIN_TLS_KEY_FILE", "").strip(),
             chain_id=os.getenv("QR_CHAIN_ID", "qr-chain-devnet"),
             node_id=os.getenv("QR_CHAIN_NODE_ID", "node-local"),
             advertised_url=os.getenv("QR_CHAIN_ADVERTISED_URL", "http://127.0.0.1:8080"),
