@@ -32,7 +32,20 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
         if max_concurrent_requests <= 0:
             raise ValueError("Maximum concurrent HTTP requests must be positive.")
         self._request_slots = threading.BoundedSemaphore(max_concurrent_requests)
+        self._tls_context = kwargs.pop("tls_context", None)
         super().__init__(server_address, RequestHandlerClass, **kwargs)
+
+    def get_request(self):
+        request, client_address = super().get_request()
+        if self._tls_context is not None:
+            # Defer the handshake until the bounded worker reads the request.
+            # The handler's socket timeout then also bounds TLS negotiation.
+            request = self._tls_context.wrap_socket(
+                request,
+                server_side=True,
+                do_handshake_on_connect=False,
+            )
+        return request, client_address
 
     def process_request(self, request, client_address) -> None:
         if not self._request_slots.acquire(blocking=False):
@@ -260,9 +273,8 @@ def serve(config: NodeConfig) -> None:
         (config.host, config.port),
         Handler,
         max_concurrent_requests=config.max_http_concurrent_requests,
+        tls_context=tls_context,
     )
-    if tls_context is not None:
-        server.socket = tls_context.wrap_socket(server.socket, server_side=True)
     scheme = "https" if tls_enabled else "http"
     print(f"Quantum-resistant node listening on {scheme}://{config.host}:{config.port}")
     server.serve_forever()
