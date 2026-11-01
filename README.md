@@ -62,6 +62,7 @@ isolated development/test environments. Production-like deployments must:
 - Configure `QR_CHAIN_OUTBOUND_PEER_URL_ALLOWLIST` with exact IP-literal authorities, including ports (for example, `203.0.113.10:8443`), and keep `QR_CHAIN_REQUIRE_OUTBOUND_PEER_URL_ALLOWLIST=true`. Hostnames are rejected for outbound peer requests in non-development modes to avoid DNS rebinding; use stable peer IPs.
 - Serve the inbound API over TLS. Direct production binds outside loopback must set `QR_CHAIN_TLS_CERT_FILE` and `QR_CHAIN_TLS_KEY_FILE`; the node rejects a public production bind when either file is missing. The server uses TLS 1.2 or newer. Keep the private key readable only by the node service account. For TLS termination at a reverse proxy, bind the node to loopback so the local HTTP hop stays private, and enforce HTTPS at the proxy.
 - Use HTTPS with certificates valid for the peer IP addresses, and enforce outbound egress restrictions with host/firewall/network policy.
+- Set `QR_CHAIN_ALLOWED_SIGNATURE_PROVIDERS` to the exact network-approved provider IDs, include the configured default provider, and keep the same list on every validator. The node enforces this allowlist on transfer signatures and migration destination attestations; the deterministic `native_test_pq_v1` provider is blocked in production.
 - Use a supported encrypted wallet-custody provider for the deployment platform. Do not enable plaintext custody in production.
 
 These controls reduce specific risks but do not make the experimental chain suitable
@@ -764,7 +765,7 @@ Wallet and providers:
 
 - `QR_CHAIN_DEFAULT_SIGNATURE_PROVIDER`
 - `QR_CHAIN_PREFERRED_SIGNATURE_PROVIDERS`
-- `QR_CHAIN_ALLOWED_SIGNATURE_PROVIDERS`
+- `QR_CHAIN_ALLOWED_SIGNATURE_PROVIDERS` (consensus validation allowlist; must be identical across nodes on a network)
 - `QR_CHAIN_PREFERRED_SIGNATURE_PROFILE`
 - `QR_CHAIN_TARGET_SIGNATURE_SIGN_MS`
 - `QR_CHAIN_MAX_SIGNATURE_PAYLOAD_BYTES`
