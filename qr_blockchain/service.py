@@ -3911,6 +3911,16 @@ class NodeService:
                 "detail": str(len(self.config.allowed_signature_providers)),
             },
             {
+                "name": "default_signature_provider_allowed",
+                "passed": not production_mode
+                or self.config.default_signature_provider in self.config.allowed_signature_providers,
+                "severity": "blocker",
+                "detail": (
+                    f"default={self.config.default_signature_provider}, "
+                    f"allowed={','.join(self.config.allowed_signature_providers)}"
+                ),
+            },
+            {
                 "name": "demo_signature_providers_disabled_for_production",
                 "passed": not production_mode or not (configured_signature_ids & demo_providers),
                 "severity": "blocker",
@@ -5272,6 +5282,13 @@ class NodeService:
             "unlock_height": int(metadata.get("height", 0)),
         }
 
+    def _require_allowed_signature_provider(self, provider_id: str, *, context: str) -> None:
+        allowed = self.config.allowed_signature_providers
+        if allowed and provider_id not in allowed:
+            raise ValueError(
+                f"{context} signature scheme is not allowed by the configured provider allowlist."
+            )
+
     def _validate_transaction_against_view(
         self,
         transaction: Transaction,
@@ -5321,6 +5338,10 @@ class NodeService:
                 raise ValueError("Inputless reward transactions must be fee-free.")
             return
 
+        self._require_allowed_signature_provider(
+            transaction.signature_scheme,
+            context="Transaction",
+        )
         verification = verify_transaction_inputs(transaction, utxo_view)
         if not verification.verified:
             failure = verification.failure
@@ -5785,6 +5806,10 @@ class NodeService:
             raise ValueError("Migration claim destination attestation is missing signature_scheme.")
         if not transaction.outputs:
             raise ValueError("Migration claim destination attestation requires an output.")
+        self._require_allowed_signature_provider(
+            signature_scheme,
+            context="Migration destination attestation",
+        )
         provider = get_signature_verifier(signature_scheme)
         destination_address = transaction.outputs[0].recipient
         if provider.address_from_public_key(public_key) != destination_address:
