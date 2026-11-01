@@ -256,6 +256,7 @@ class NodeServiceReportTests(NodeServiceTestSupport):
         blocker_names = {item["name"] for item in report["blockers"]}
         self.assertIn("wallet_custody_not_plaintext", blocker_names)
         self.assertIn("demo_signature_providers_disabled_for_production", blocker_names)
+        self.assertIn("default_signature_provider_allowed", blocker_names)
         self.assertIn("snapshot_signatures_required_for_production_migration", blocker_names)
         self.assertIn("peer_allowlist_required_on_public_bind", blocker_names)
         with self.assertRaisesRegex(ValueError, "Security policy profile is blocked"):
@@ -290,6 +291,17 @@ class NodeServiceReportTests(NodeServiceTestSupport):
         self.assertEqual(report["configuration_status"], "ready")
         self.assertFalse(report["blockers"])
         self.assertEqual(service.enforce_security_policy_profile()["configuration_status"], "ready")
+
+        service.config = replace(
+            service.config,
+            allowed_signature_providers=("sphincsplus_v1",),
+        )
+        mismatched = service.production_configuration_report()
+        self.assertEqual(mismatched["configuration_status"], "blocked")
+        self.assertIn(
+            "default_signature_provider_allowed",
+            {item["name"] for item in mismatched["blockers"]},
+        )
 
     def test_database_durability_report_checks_wal_and_integrity(self) -> None:
         service, _ = self.make_service()

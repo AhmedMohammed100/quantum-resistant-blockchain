@@ -66,6 +66,46 @@ class NodeServiceChainTests(NodeServiceTestSupport):
         self.assertEqual(verification.checked_inputs, 2)
         self.assertEqual(verification.mode, "native_rust_batch")
 
+    def test_configured_provider_allowlist_rejects_deterministic_test_signatures(self) -> None:
+        service, _ = self.make_service()
+        with patch.dict(
+            os.environ,
+            {"QR_CHAIN_NATIVE_SIGNER_MODE": "deterministic-test"},
+            clear=False,
+        ):
+            alice = Wallet("Alice", signature_provider="native_test_pq_v1")
+            bob = Wallet("Bob")
+            funding = alice.create_address()
+            service.create_genesis_block({funding: 12})
+            transaction = alice.create_transaction(service, bob.create_address(), amount=10, fee=1)
+
+        service.config = replace(
+            service.config,
+            allowed_signature_providers=("xmss_merkle_lamport_v1",),
+        )
+        with self.assertRaisesRegex(ValueError, "configured provider allowlist"):
+            service.submit_transaction(transaction)
+
+    def test_configured_provider_allowlist_accepts_explicitly_allowed_test_provider(self) -> None:
+        service, _ = self.make_service()
+        with patch.dict(
+            os.environ,
+            {"QR_CHAIN_NATIVE_SIGNER_MODE": "deterministic-test"},
+            clear=False,
+        ):
+            alice = Wallet("Alice", signature_provider="native_test_pq_v1")
+            bob = Wallet("Bob")
+            funding = alice.create_address()
+            service.create_genesis_block({funding: 12})
+            transaction = alice.create_transaction(service, bob.create_address(), amount=10, fee=1)
+
+        service.config = replace(
+            service.config,
+            allowed_signature_providers=("native_test_pq_v1",),
+        )
+        service.submit_transaction(transaction)
+        self.assertEqual(service.store.pending_transaction_count(), 1)
+
     def test_version3_blocks_commit_state_root_and_coinbase_maturity(self) -> None:
         temp_root = Path("test_runtime") / self._testMethodName
         if temp_root.exists():
