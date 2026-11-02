@@ -12,6 +12,10 @@ jobs:
   bounded-multi-node-chaos:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # The regression suite exercises node services on Linux, where no OS-backed
+    # encrypted wallet provider exists. Keep this workflow in explicit test mode.
+    env:
+      QR_CHAIN_DEPLOYMENT_MODE: test
     steps:
       - name: Checkout
         uses: actions/checkout@v4
