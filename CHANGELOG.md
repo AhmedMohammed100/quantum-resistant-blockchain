@@ -8,7 +8,7 @@ This changelog preserves the implementation history that previously lived in the
 
 - Pinned all GitHub Actions used by the hardening, CodeQL, soak, and dependency-audit workflows to verified full commit SHAs.
 - Added scheduled and pull-request vulnerability audits for the optional Python OQS dependency graph and the native Rust signer lockfile, using pinned audit tool releases.
-- Upgraded PyO3 to 0.30.1 after RustSec reports identified issues in 0.22.6, committed the refreshed lockfile, and added a locked native build check.
+- Upgraded PyO3 to 0.30.1 after RustSec reports identified issues in 0.22.6, committed the refreshed lockfile, migrated the thread release call to PyO3 0.30's `detach` API, and added a locked native build check.
 - Configured weekly Dependabot updates for Python, Cargo, and GitHub Actions dependencies.
 
 ### Phase 78 - Refresh OQS Runtime Security Pin
