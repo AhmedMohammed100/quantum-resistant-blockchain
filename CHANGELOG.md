@@ -4,6 +4,17 @@ This changelog preserves the implementation history that previously lived in the
 
 ## Historical Implementation Phases
 
+### Phase 79 - Dependency Vulnerability Automation
+
+- Added scheduled and pull-request vulnerability audits for the optional Python OQS runtime and the native Rust signer lockfile, using pinned audit tool releases.
+- Configured weekly Dependabot updates for Python, Cargo, and GitHub Actions dependencies.
+
+### Phase 78 - Immutable CI Action References
+
+- Pinned all GitHub Actions used by the hardening, CodeQL, soak, and dependency-audit workflows to verified full commit SHAs.
+- Added update guidance so action references can be refreshed through reviewed Dependabot proposals.
+
+
 ### Phase 77 - Security Invariants And Fail-Closed Hardening
 
 - Added `security_invariant_report()` to replay canonical UTXO state, verify activated state roots, detect duplicate canonical transaction ids, detect duplicate migration claims, check supply caps, and surface stateful signer recovery blockers.
