@@ -15,7 +15,7 @@ The scheduled and pull-request dependency audit covers:
   from the installable `liboqs-python==0.16.0.2` pin, with a pinned `pip-audit`
   release.
 - The native Rust signer dependency graph from its committed `Cargo.lock`,
-  using a pinned `cargo-audit` release and the RustSec advisory database.
+  using a pinned `cargo-audit` release and the RustSec advisory database. The workflow also runs `cargo check --locked`; the committed PyO3 dependency is 0.30.1.
 
 Dependabot also checks the Python, Cargo, and GitHub Actions ecosystems weekly
 and can open update pull requests. The audit is a known-advisory check, not a
