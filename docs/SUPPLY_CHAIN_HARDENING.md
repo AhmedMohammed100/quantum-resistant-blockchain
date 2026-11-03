@@ -11,8 +11,9 @@ the upstream release and resolved commit before accepting an update.
 
 The scheduled and pull-request dependency audit covers:
 
-- The optional Python OQS binding declared in `requirements-oqs.txt`, including
-  its resolved Python dependency metadata, with a pinned `pip-audit` release.
+- The optional Python OQS binding and its resolved transitive dependency graph
+  from the installable `liboqs-python==0.16.0.2` pin, with a pinned `pip-audit`
+  release.
 - The native Rust signer dependency graph from its committed `Cargo.lock`,
   using a pinned `cargo-audit` release and the RustSec advisory database.
 
