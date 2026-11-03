@@ -86,6 +86,7 @@ struct VerificationBatchItemResult {
     failure: String,
 }
 
+#[cfg(any(feature = "liboqs", test))]
 fn encode_hex(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
@@ -465,7 +466,7 @@ fn verify_oqs_py(
 #[cfg(feature = "python")]
 #[pyfunction]
 fn verify_native_batch_py(py: Python<'_>, request_json: &str) -> PyResult<String> {
-    py.allow_threads(|| verify_native_batch_json(request_json))
+    py.detach(|| verify_native_batch_json(request_json))
         .map_err(pyo3::exceptions::PyRuntimeError::new_err)
 }
 

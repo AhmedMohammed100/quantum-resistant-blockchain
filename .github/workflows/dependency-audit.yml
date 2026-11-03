@@ -1,0 +1,44 @@
+name: Dependency Security Audit
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "27 4 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  python-optional-runtime:
+    name: Audit optional Python crypto runtime
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+      - name: Install pinned audit tool
+        run: python -m pip install --disable-pip-version-check "pip-audit==2.10.1"
+      - name: Audit optional runtime dependencies
+        run: pip-audit --strict --requirement requirements-oqs.txt
+
+  rust-native-signer:
+    name: Audit native signer Rust dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Set up Rust
+        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        with:
+          toolchain: stable
+      - name: Build native signer with locked dependencies
+        run: cargo check --locked --manifest-path crates/qr_chain_native_signer/Cargo.toml
+      - name: Install pinned audit tool
+        run: cargo install cargo-audit --locked --version 0.22.2
+      - name: Audit resolved dependency lockfile
+        run: cargo audit --file crates/qr_chain_native_signer/Cargo.lock

@@ -4,15 +4,15 @@ The `mldsa65_oqs_v1` signature provider is the project's first live Open Quantum
 
 ## Pinned Target
 
-- Python package: `liboqs-python==0.14.1`
-- Native runtime target: `liboqs 0.15.0`
+- Python package: `liboqs-python==0.16.0.2`
+- Native runtime target: `liboqs 0.16.0`
 - Provider id: `mldsa65_oqs_v1`
 - Mechanism: `ML-DSA-65`
 
 Install or refresh the pinned runtime:
 
 ```powershell
-$env:PYOQS_VERSION = "0.15.0"
+$env:PYOQS_VERSION = "0.16.0"
 python -m pip install --upgrade --force-reinstall --requirement requirements-oqs.txt
 ```
 
@@ -41,8 +41,10 @@ $env:QR_CHAIN_PREFERRED_SIGNATURE_PROVIDERS = "mldsa65_oqs_v1,sphincsplus_v1,lms
 
 If `ML-DSA-65` is unavailable, the provider reports a precise dependency or mechanism error instead of silently falling back.
 
+This runtime pin includes the upstream validation fixes in liboqs-python 0.16.0.2, which reject public keys, ciphertexts, and secret keys with invalid lengths. The binding is paired with its matching liboqs 0.16.0 native runtime.
+
 ## Sources
 
-- Open Quantum Safe `liboqs-python`: https://github.com/open-quantum-safe/liboqs-python
+- Open Quantum Safe `liboqs-python` [0.16.0.2 security release](https://github.com/open-quantum-safe/liboqs-python/releases/tag/0.16.0.2)
 - Open Quantum Safe ML-DSA notes: https://openquantumsafe.org/liboqs/algorithms/sig/ml-dsa.html
 - NIST FIPS 204: https://csrc.nist.gov/pubs/fips/204/final
