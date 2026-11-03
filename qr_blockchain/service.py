@@ -2326,8 +2326,8 @@ class NodeService:
         except importlib_metadata.PackageNotFoundError:
             liboqs_python_version = ""
         pinned = {
-            "liboqs_python": "0.14.1",
-            "native_liboqs": "0.15.0",
+            "liboqs_python": "0.16.0.2",
+            "native_liboqs": "0.16.0",
             "mechanism": "ML-DSA-65",
             "install_file": "requirements-oqs.txt",
             "runtime_doc": "docs/OQS_RUNTIME.md",
