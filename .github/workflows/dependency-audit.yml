@@ -36,10 +36,8 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         with:
           toolchain: stable
-      - name: Resolve patched PyO3 in the Rust lockfile
-        run: cargo update --manifest-path crates/qr_chain_native_signer/Cargo.toml -p pyo3 --precise 0.30.1
-      - name: Emit resolved lockfile for review
-        run: echo "GENERATED_LOCK_B64=$(base64 -w0 crates/qr_chain_native_signer/Cargo.lock)"
+      - name: Build native signer with locked dependencies
+        run: cargo check --locked --manifest-path crates/qr_chain_native_signer/Cargo.toml
       - name: Install pinned audit tool
         run: cargo install cargo-audit --locked --version 0.22.2
       - name: Audit resolved dependency lockfile
