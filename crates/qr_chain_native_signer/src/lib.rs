@@ -86,6 +86,7 @@ struct VerificationBatchItemResult {
     failure: String,
 }
 
+#[cfg(any(feature = "liboqs", test))]
 fn encode_hex(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
