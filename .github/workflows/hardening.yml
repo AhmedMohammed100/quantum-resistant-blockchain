@@ -104,8 +104,10 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install liboqs-python
-        run: python -m pip install --upgrade "liboqs-python>=0.12.0"
+      - name: Install pinned liboqs-python and native runtime
+        env:
+          PYOQS_VERSION: "0.16.0"
+        run: python -m pip install --upgrade "liboqs-python==0.16.0.2"
 
       - name: Download pinned official NIST ACVP vectors
         shell: bash
