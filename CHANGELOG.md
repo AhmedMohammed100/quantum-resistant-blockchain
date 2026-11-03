@@ -4,15 +4,16 @@ This changelog preserves the implementation history that previously lived in the
 
 ## Historical Implementation Phases
 
-### Phase 79 - Dependency Vulnerability Automation
-
-- Added scheduled and pull-request vulnerability audits for the optional Python OQS runtime and the native Rust signer lockfile, using pinned audit tool releases.
-- Configured weekly Dependabot updates for Python, Cargo, and GitHub Actions dependencies.
-
-### Phase 78 - Immutable CI Action References
+### Phase 79 - CI Supply Chain And Dependency Automation
 
 - Pinned all GitHub Actions used by the hardening, CodeQL, soak, and dependency-audit workflows to verified full commit SHAs.
-- Added update guidance so action references can be refreshed through reviewed Dependabot proposals.
+- Added scheduled and pull-request vulnerability audits for the optional Python OQS dependency graph and the native Rust signer lockfile, using pinned audit tool releases.
+- Configured weekly Dependabot updates for Python, Cargo, and GitHub Actions dependencies.
+
+### Phase 78 - Refresh OQS Runtime Security Pin
+
+- Updated the optional runtime to the installable `liboqs-python 0.16.0.2` and matching `liboqs 0.16.0` release.
+- Adopted the upstream short-key validation and native resource cleanup fixes; aligned runtime readiness reporting, installation instructions, and the official ACVP CI job with the pinned versions.
 
 
 ### Phase 77 - Security Invariants And Fail-Closed Hardening
