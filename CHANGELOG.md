@@ -4,6 +4,12 @@ This changelog preserves the implementation history that previously lived in the
 
 ## Historical Implementation Phases
 
+### Phase 80 - Repeated Multi-Node Chaos Rehearsals
+
+- Extended the scheduled and manually triggered soak workflow to run ten isolated replays of every deterministic load/chaos scenario and fail if any round fails.
+- Publish the per-round scenario counts and report hashes in the GitHub Actions job summary for reviewable CI evidence.
+- Keep the scope explicit: these repeat in-process service harness scenarios and do not constitute a live-network or long-duration node soak.
+
 ### Phase 79 - CI Supply Chain And Dependency Automation
 
 - Pinned all GitHub Actions used by the hardening, CodeQL, soak, and dependency-audit workflows to verified full commit SHAs.
