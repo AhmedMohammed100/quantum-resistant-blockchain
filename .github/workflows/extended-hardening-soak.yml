@@ -2,6 +2,12 @@ name: Extended Hardening Soak
 
 on:
   workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/extended-hardening-soak.yml"
+      - "qr_blockchain/**"
+      - "tests/**"
   schedule:
     - cron: "17 3 * * *"
 
@@ -34,5 +40,56 @@ jobs:
       - name: Run bounded multi-node chaos scenario suite
         run: python -W error::ResourceWarning -m unittest tests.test_adversarial.AdversarialAndPropertyTests.test_load_chaos_harness_runs_all_scripted_scenarios -v
 
+      - name: Run ten isolated multi-node chaos replays
+        shell: bash
+        run: |
+          set -euo pipefail
+          reports="$RUNNER_TEMP/qbc-chaos-soak"
+          mkdir -p "$reports"
+          for round in $(seq 1 10); do
+            run_dir="$reports/state-$round"
+            mkdir -p "$run_dir"
+            python -m qr_blockchain \
+              --db-path "$run_dir/chain.db" \
+              --wallet-state-db-path "$run_dir/wallet.db" \
+              load-chaos \
+              --scenario all \
+              --node-count 3 \
+              --mempool-transactions 8 \
+              --migration-claims 6 \
+              --verification-batch-size 8 \
+              --output "$reports/round-$round.json"
+          done
+          python - "$reports" <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import sys
+
+          reports_dir = Path(sys.argv[1])
+          rounds = []
+          for report_path in sorted(reports_dir.glob("round-*.json")):
+              report = json.loads(report_path.read_text(encoding="utf-8"))
+              rounds.append({
+                  "round": int(report_path.stem.split("-")[-1]),
+                  "passed": report.get("passed") is True,
+                  "scenario_count": report.get("scenario_count"),
+                  "report_hash": report.get("report_hash"),
+              })
+          aggregate = {
+              "soak_version": 1,
+              "rounds_requested": 10,
+              "rounds_completed": len(rounds),
+              "passed": len(rounds) == 10 and all(item["passed"] for item in rounds),
+              "rounds": rounds,
+          }
+          serialized = json.dumps(aggregate, indent=2, sort_keys=True)
+          print(serialized)
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+              summary.write("## Repeated bounded multi-node chaos replay\n\n")
+              summary.write("Ten isolated executions of every deterministic chaos scenario; these are in-process harness rehearsals, not a live-network soak.\n\n")
+              summary.write("<pre>\n" + serialized + "\n</pre>\n")
+          if not aggregate["passed"]:
+              raise SystemExit("One or more chaos replay rounds failed.")
       - name: Run complete regression suite
         run: python -W error::ResourceWarning -m unittest discover -s tests -v
