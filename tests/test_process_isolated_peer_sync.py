@@ -5,6 +5,7 @@ import multiprocessing
 import os
 from pathlib import Path
 import tempfile
+import unittest
 from unittest.mock import patch
 from urllib.request import Request, urlopen
 
@@ -60,7 +61,7 @@ def _request_json(url: str, path: str, *, payload: dict[str, object] | None = No
         return json.loads(response.read().decode("utf-8"))
 
 
-class ProcessIsolatedPeerSyncTests(__import__("unittest").TestCase):
+class ProcessIsolatedPeerSyncTests(unittest.TestCase):
     def _start_node(self, context, ready_queue, root: Path, node_name: str, port: int | None = None):
         (root / node_name).mkdir(parents=True, exist_ok=True)
         process = context.Process(
