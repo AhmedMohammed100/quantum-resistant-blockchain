@@ -4,6 +4,12 @@ This changelog preserves the implementation history that previously lived in the
 
 ## Historical Implementation Phases
 
+### Phase 81 - Authenticated Loopback Peer Sync Integration
+
+- Added an end-to-end test that starts two node HTTP servers with separate SQLite stores and syncs ten successive blocks over the signed peer handshake, summary, and block endpoints.
+- Assert that both nodes converge on the same block hash and state root after each sync, and that a peer using a different chain ID is rejected without importing blocks.
+- Keep this as loopback integration coverage; it is not a multi-process deployment soak or independent security audit.
+
 ### Phase 80 - Repeated Multi-Node Chaos Rehearsals
 
 - Extended the scheduled and manually triggered soak workflow to run ten isolated replays of every deterministic load/chaos scenario and fail if any round fails.
