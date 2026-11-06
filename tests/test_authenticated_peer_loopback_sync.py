@@ -1,7 +1,10 @@
 """End-to-end authenticated peer sync over the node's HTTP API."""
 
+import os
 import shutil
 import threading
+from dataclasses import replace
+from unittest.mock import patch
 from pathlib import Path
 
 from qr_blockchain.api import BoundedThreadingHTTPServer, NodeRequestHandler
@@ -21,6 +24,7 @@ class AuthenticatedPeerLoopbackSyncTests(NodeServiceTestSupport):
             node_id=f"loopback-{name}",
             advertised_url=url,
         )
+        config = replace(config, default_signature_provider="native_test_pq_v1")
         service = NodeService(config)
         handler = type(f"Handler_{name}", (NodeRequestHandler,), {"service": service})
         server.RequestHandlerClass = handler
@@ -33,6 +37,9 @@ class AuthenticatedPeerLoopbackSyncTests(NodeServiceTestSupport):
         return service, url
 
     def _new_root(self) -> Path:
+        native_test_mode = patch.dict(os.environ, {"QR_CHAIN_NATIVE_SIGNER_MODE": "deterministic-test"})
+        native_test_mode.start()
+        self.addCleanup(native_test_mode.stop)
         root = Path("test_runtime") / self._testMethodName
         if root.exists():
             shutil.rmtree(root)
