@@ -37,6 +37,9 @@ jobs:
       - name: Run deterministic protocol and networking properties
         run: python -W error::ResourceWarning -m unittest tests.test_protocol_fuzz tests.test_network_hardening tests.test_network_properties tests.test_api_security -v
 
+      - name: Run authenticated loopback peer sync checks
+        run: python -W error::ResourceWarning -m unittest tests.test_authenticated_peer_loopback_sync -v
+
       - name: Run bounded multi-node chaos scenario suite
         run: python -W error::ResourceWarning -m unittest tests.test_adversarial.AdversarialAndPropertyTests.test_load_chaos_harness_runs_all_scripted_scenarios -v
 
