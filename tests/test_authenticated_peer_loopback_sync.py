@@ -6,6 +6,7 @@ import threading
 from dataclasses import replace
 from unittest.mock import patch
 from pathlib import Path
+from urllib.error import HTTPError
 
 from qr_blockchain.api import BoundedThreadingHTTPServer, NodeRequestHandler
 from qr_blockchain.service import NodeService
@@ -80,9 +81,10 @@ class AuthenticatedPeerLoopbackSyncTests(NodeServiceTestSupport):
         source.create_genesis_block({"foreign-bootstrap": 1})
         target.create_genesis_block({"local-bootstrap": 1})
 
-        with self.assertRaises(ValueError):
+        with self.assertRaises(HTTPError) as raised:
             target.sync_with_peer(source_url)
 
+        self.assertEqual(raised.exception.code, 400)
         self.assertEqual(target.chain_summary()["height"], 1)
         self.assertNotIn(source_url, target.list_peers())
 
