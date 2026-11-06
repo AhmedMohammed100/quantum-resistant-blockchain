@@ -4,6 +4,12 @@ This changelog preserves the implementation history that previously lived in the
 
 ## Historical Implementation Phases
 
+### Phase 82 - Process-Isolated Peer Sync And Restart Recovery
+
+- Added integration coverage that runs two independent QBC node processes over authenticated loopback HTTP with separate SQLite databases.
+- Sync eight blocks, compare canonical block hashes and state roots, terminate the target process, restart it on the same identity and endpoint, and verify persisted state plus idempotent re-sync.
+- Run this check in the extended hardening workflow; it is a bounded process-recovery regression, not a long-duration deployment soak or independent audit.
+
 ### Phase 81 - Authenticated Loopback Peer Sync Integration
 
 - Added an end-to-end test that starts two node HTTP servers with separate SQLite stores and syncs ten successive blocks over the signed peer handshake, summary, and block endpoints.
