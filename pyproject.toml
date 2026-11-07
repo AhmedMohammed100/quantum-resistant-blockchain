@@ -11,5 +11,12 @@ qr-chain = "qr_blockchain.cli:main"
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
+[tool.setuptools]
+py-modules = [
+  "qr_chain_classical_migration_backend_rsa",
+  "qr_chain_classical_migration_backend_secp256k1",
+]
+
 [tool.setuptools.packages.find]
 include = ["qr_blockchain*", "qr_chain_*"]
+
