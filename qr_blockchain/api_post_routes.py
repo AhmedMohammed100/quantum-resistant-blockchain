@@ -80,6 +80,8 @@ class PostRoutesMixin:
                     self._respond(HTTPStatus.OK, {"results": self.service.sync_with_peers()})
             except ValueError as error:
                 self._respond(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+            except OSError as error:
+                self._respond(HTTPStatus.BAD_GATEWAY, {"error": f"Peer sync failed: {error}"})
             return
 
         if path == "/migration/sources":
@@ -611,3 +613,4 @@ class PostRoutesMixin:
             return
 
         self._respond(HTTPStatus.NOT_FOUND, {"error": "Not found"})
+

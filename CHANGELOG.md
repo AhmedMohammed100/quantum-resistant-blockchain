@@ -4,6 +4,13 @@ This changelog preserves the implementation history that previously lived in the
 
 ## Historical Implementation Phases
 
+### Phase 83 - Installed Package And Hostile Network Recovery Gates
+
+- Include both dynamically loaded classical migration verifier modules in Python wheel and source distributions, verify imports from an installed wheel outside the checkout, and check wheel reproducibility across two builds. Source archive reproducibility and signed release provenance remain open.
+- Pin the Python build frontend and its toolchain in CI; reconcile the XMSS audit-register status with the merged regression and CI evidence while leaving independent review open.
+- Add process-isolated peer sync scenarios with a full partition, delayed traffic, dropped block responses, retry, and target restart; report outbound peer failures as HTTP 502 instead of terminating the API handler.
+- Repeat the hostile network scenario five times in the scheduled and manually triggered extended hardening workflow. This remains bounded fault-injection coverage, not a long-duration deployment soak.
+
 ### Phase 82 - Process-Isolated Peer Sync And Restart Recovery
 
 - Added integration coverage that runs two independent QBC node processes over authenticated loopback HTTP with separate SQLite databases.
@@ -401,3 +408,4 @@ This changelog preserves the implementation history that previously lived in the
 - Added migration dispute packets and proof-coverage reporting so weak or contested source entries can be reviewed safely.
 - Added node launch preflight gates across operational, migration, crypto, transport, consensus, and backup status.
 - Added privacy redaction policy reporting for support bundles and operator evidence handling.
+

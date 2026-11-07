@@ -174,6 +174,7 @@ The current consensus and fraud-hardening pass adds:
 - **Load/chaos harness:** `load-chaos` runs scripted multi-node scenarios for mempool floods, fork storms, migration disputes, signer interruptions, and verification throughput.
 - **Auditable hardening artifacts:** stages 7-10 now emit signed native-release provenance, soak-result evidence, database recovery manifests, and external-audit readiness packages.
 - **Adversarial coverage:** tests now cover state roots, maturity enforcement, dispute quarantine, multi-input verification, gossip penalties, and load/chaos harness execution.
+- **Hostile peer recovery:** process-isolated node tests inject HTTP partitions, latency, and a dropped block response, then verify retry convergence and persisted recovery after a target restart.
 
 The native signer pass adds:
 
@@ -813,13 +814,14 @@ python -W error::ResourceWarning -m unittest discover -s tests -v
 
 - Integrate audited, standards-aligned PQ backends for XMSS, LMS/HSS, SPHINCS+, and NIST-standard signature families where appropriate.
 - Build reproducible Bitcoin/Ethereum source extraction pipelines for migration snapshots.
-- Add stronger peer transport with encryption, rate limits, and peer scoring.
+- Complete production deployment review for encrypted peer transport, rate limiting, allowlists, and peer scoring.
 - Define validator/miner participation, governance, and reward distribution rules for QBC.
-- Expand load/chaos harnesses into long-running soak jobs with network latency, partitions, restart loops, and larger PQ verification batches.
+- Expand the process-isolated network soak with longer runs, repeated partitions and restarts, and larger real-PQ verification batches.
 - Add hardware-backed or isolated signer custody options.
-- Produce public protocol specs for transaction format, migration claims, peer frames, and snapshot artifacts.
+- Add reproducible Python wheel builds and installed-wheel compatibility checks; reproducible source archives and signed release provenance remain open.
 - Prepare signed releases, deployment guides, and migration operator playbooks.
 
 ## Changelog
 
 Historical implementation phases were moved to [CHANGELOG.md](CHANGELOG.md).
+

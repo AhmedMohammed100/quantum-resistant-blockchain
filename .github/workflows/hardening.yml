@@ -6,6 +6,62 @@ on:
   pull_request:
 
 jobs:
+  python-installed-package:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.11"
+      - name: Build source and wheel distributions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "build==1.2.2.post1" "setuptools==80.9.0" "wheel==0.45.1" "packaging==26.3" "pyproject-hooks==1.3.3"
+          export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          python -m build --no-isolation --sdist --wheel --outdir dist/first
+          python -m build --no-isolation --sdist --wheel --outdir dist/second
+          python - <<'PY'
+          import hashlib
+          from pathlib import Path
+          import sys
+
+          first_wheel = next(Path("dist/first").glob("*.whl"))
+          second_wheel = next(Path("dist/second").glob("*.whl"))
+          first_hash = hashlib.sha256(first_wheel.read_bytes()).hexdigest()
+          second_hash = hashlib.sha256(second_wheel.read_bytes()).hexdigest()
+          if first_hash != second_hash:
+              raise SystemExit(f"Repeated wheel builds differ: {first_hash} != {second_hash}")
+          print(f"Wheel is byte-for-byte reproducible: {first_hash}")
+          PY
+      - name: Install wheel outside the checkout and verify migration providers
+        shell: bash
+        run: |
+          set -euo pipefail
+          install_root="$RUNNER_TEMP/qbc-installed"
+          python -m pip install --no-deps --target "$install_root" dist/first/*.whl
+          cd "$RUNNER_TEMP"
+          python - "$install_root" <<'PY'
+          import importlib
+          from pathlib import Path
+          import sys
+
+          install_root = Path(sys.argv[1]).resolve()
+          sys.path.insert(0, str(install_root))
+          import qr_blockchain
+
+          assert Path(qr_blockchain.__file__).resolve().is_relative_to(install_root)
+          for module_name in (
+              "qr_chain_classical_migration_backend_rsa",
+              "qr_chain_classical_migration_backend_secp256k1",
+          ):
+              module = importlib.import_module(module_name)
+              assert Path(module.__file__).resolve().is_relative_to(install_root), module.__file__
+          print("Installed wheel imports both built-in classical migration providers.")
+          PY
+
   python-hardening:
     strategy:
       fail-fast: false
@@ -122,3 +178,4 @@ jobs:
         env:
           QBC_ACVP_DATA_DIR: .acvp-data/mldsa65
         run: python -m unittest tests.test_mldsa65_acvp_vectors -v
+

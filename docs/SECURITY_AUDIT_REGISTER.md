@@ -8,12 +8,13 @@ This register records concrete findings and the evidence required to close them.
 
 - **Area:** qr_blockchain/crypto.py, XMSSMerkleLamportSignatureProvider.verify
 - **Severity:** High (internal assessment; confirm with independent reviewer)
-- **Status:** Remediated in branch; CI verification pending
+- **Status:** Remediated; regression coverage and CI verification are complete. Independent review remains open.
 - **Issue:** The verifier previously accepted any non-negative integer leaf index and did not require the authentication path length to equal the public key's tree height. The Merkle path calculation consumes only as many low-order index bits as there are path elements. Consequently, an otherwise valid index i could be changed to i + 2**height while preserving the same path calculation and potentially still verify.
 - **Impact:** Different serialized signatures could identify the same one-time leaf. Systems relying on the serialized leaf index to track one-time-signature use could miscount or fail to detect reuse.
 - **Correction:** Require a positive bounded tree height, a non-boolean integer leaf index in [0, 2**height), an authentication path of exactly height string elements, and a non-empty string root. Malformed input returns verification failure instead of leaking parsing exceptions.
 - **Regression tests:** tests/test_crypto_verification_hardening.py covers index aliasing, out-of-range indices, wrong authentication-path depth, malformed metadata, and valid-signature preservation.
-- **Closure evidence required:** Full regression suite and CI matrix pass; independent review confirms the fix and checks all call sites that enforce one-time-leaf uniqueness.
+- **Automated evidence:** `tests/test_crypto_verification_hardening.py` covers the malformed-index cases and valid-signature preservation; the merged `main` CI matrix has passed.
+- **Remaining closure evidence:** An independent reviewer confirms the fix and checks all call sites that enforce one-time-leaf uniqueness. This finding is not considered externally audited or closed until that review is recorded.
 
 ## Audit work still required
 
@@ -32,3 +33,4 @@ The following are open review areas, not claims that vulnerabilities have been f
 - Do not change frozen protocol vectors or consensus behavior simply to make tests pass; any necessary protocol change requires separate compatibility review.
 - Record severity, exploit preconditions, affected versions, remediation commit, and independent closure evidence.
 - Do not describe this project as production-ready or independently audited until the corresponding external review has actually occurred.
+
