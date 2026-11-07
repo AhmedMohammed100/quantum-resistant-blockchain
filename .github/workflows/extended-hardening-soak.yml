@@ -43,6 +43,17 @@ jobs:
       - name: Run process-isolated peer sync and restart checks
         run: python -W error::ResourceWarning -m unittest tests.test_process_isolated_peer_sync -v
 
+      - name: Repeat hostile network partition, latency, and recovery scenario
+        shell: bash
+        run: |
+          set -euo pipefail
+          for round in $(seq 1 5); do
+            echo "Hostile network replay $round / 5"
+            python -W error::ResourceWarning -m unittest \
+              tests.test_process_isolated_peer_sync.ProcessIsolatedPeerSyncTests.test_peer_sync_recovers_after_partition_latency_and_dropped_block_response -v
+          done
+          printf 'Completed five process-isolated peer sync replays with a full partition, delayed traffic, a dropped block response, retry, and target restart recovery.\n' >> "$GITHUB_STEP_SUMMARY"
+
       - name: Run bounded multi-node chaos scenario suite
         run: python -W error::ResourceWarning -m unittest tests.test_adversarial.AdversarialAndPropertyTests.test_load_chaos_harness_runs_all_scripted_scenarios -v
 
@@ -99,3 +110,4 @@ jobs:
               raise SystemExit("One or more chaos replay rounds failed.")
       - name: Run complete regression suite
         run: python -W error::ResourceWarning -m unittest discover -s tests -v
+
