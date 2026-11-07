@@ -4,6 +4,15 @@ This changelog preserves the implementation history that previously lived in the
 
 ## Historical Implementation Phases
 
+### Phase 84 - Independent Replay, Consensus State Boundary, And PQ Benchmarks
+
+- Extract pure UTXO projection and state-root functions into `qr_blockchain.chain_state`, preserving the `NodeService` compatibility methods.
+- Add an offline linear-chain replay checker that independently validates hashes, proof of work, transaction IDs and transfer signatures, UTXO/supply invariants, and state roots without calling `NodeService.validate_block`.
+- Report verifier scope limits explicitly: classical migration ownership proofs, snapshot provenance, migration dispute/finality policy, and external cryptographic certification remain outside the replay.
+- Extend process-isolated peer coverage so both nodes mine on separate branches during a partition and verify reorganization, convergence, and removal of the abandoned branch's balance.
+- Add a real ML-DSA-65 benchmark runner for cryptographic operations, transaction signing/submission, and repeated block validation, with a weekly/manual workflow and retained JSON reports.
+- Keep measurements informational; do not tune consensus or impose performance thresholds from a single runner.
+
 ### Phase 83 - Installed Package And Hostile Network Recovery Gates
 
 - Include both dynamically loaded classical migration verifier modules in Python wheel and source distributions, verify imports from an installed wheel outside the checkout, and check wheel reproducibility across two builds. Source archive reproducibility and signed release provenance remain open.
@@ -408,4 +417,5 @@ This changelog preserves the implementation history that previously lived in the
 - Added migration dispute packets and proof-coverage reporting so weak or contested source entries can be reviewed safely.
 - Added node launch preflight gates across operational, migration, crypto, transport, consensus, and backup status.
 - Added privacy redaction policy reporting for support bundles and operator evidence handling.
+
 
