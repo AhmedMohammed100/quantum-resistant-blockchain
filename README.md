@@ -151,6 +151,12 @@ The current project-wide completion pass adds:
 - **Launch preflight:** `node-preflight` combines operational, migration, crypto, transport, consensus, and backup gates.
 - **Privacy redaction:** `privacy-redaction-policy` defines what can go into support bundles and what must stay private.
 
+The engineering hardening pass adds:
+
+- **Independent chain replay:** `qr_blockchain.chain_verifier.verify_chain` replays exported blocks without invoking `NodeService.validate_block`, checking linkage, work, transaction IDs, transfer signatures, UTXO accounting, supply conservation, and state roots. Migration ownership evidence and finality policy remain explicitly outside this verifier.
+- **PQ performance measurements:** `benchmarks/benchmark_node.py` measures the real ML-DSA-65/OQS signing and verification path, signed transaction submission through SQLite-backed node validation, and repeated block validation. A weekly/manual GitHub workflow retains runner-specific JSON reports without imposing performance thresholds.
+- **Consensus state boundary:** UTXO projection and state-root helpers now live in `qr_blockchain.chain_state`, with `NodeService` compatibility methods preserved and checked against replay tests.
+
 The newest architecture separation pass adds:
 
 - **Signer/consensus boundary:** `Wallet` now delegates private-key operations to `LocalWalletSigner`, while `NodeService` remains responsible for validation, fork choice, policy, and storage.
@@ -819,9 +825,13 @@ python -W error::ResourceWarning -m unittest discover -s tests -v
 - Expand the process-isolated network soak with longer runs, repeated partitions and restarts, and larger real-PQ verification batches.
 - Add hardware-backed or isolated signer custody options.
 - Add reproducible Python wheel builds and installed-wheel compatibility checks; reproducible source archives and signed release provenance remain open.
+- Expand independent replay coverage for migration proof and finality rules after their verification contracts are independently specified.
+- Continue the measured `NodeService` extraction, then separate storage repositories and route groups while preserving SQLite transaction and HTTP middleware boundaries.
+- Build comparable PQ, transaction, block, and multi-node soak baselines across supported CI runners before using measurements to tune limits.
 - Prepare signed releases, deployment guides, and migration operator playbooks.
 
 ## Changelog
 
 Historical implementation phases were moved to [CHANGELOG.md](CHANGELOG.md).
+
 
