@@ -1,0 +1,81 @@
+name: PQ Benchmarks
+
+on:
+  workflow_dispatch:
+    inputs:
+      operations:
+        description: Number of ML-DSA transfers per batch (1-32)
+        required: false
+        default: "8"
+        type: string
+      block_repetitions:
+        description: Repeated block validations (1-20)
+        required: false
+        default: "5"
+        type: string
+  schedule:
+    - cron: "41 5 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  real-mldsa-node-benchmarks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      QR_CHAIN_DEPLOYMENT_MODE: test
+      PYOQS_VERSION: "0.16.0"
+      QR_CHAIN_MLDSA_BACKEND_MODULE: qr_chain_mldsa_backend
+      BENCHMARK_OPERATIONS: ${{ inputs.operations || '8' }}
+      BENCHMARK_BLOCK_REPETITIONS: ${{ inputs.block_repetitions || '5' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.11"
+
+      - name: Install the pinned real ML-DSA runtime
+        run: python -m pip install --disable-pip-version-check --requirement requirements-oqs.txt
+
+      - name: Run ML-DSA crypto, transaction, and block validation benchmarks
+        shell: bash
+        run: |
+          set -euo pipefail
+          operations="$BENCHMARK_OPERATIONS"
+          repetitions="$BENCHMARK_BLOCK_REPETITIONS"
+          python - "$operations" "$repetitions" <<'PY'
+          import sys
+
+          operations, repetitions = map(int, sys.argv[1:])
+          if not 1 <= operations <= 32:
+              raise SystemExit("operations must be between 1 and 32")
+          if not 1 <= repetitions <= 20:
+              raise SystemExit("block_repetitions must be between 1 and 20")
+          PY
+          python -m benchmarks.benchmark_node \
+            --provider mldsa65_oqs_v1 \
+            --operations "$operations" \
+            --block-repetitions "$repetitions" \
+            --output "$RUNNER_TEMP/qbc-pq-benchmark.json"
+          {
+            echo '## Real ML-DSA benchmark results'
+            echo
+            echo 'Runner-specific diagnostic measurements; these are not CI thresholds.'
+            echo
+            echo '<pre>'
+            cat "$RUNNER_TEMP/qbc-pq-benchmark.json"
+            echo '</pre>'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload benchmark report
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.2
+        with:
+          name: qbc-pq-benchmarks-${{ github.run_id }}
+          path: ${{ runner.temp }}/qbc-pq-benchmark.json
+          if-no-files-found: error
+          retention-days: 90
+
