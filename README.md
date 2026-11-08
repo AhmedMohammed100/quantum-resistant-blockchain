@@ -155,6 +155,7 @@ The engineering hardening pass adds:
 
 - **Independent chain replay:** `qr_blockchain.chain_verifier.verify_chain` replays exported blocks without invoking `NodeService.validate_block`, checking linkage, work, transaction IDs, transfer signatures, UTXO accounting, supply conservation, and state roots. Migration ownership evidence and finality policy remain explicitly outside this verifier.
 - **PQ performance measurements:** `benchmarks/benchmark_node.py` measures the real ML-DSA-65/OQS signing and verification path, signed transaction submission through SQLite-backed node validation, and repeated block validation. A weekly/manual GitHub workflow retains runner-specific JSON reports without imposing performance thresholds.
+- **Real-PQ multi-node proof:** the hardening workflow starts three independent node processes with the real ML-DSA-65 backend, submits and mines a signed transfer, syncs validators over authenticated peer HTTP, checks balances and identical chain tips, and replays the exported chain with the independent verifier. This proves integration for a short local test chain; it is not a public testnet, performance result, cryptographic audit, or production-readiness claim.
 - **Consensus state boundary:** UTXO projection and state-root helpers now live in `qr_blockchain.chain_state`, with `NodeService` compatibility methods preserved and checked against replay tests.
 
 The newest architecture separation pass adds:
