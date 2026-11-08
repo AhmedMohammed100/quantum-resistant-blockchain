@@ -4,6 +4,12 @@ This changelog preserves the implementation history that previously lived in the
 
 ## Historical Implementation Phases
 
+### Phase 85 - Real ML-DSA Multi-Node Integration Proof
+
+- Add a three-process test that boots independent SQLite-backed nodes with the real ML-DSA-65 provider, signs/submits a transfer, mines it, synchronizes two validators over authenticated HTTP, compares chain tips and balances, and replays the exported chain with the independent verifier.
+- Require the pinned native liboqs runtime in the hardening CI job before running this integration scenario; local environments without liboqs may skip the test with an explicit reason.
+- Keep this as short-run test-network evidence, not a public testnet, long-duration soak, cryptographic certification, or production-readiness claim.
+
 ### Phase 84 - Independent Replay, Consensus State Boundary, And PQ Benchmarks
 
 - Extract pure UTXO projection and state-root functions into `qr_blockchain.chain_state`, preserving the `NodeService` compatibility methods.

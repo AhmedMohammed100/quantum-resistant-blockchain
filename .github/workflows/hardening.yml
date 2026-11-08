@@ -151,6 +151,11 @@ jobs:
 
   mldsa65-official-acvp:
     runs-on: ubuntu-latest
+    env:
+      QR_CHAIN_DEPLOYMENT_MODE: test
+      QR_CHAIN_MLDSA_BACKEND_MODULE: qr_chain_mldsa_backend
+      QR_CHAIN_MLDSA_OQS_MECHANISM: ML-DSA-65
+      PYOQS_VERSION: "0.16.0"
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -161,8 +166,6 @@ jobs:
           python-version: "3.11"
 
       - name: Install pinned liboqs-python and native runtime
-        env:
-          PYOQS_VERSION: "0.16.0"
         run: python -m pip install --upgrade "liboqs-python==0.16.0.2"
 
       - name: Download pinned official NIST ACVP vectors
@@ -178,4 +181,11 @@ jobs:
         env:
           QBC_ACVP_DATA_DIR: .acvp-data/mldsa65
         run: python -m unittest tests.test_mldsa65_acvp_vectors -v
+
+      - name: Require the configured real ML-DSA backend
+        run: python -c 'from qr_blockchain.crypto import get_signature_provider; status = get_signature_provider("mldsa65_oqs_v1").backend_status(); print(status); raise SystemExit(0 if status.get("available") is True else "Real ML-DSA backend is required")'
+
+      - name: Prove real ML-DSA transactions and consensus across three processes
+        run: python -W error::ResourceWarning -m unittest tests.test_process_isolated_peer_sync.ProcessIsolatedPeerSyncTests.test_real_mldsa_transaction_converges_across_three_process_nodes -v
+
 

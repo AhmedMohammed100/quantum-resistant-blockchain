@@ -22,6 +22,8 @@ def _serve_node_process(
     port: int | None,
     ready_queue,
     advertised_url: str | None = None,
+    signature_provider: str = "native_test_pq_v1",
+    genesis_address: str = "shared-bootstrap",
 ) -> None:
     server = None
     ready = False
@@ -44,13 +46,13 @@ def _serve_node_process(
             chain_id="qbc-process-sync-test",
             node_id=f"process-{node_name}",
             advertised_url=advertised_url or url,
-            default_signature_provider="native_test_pq_v1",
+            default_signature_provider=signature_provider,
             max_peer_blocks_per_request=32,
             deployment_mode="test",
         )
         service = NodeService(config)
         if service.chain_summary()["height"] == 0:
-            service.create_genesis_block({"shared-bootstrap": 1_000})
+            service.create_genesis_block({genesis_address: 1_000})
         handler = type(f"ProcessHandler_{node_name}", (NodeRequestHandler,), {"service": service})
         server.RequestHandlerClass = handler
         ready_queue.put({"node": node_name, "url": url, "port": actual_port, "advertised_url": advertised_url or url})
@@ -82,11 +84,13 @@ class ProcessIsolatedPeerSyncTests(unittest.TestCase):
         node_name: str,
         port: int | None = None,
         advertised_url: str | None = None,
+        signature_provider: str = "native_test_pq_v1",
+        genesis_address: str = "shared-bootstrap",
     ):
         (root / node_name).mkdir(parents=True, exist_ok=True)
         process = context.Process(
             target=_serve_node_process,
-            args=(str(root), node_name, port, ready_queue, advertised_url),
+            args=(str(root), node_name, port, ready_queue, advertised_url, signature_provider, genesis_address),
             name=f"qbc-node-{node_name}",
         )
         process.start()
@@ -102,6 +106,112 @@ class ProcessIsolatedPeerSyncTests(unittest.TestCase):
             self.fail(f"Node process {node_name} failed to start: {ready['error']}")
         self.assertEqual(ready.get("node"), node_name)
         return process, ready
+
+    def test_real_mldsa_transaction_converges_across_three_process_nodes(self) -> None:
+        from qr_blockchain.chain_verifier import verify_chain
+        from qr_blockchain.crypto import get_signature_provider
+        from qr_blockchain.models import Transaction, TxInput, TxOutput
+        from qr_blockchain.signer import Wallet
+
+        context = multiprocessing.get_context("spawn")
+        processes = []
+        ready_queue = context.Queue()
+        signature_provider = "mldsa65_oqs_v1"
+        chain_id = "qbc-process-sync-test"
+        environment = {
+            "QR_CHAIN_MLDSA_BACKEND_MODULE": "qr_chain_mldsa_backend",
+            "QR_CHAIN_MLDSA_OQS_MECHANISM": "ML-DSA-65",
+            "QR_CHAIN_DEPLOYMENT_MODE": "test",
+            "PYOQS_VERSION": "0.16.0",
+        }
+        try:
+            with patch.dict(os.environ, environment):
+                provider = get_signature_provider(signature_provider)
+                status = provider.backend_status()
+                if status.get("available") is not True:
+                    self.skipTest(f"Real ML-DSA runtime is unavailable: {status.get('error', 'unknown error')}")
+
+                sender = Wallet("e2e-sender", signature_provider=signature_provider)
+                recipient = Wallet("e2e-recipient", signature_provider=signature_provider)
+                miner = Wallet("e2e-miner", signature_provider=signature_provider)
+                sender_address = sender.create_address()
+                recipient_address = recipient.create_address()
+                miner_address = miner.create_address()
+
+                with tempfile.TemporaryDirectory(prefix="qbc-real-mldsa-multinode-") as temporary_root:
+                    root = Path(temporary_root)
+                    nodes = []
+                    for node_name in ("leader", "validator-b", "validator-c"):
+                        process, ready = self._start_node(
+                            context,
+                            ready_queue,
+                            root,
+                            node_name,
+                            signature_provider=signature_provider,
+                            genesis_address=sender_address,
+                        )
+                        processes.append(process)
+                        nodes.append(ready)
+
+                    leader_url = str(nodes[0]["url"])
+                    genesis = _request_json(leader_url, "/blocks")["blocks"][0]["transactions"][0]
+                    transaction = Transaction(
+                        inputs=[TxInput(prev_tx_id=str(genesis["tx_id"]), output_index=0)],
+                        outputs=[
+                            TxOutput(recipient=recipient_address, amount=400),
+                            TxOutput(recipient=sender_address, amount=599),
+                        ],
+                        chain_id=chain_id,
+                        signature_scheme=signature_provider,
+                        fee=1,
+                    )
+                    signing_result = sender._signer.sign_for_address(
+                        sender_address,
+                        transaction.signing_payload(),
+                    )
+                    transaction.inputs[0].public_key = signing_result.public_key
+                    transaction.inputs[0].signature = signing_result.signature
+                    transaction.finalize()
+
+                    submitted = _request_json(
+                        leader_url,
+                        "/transactions",
+                        payload=json.loads(transaction.serialize_with_id()),
+                    )
+                    self.assertEqual(submitted["tx_id"], transaction.tx_id)
+                    _request_json(leader_url, "/mine", payload={"miner_address": miner_address})
+
+                    leader_summary = _request_json(leader_url, "/chain/summary")
+                    leader_blocks = _request_json(leader_url, "/blocks")["blocks"]
+                    verifier_report = verify_chain(
+                        leader_blocks,
+                        chain_id=chain_id,
+                        subsidy_at_height=lambda height: 10 if height > 0 else 0,
+                        difficulty=1,
+                        state_root_activation_height=0,
+                    )
+                    self.assertTrue(verifier_report["valid"], verifier_report.get("error"))
+                    self.assertEqual(verifier_report["best_head_hash"], leader_summary["best_head_hash"])
+
+                    for node in nodes[1:]:
+                        node_url = str(node["url"])
+                        sync_result = _request_json(node_url, "/sync", payload={"peer_url": leader_url})
+                        self.assertEqual(sync_result["imported_blocks"], 1)
+                        summary = _request_json(node_url, "/chain/summary")
+                        self.assertEqual(summary["best_head_hash"], leader_summary["best_head_hash"])
+                        self.assertEqual(_request_json(node_url, f"/addresses/{recipient_address}/balance")["amount"], 400)
+                        self.assertEqual(_request_json(node_url, f"/addresses/{miner_address}/balance")["amount"], 11)
+                        self.assertEqual(_request_json(node_url, f"/addresses/{sender_address}/balance")["amount"], 599)
+                        self.assertEqual(_request_json(node_url, "/blocks")["blocks"], leader_blocks)
+        finally:
+            for process in reversed(processes):
+                if process.is_alive():
+                    process.terminate()
+                process.join(timeout=10)
+                if not process.is_alive():
+                    process.close()
+            ready_queue.close()
+            ready_queue.join_thread()
 
     def _stop_process(self, process) -> None:
         if process.is_alive():
