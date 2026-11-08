@@ -300,6 +300,14 @@ class ProcessIsolatedPeerSyncTests(unittest.TestCase):
                             _request_json(target_url, "/sync", payload={"peer_url": proxy_url})
                         self.assertEqual(partition_error.exception.code, 502)
 
+                        # Let the isolated target extend its own branch while
+                        # the source continues to hold the longer branch.
+                        _request_json(
+                            target_url,
+                            "/mine",
+                            payload={"miner_address": "partition-only-miner"},
+                        )
+
                         with proxy_lock:
                             proxy_state["partitioned"] = False
                             proxy_state["delay_seconds"] = 0.02
@@ -316,6 +324,10 @@ class ProcessIsolatedPeerSyncTests(unittest.TestCase):
                         target_summary = _request_json(target_url, "/chain/summary")
                         self.assertEqual(target_summary["height"], source_summary["height"])
                         self.assertEqual(target_summary["best_head_hash"], source_summary["best_head_hash"])
+                        self.assertEqual(
+                            _request_json(target_url, "/addresses/partition-only-miner/balance")["amount"],
+                            0,
+                        )
 
                         target_port = int(target_ready["port"])
                         self._stop_process(target_process)
@@ -355,4 +367,5 @@ if __name__ == "__main__":
     import unittest
 
     unittest.main()
+
 

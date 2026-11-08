@@ -43,6 +43,9 @@ jobs:
       - name: Run process-isolated peer sync and restart checks
         run: python -W error::ResourceWarning -m unittest tests.test_process_isolated_peer_sync -v
 
+      - name: Run independent chain replay checks
+        run: python -W error::ResourceWarning -m unittest tests.test_independent_chain_verifier -v
+
       - name: Repeat hostile network partition, latency, and recovery scenario
         shell: bash
         run: |
@@ -110,4 +113,5 @@ jobs:
               raise SystemExit("One or more chaos replay rounds failed.")
       - name: Run complete regression suite
         run: python -W error::ResourceWarning -m unittest discover -s tests -v
+
 

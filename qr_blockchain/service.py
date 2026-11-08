@@ -13,6 +13,8 @@ import time
 from urllib.parse import urlparse
 
 from .auth import NodeIdentityManager, request_claims_digest, verify_signed_envelope
+from .chain_state import project_block_utxos, state_root_after_block, utxo_state_root
+from .peer_sync import sync_with_peer as sync_peer_chain
 from .config import NodeConfig
 from .currency import CurrencyPolicy, format_units
 from .crypto import get_signature_provider, get_signature_verifier, list_signature_provider_statuses
@@ -346,55 +348,7 @@ class NodeService:
         return fetch_json(url, **kwargs)
 
     def sync_with_peer(self, peer_url: str) -> int:
-        normalized = normalize_peer_url(peer_url)
-        session = self.ensure_peer_admission(normalized)
-        try:
-            summary = self._fetch_peer_json(
-                with_path(normalized, "/peer/summary"),
-                method="POST",
-                payload=self._build_peer_request_frame(
-                    message_type="peer_summary_request",
-                    payload={},
-                    auth=self.build_peer_session_envelope(
-                        "peer_summary_v2",
-                        normalized,
-                        session["session_id"],
-                        "/peer/summary",
-                    ),
-                ),
-            )
-            summary_payload = self._parse_peer_response_frame(summary, "peer_summary_response")
-            remote_height = int(summary_payload.get("height", 0))
-            local_height = self.store.block_count()
-            imported = 0
-            if remote_height > local_height:
-                response = self._fetch_peer_json(
-                    with_path(normalized, "/peer/blocks"),
-                    method="POST",
-                    payload=self._build_peer_request_frame(
-                        message_type="peer_blocks_request",
-                        payload={"start_height": local_height},
-                        auth=self.build_peer_session_envelope(
-                            "peer_blocks_v2",
-                            normalized,
-                            session["session_id"],
-                            "/peer/blocks",
-                            {"start_height": local_height},
-                        ),
-                    ),
-                )
-                response_payload = self._parse_peer_response_frame(response, "peer_blocks_response")
-                for item in response_payload.get("blocks", []):
-                    block = Block.from_dict(item)
-                    self.import_block(block)
-                    imported += 1
-
-            self.store.add_peer(normalized)
-            self.store.record_peer_sync_result(str(session["node_id"]), success=True, score_delta=max(1, imported))
-            return imported
-        except Exception:
-            self.store.record_peer_sync_result(str(session["node_id"]), success=False, score_delta=-5)
-            raise
+        return sync_peer_chain(self, peer_url)
 
     def relay_pending_transaction(self, transaction: Transaction, *, exclude_peer: str = "") -> dict[str, object]:
         if not transaction.tx_id:
@@ -680,36 +634,15 @@ class NodeService:
 
     @staticmethod
     def state_root_for_utxos(utxos: dict[tuple[str, int], TxOutput]) -> str:
-        payload = [
-            {
-                "tx_id": tx_id,
-                "output_index": output_index,
-                "recipient": output.recipient,
-                "amount": output.amount,
-            }
-            for (tx_id, output_index), output in sorted(utxos.items())
-        ]
-        return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
+        return utxo_state_root(utxos)
 
     def _state_root_after_block(self, parent_utxos: dict[tuple[str, int], TxOutput], block: Block) -> str:
-        projected = dict(parent_utxos)
-        for transaction in block.transactions:
-            for tx_input in transaction.inputs:
-                projected.pop((tx_input.prev_tx_id, tx_input.output_index), None)
-            for output_index, output in enumerate(transaction.outputs):
-                projected[(transaction.tx_id, output_index)] = output
-        return self.state_root_for_utxos(projected)
+        return state_root_after_block(parent_utxos, block)
 
     @staticmethod
     def _state_root_utxos(parent_utxos: dict[tuple[str, int], TxOutput], block: Block) -> dict[tuple[str, int], TxOutput]:
         """Return the post-block UTXO view without consulting persistent state."""
-        projected = dict(parent_utxos)
-        for transaction in block.transactions:
-            for tx_input in transaction.inputs:
-                projected.pop((tx_input.prev_tx_id, tx_input.output_index), None)
-            for output_index, output in enumerate(transaction.outputs):
-                projected[(transaction.tx_id, output_index)] = output
-        return projected
+        return project_block_utxos(parent_utxos, block)
 
     def _validate_block_timestamp(self, block: Block) -> None:
         if isinstance(block.timestamp, bool) or not isinstance(block.timestamp, (int, float)):
@@ -5837,3 +5770,4 @@ class NodeService:
             self.config.migration_dual_control_start_height,
             self.config.migration_dual_control_end_height,
         )
+
