@@ -176,7 +176,7 @@ class ProcessIsolatedPeerSyncTests(unittest.TestCase):
                     submitted = _request_json(
                         leader_url,
                         "/transactions",
-                        payload=transaction.to_dict(),
+                        payload=json.loads(transaction.serialize_with_id()),
                     )
                     self.assertEqual(submitted["tx_id"], transaction.tx_id)
                     _request_json(leader_url, "/mine", payload={"miner_address": miner_address})
