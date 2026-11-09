@@ -36,8 +36,10 @@ def _rate(operations: int, elapsed: float) -> dict[str, float | int]:
 
 
 def run_benchmarks(*, provider_id: str, operations: int, block_repetitions: int) -> dict[str, object]:
-    if operations < 1 or operations > 128:
-        raise ValueError("operations must be between 1 and 128")
+    # Keep one slot inside the node's default 500-transaction block limit for
+    # the mandatory reward transaction constructed below.
+    if operations < 1 or operations > 499:
+        raise ValueError("operations must be between 1 and 499")
     if block_repetitions < 1 or block_repetitions > 100:
         raise ValueError("block_repetitions must be between 1 and 100")
 
@@ -90,7 +92,7 @@ def run_benchmarks(*, provider_id: str, operations: int, block_repetitions: int)
             min_transaction_fee=1,
             default_signature_provider=provider_id,
             allowed_signature_providers=(provider_id,),
-            max_transactions_per_block=operations,
+            max_transactions_per_block=operations + 1,
             max_pending_transactions=operations,
             state_root_activation_height=0,
         )
