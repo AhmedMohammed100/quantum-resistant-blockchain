@@ -4,6 +4,12 @@ This changelog preserves the implementation history that previously lived in the
 
 ## Historical Implementation Phases
 
+### Phase 86 - Repeated Real ML-DSA Multi-Node Soak
+
+- Extend the real ML-DSA three-process integration proof into a configurable repeated transfer, mining, validator synchronization, balance agreement, and independent replay soak; the scheduled and PR workflow defaults to 60 rounds and manual runs accept 10-499.
+- Emit and validate a JSON soak report with transaction count, validator sync count, duration, throughput, chain tip, independent verifier coverage, and final balances.
+- Keep the evidence scoped to repeatable local CI workloads; it does not establish public-network behavior or production readiness.
+
 ### Phase 85 - Real ML-DSA Multi-Node Integration Proof
 
 - Add a three-process test that boots independent SQLite-backed nodes with the real ML-DSA-65 provider, signs/submits a transfer, mines it, synchronizes two validators over authenticated HTTP, compares chain tips and balances, and replays the exported chain with the independent verifier.
