@@ -1,0 +1,19 @@
+{
+  "all_validators_converged": true,
+  "blocks_including_genesis": 61,
+  "chain_tip_hash": "0a379c14b023d5034f9449eceef0f78704138aca37f46389766475dda3d94c1c",
+  "chain_tip_height": 61,
+  "duration_seconds": 722.8843749999942,
+  "miner_balance": 660,
+  "node_count": 3,
+  "provider": "mldsa65_oqs_v1",
+  "recipient_balance": 60,
+  "rounds_requested": 60,
+  "sender_balance": 880,
+  "soak_version": 1,
+  "transactions_mined": 60,
+  "transactions_per_second": 0.08300082568529785,
+  "validator_syncs_completed": 120,
+  "verifier_blocks_checked": 61
+}
+
