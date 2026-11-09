@@ -118,6 +118,9 @@ class ProcessIsolatedPeerSyncTests(unittest.TestCase):
         ready_queue = context.Queue()
         signature_provider = "mldsa65_oqs_v1"
         chain_id = "qbc-process-sync-test"
+        rounds = int(os.environ.get("QBC_MLDSA_SOAK_ROUNDS", "1"))
+        if not 1 <= rounds <= 499:
+            self.fail("QBC_MLDSA_SOAK_ROUNDS must be between 1 and 499.")
         environment = {
             "QR_CHAIN_MLDSA_BACKEND_MODULE": "qr_chain_mldsa_backend",
             "QR_CHAIN_MLDSA_OQS_MECHANISM": "ML-DSA-65",
@@ -155,32 +158,60 @@ class ProcessIsolatedPeerSyncTests(unittest.TestCase):
 
                     leader_url = str(nodes[0]["url"])
                     genesis = _request_json(leader_url, "/blocks")["blocks"][0]["transactions"][0]
-                    transaction = Transaction(
-                        inputs=[TxInput(prev_tx_id=str(genesis["tx_id"]), output_index=0)],
-                        outputs=[
-                            TxOutput(recipient=recipient_address, amount=400),
-                            TxOutput(recipient=sender_address, amount=599),
-                        ],
-                        chain_id=chain_id,
-                        signature_scheme=signature_provider,
-                        fee=1,
-                    )
-                    signing_result = sender._signer.sign_for_address(
-                        sender_address,
-                        transaction.signing_payload(),
-                    )
-                    transaction.inputs[0].public_key = signing_result.public_key
-                    transaction.inputs[0].signature = signing_result.signature
-                    transaction.finalize()
+                    previous_tx_id = str(genesis["tx_id"])
+                    sender_balance = 1_000
+                    started = time.perf_counter()
+                    for round_number in range(1, rounds + 1):
+                        transaction = Transaction(
+                            inputs=[
+                                TxInput(
+                                    prev_tx_id=previous_tx_id,
+                                    output_index=0 if round_number == 1 else 1,
+                                )
+                            ],
+                            outputs=[
+                                TxOutput(recipient=recipient_address, amount=1),
+                                TxOutput(recipient=sender_address, amount=sender_balance - 2),
+                            ],
+                            chain_id=chain_id,
+                            signature_scheme=signature_provider,
+                            fee=1,
+                        )
+                        signing_result = sender._signer.sign_for_address(
+                            sender_address,
+                            transaction.signing_payload(),
+                        )
+                        transaction.inputs[0].public_key = signing_result.public_key
+                        transaction.inputs[0].signature = signing_result.signature
+                        transaction.finalize()
 
-                    submitted = _request_json(
-                        leader_url,
-                        "/transactions",
-                        payload=json.loads(transaction.serialize_with_id()),
-                    )
-                    self.assertEqual(submitted["tx_id"], transaction.tx_id)
-                    _request_json(leader_url, "/mine", payload={"miner_address": miner_address})
+                        submitted = _request_json(
+                            leader_url,
+                            "/transactions",
+                            payload=json.loads(transaction.serialize_with_id()),
+                        )
+                        self.assertEqual(submitted["tx_id"], transaction.tx_id)
+                        _request_json(leader_url, "/mine", payload={"miner_address": miner_address})
+                        previous_tx_id = transaction.tx_id
+                        sender_balance -= 2
 
+                        leader_summary = _request_json(leader_url, "/chain/summary")
+                        for node in nodes[1:]:
+                            node_url = str(node["url"])
+                            sync_result = _request_json(node_url, "/sync", payload={"peer_url": leader_url})
+                            self.assertEqual(
+                                sync_result["imported_blocks"],
+                                1,
+                                f"sync failed at round {round_number}",
+                            )
+                            summary = _request_json(node_url, "/chain/summary")
+                            self.assertEqual(
+                                summary["best_head_hash"],
+                                leader_summary["best_head_hash"],
+                                f"chain tips diverged at round {round_number}",
+                            )
+
+                    duration_seconds = time.perf_counter() - started
                     leader_summary = _request_json(leader_url, "/chain/summary")
                     leader_blocks = _request_json(leader_url, "/blocks")["blocks"]
                     verifier_report = verify_chain(
@@ -195,14 +226,49 @@ class ProcessIsolatedPeerSyncTests(unittest.TestCase):
 
                     for node in nodes[1:]:
                         node_url = str(node["url"])
-                        sync_result = _request_json(node_url, "/sync", payload={"peer_url": leader_url})
-                        self.assertEqual(sync_result["imported_blocks"], 1)
                         summary = _request_json(node_url, "/chain/summary")
                         self.assertEqual(summary["best_head_hash"], leader_summary["best_head_hash"])
-                        self.assertEqual(_request_json(node_url, f"/addresses/{recipient_address}/balance")["amount"], 400)
-                        self.assertEqual(_request_json(node_url, f"/addresses/{miner_address}/balance")["amount"], 11)
-                        self.assertEqual(_request_json(node_url, f"/addresses/{sender_address}/balance")["amount"], 599)
+                        self.assertEqual(
+                            _request_json(node_url, f"/addresses/{recipient_address}/balance")["amount"],
+                            rounds,
+                        )
+                        self.assertEqual(
+                            _request_json(node_url, f"/addresses/{miner_address}/balance")["amount"],
+                            11 * rounds,
+                        )
+                        self.assertEqual(
+                            _request_json(node_url, f"/addresses/{sender_address}/balance")["amount"],
+                            sender_balance,
+                        )
                         self.assertEqual(_request_json(node_url, "/blocks")["blocks"], leader_blocks)
+
+                    report = {
+                        "soak_version": 1,
+                        "provider": signature_provider,
+                        "node_count": len(nodes),
+                        "rounds_requested": rounds,
+                        "transactions_mined": rounds,
+                        "validator_syncs_completed": (len(nodes) - 1) * rounds,
+                        "blocks_including_genesis": len(leader_blocks),
+                        "duration_seconds": duration_seconds,
+                        "transactions_per_second": rounds / max(duration_seconds, 1e-12),
+                        "chain_tip_hash": leader_summary["best_head_hash"],
+                        "chain_tip_height": leader_summary["height"],
+                        "verifier_blocks_checked": verifier_report["blocks_checked"],
+                        "all_validators_converged": True,
+                        "recipient_balance": rounds,
+                        "miner_balance": 11 * rounds,
+                        "sender_balance": sender_balance,
+                    }
+                    report_path = os.environ.get("QBC_MLDSA_SOAK_REPORT_FILE", "")
+                    if report_path:
+                        output_path = Path(report_path)
+                        output_path.parent.mkdir(parents=True, exist_ok=True)
+                        output_path.write_text(
+                            json.dumps(report, indent=2, sort_keys=True) + "\n",
+                            encoding="utf-8",
+                        )
+                    print("MLDSA_MULTINODE_SOAK_REPORT=" + json.dumps(report, sort_keys=True))
         finally:
             for process in reversed(processes):
                 if process.is_alive():
