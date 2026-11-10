@@ -2,6 +2,9 @@
 
 Imported by test_node_service.py to preserve the existing unittest entry point.
 """
+from concurrent.futures import ThreadPoolExecutor
+import threading
+
 from tests.node_service_test_support import *
 from tests.node_service_test_support import _connect_test_db, _secp256k1_sign
 
@@ -234,6 +237,72 @@ class NodeServiceChainTests(NodeServiceTestSupport):
         service.submit_transaction(first)
         with self.assertRaisesRegex(ValueError, "pending spend"):
             service.submit_transaction(second)
+        service.mine_pending_transactions(Wallet("Conflict Miner").create_address())
+        self.assertIsNone(service.store.pending_transaction_conflict(second))
+
+    def test_rebuilds_pending_spend_index_for_existing_mempool_rows(self) -> None:
+        service, db_path = self.make_service()
+        alice = Wallet("Legacy Pending Alice")
+        bob = Wallet("Legacy Pending Bob")
+        carol = Wallet("Legacy Pending Carol")
+        funding = alice.create_address()
+        service.create_genesis_block({funding: 25})
+        first = alice.create_transaction(service, bob.create_address(), amount=10, fee=1)
+        second = alice.create_transaction(service, carol.create_address(), amount=10, fee=1)
+        service.store.save_pending_transaction(first)
+
+        # Simulate a database written before the outpoint index was introduced.
+        with service.store._connect() as connection:
+            connection.execute("DELETE FROM pending_spends")
+            connection.execute("DELETE FROM pending_migration_claims")
+            connection.execute("DELETE FROM chain_state WHERE key = 'pending_conflict_indexes_v1'")
+
+        restarted = NodeService(self.make_config(db_path))
+        self.assertEqual(
+            restarted.store.pending_transaction_conflict(second),
+            "Transaction conflicts with a pending spend.",
+        )
+
+    def test_concurrent_pending_double_spends_are_serialized_by_storage(self) -> None:
+        service, _ = self.make_service()
+        alice = Wallet("Concurrent Alice")
+        bob = Wallet("Concurrent Bob")
+        carol = Wallet("Concurrent Carol")
+        funding = alice.create_address()
+        service.create_genesis_block({funding: 25})
+        transactions = [
+            alice.create_transaction(service, bob.create_address(), amount=10, fee=1),
+            alice.create_transaction(service, carol.create_address(), amount=10, fee=1),
+        ]
+
+        # Force both service-level advisory checks to observe an empty mempool;
+        # the storage transaction must still admit only one conflicting spend.
+        barrier = threading.Barrier(2)
+        original_check = service.store.pending_transaction_conflict
+
+        def synchronized_check(transaction):
+            barrier.wait(timeout=5)
+            return original_check(transaction)
+
+        with patch.object(service.store, "pending_transaction_conflict", side_effect=synchronized_check):
+            def submit(transaction):
+                try:
+                    service.submit_transaction(transaction)
+                    return "accepted"
+                except ValueError as error:
+                    return str(error)
+
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                results = list(executor.map(submit, transactions))
+
+        self.assertEqual(results.count("accepted"), 1)
+        self.assertEqual(sum("pending spend" in result for result in results), 1)
+        self.assertEqual(service.store.pending_transaction_count(), 1)
+        with service.store._connect() as connection:
+            pending_spend_rows = connection.execute(
+                "SELECT COUNT(*) AS count FROM pending_spends"
+            ).fetchone()
+        self.assertEqual(int(pending_spend_rows["count"]), 1)
 
     def test_rejects_low_fee_transaction_under_mempool_policy(self) -> None:
         service, _ = self.make_service()

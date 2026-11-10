@@ -5315,19 +5315,9 @@ class NodeService:
             classical_address = str(candidate.metadata.get("classical_address", ""))
             if not classical_address:
                 raise ValueError("Migration claim metadata is missing classical_address.")
-            for pending in self.store.pending_transactions():
-                if pending.kind != "migration_claim":
-                    continue
-                if str(pending.metadata.get("classical_address", "")) == classical_address:
-                    raise ValueError("Migration claim conflicts with an existing pending classical address claim.")
-            return
-        candidate_inputs = {(item.prev_tx_id, item.output_index) for item in candidate.inputs}
-        if not candidate_inputs:
-            return
-        for pending in self.store.pending_transactions():
-            pending_inputs = {(item.prev_tx_id, item.output_index) for item in pending.inputs}
-            if candidate_inputs & pending_inputs:
-                raise ValueError("Transaction conflicts with a pending spend.")
+        conflict = self.store.pending_transaction_conflict(candidate)
+        if conflict is not None:
+            raise ValueError(conflict)
 
     def _enforce_mempool_policy(self, transaction: Transaction) -> None:
         if not transaction.tx_id:
