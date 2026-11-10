@@ -22,6 +22,10 @@ def block_work(difficulty: int) -> int:
 MAX_PEER_NONCES_PER_IDENTITY = 4096
 
 
+class PendingTransactionConflict(ValueError):
+    """Raised when a transaction conflicts with an existing mempool entry."""
+
+
 class SQLiteChainStore:
     def __init__(self, db_path: Path):
         self.db_path = db_path
@@ -63,6 +67,20 @@ class SQLiteChainStore:
                     size_bytes INTEGER NOT NULL DEFAULT 0,
                     created_at REAL NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS pending_spends (
+                    prev_tx_id TEXT NOT NULL,
+                    output_index INTEGER NOT NULL,
+                    tx_id TEXT NOT NULL,
+                    PRIMARY KEY (prev_tx_id, output_index, tx_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_pending_spends_tx_id ON pending_spends (tx_id);
+                CREATE TABLE IF NOT EXISTS pending_migration_claims (
+                    classical_address TEXT NOT NULL,
+                    tx_id TEXT NOT NULL,
+                    PRIMARY KEY (classical_address, tx_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_pending_migration_claims_tx_id
+                    ON pending_migration_claims (tx_id);
                 CREATE TABLE IF NOT EXISTS utxos (
                     tx_id TEXT NOT NULL,
                     output_index INTEGER NOT NULL,
@@ -165,6 +183,28 @@ class SQLiteChainStore:
                 connection.execute("ALTER TABLE pending_transactions ADD COLUMN fee INTEGER NOT NULL DEFAULT 0")
             if "size_bytes" not in columns:
                 connection.execute("ALTER TABLE pending_transactions ADD COLUMN size_bytes INTEGER NOT NULL DEFAULT 0")
+            indexed = connection.execute(
+                "SELECT 1 FROM chain_state WHERE key = 'pending_conflict_indexes_v1'"
+            ).fetchone()
+            if indexed is None:
+                rows = connection.execute("SELECT tx_id, body_json FROM pending_transactions").fetchall()
+                for row in rows:
+                    transaction = Transaction.from_dict(json.loads(row["body_json"]))
+                    tx_id = str(row["tx_id"])
+                    connection.executemany(
+                        "INSERT OR IGNORE INTO pending_spends (prev_tx_id, output_index, tx_id) VALUES (?, ?, ?)",
+                        [(item.prev_tx_id, item.output_index, tx_id) for item in transaction.inputs],
+                    )
+                    if transaction.kind == "migration_claim":
+                        classical_address = str(transaction.metadata.get("classical_address", ""))
+                        if classical_address:
+                            connection.execute(
+                                "INSERT OR IGNORE INTO pending_migration_claims (classical_address, tx_id) VALUES (?, ?)",
+                                (classical_address, tx_id),
+                            )
+                connection.execute(
+                    "INSERT INTO chain_state (key, value) VALUES ('pending_conflict_indexes_v1', '1')"
+                )
             migration_source_columns = {
                 str(row["name"])
                 for row in connection.execute("PRAGMA table_info(migration_sources)").fetchall()
@@ -354,6 +394,12 @@ class SQLiteChainStore:
     def save_pending_transaction(self, transaction: Transaction) -> None:
         serialized = transaction.serialize_with_id()
         with self._connect() as connection:
+            # Serialize conflict-check + insertion so concurrent submitters cannot
+            # both reserve the same outpoint between their advisory checks.
+            connection.execute("BEGIN IMMEDIATE")
+            conflict = self._pending_conflict(connection, transaction)
+            if conflict is not None:
+                raise PendingTransactionConflict(conflict)
             connection.execute(
                 """
                 INSERT INTO pending_transactions (tx_id, body_json, fee, size_bytes, created_at)
@@ -361,6 +407,41 @@ class SQLiteChainStore:
                 """,
                 (transaction.tx_id, serialized, transaction.fee, len(serialized.encode("utf-8")), transaction.timestamp),
             )
+            connection.executemany(
+                "INSERT INTO pending_spends (prev_tx_id, output_index, tx_id) VALUES (?, ?, ?)",
+                [(item.prev_tx_id, item.output_index, transaction.tx_id) for item in transaction.inputs],
+            )
+            if transaction.kind == "migration_claim":
+                classical_address = str(transaction.metadata.get("classical_address", ""))
+                if classical_address:
+                    connection.execute(
+                        "INSERT INTO pending_migration_claims (classical_address, tx_id) VALUES (?, ?)",
+                        (classical_address, transaction.tx_id),
+                    )
+
+    def pending_transaction_conflict(self, transaction: Transaction) -> str | None:
+        """Return a conflict reason using the indexed mempool spend set."""
+        with self._connect() as connection:
+            return self._pending_conflict(connection, transaction)
+
+    @staticmethod
+    def _pending_conflict(connection: sqlite3.Connection, transaction: Transaction) -> str | None:
+        if transaction.kind == "migration_claim":
+            classical_address = str(transaction.metadata.get("classical_address", ""))
+            if classical_address and connection.execute(
+                "SELECT 1 FROM pending_migration_claims WHERE classical_address = ? LIMIT 1",
+                (classical_address,),
+            ).fetchone():
+                return "Migration claim conflicts with an existing pending classical address claim."
+            return None
+        for tx_input in transaction.inputs:
+            if connection.execute(
+                """SELECT 1 FROM pending_spends
+                   WHERE prev_tx_id = ? AND output_index = ? LIMIT 1""",
+                (tx_input.prev_tx_id, tx_input.output_index),
+            ).fetchone():
+                return "Transaction conflicts with a pending spend."
+        return None
 
     def has_pending_transaction(self, tx_id: str) -> bool:
         with self._connect() as connection:
@@ -380,6 +461,12 @@ class SQLiteChainStore:
             return
         placeholders = ",".join("?" for _ in transaction_ids)
         with self._connect() as connection:
+            connection.execute(
+                f"DELETE FROM pending_spends WHERE tx_id IN ({placeholders})", transaction_ids
+            )
+            connection.execute(
+                f"DELETE FROM pending_migration_claims WHERE tx_id IN ({placeholders})", transaction_ids
+            )
             connection.execute(
                 f"DELETE FROM pending_transactions WHERE tx_id IN ({placeholders})",
                 transaction_ids,
@@ -969,6 +1056,14 @@ class SQLiteChainStore:
                 )
             if included_ids:
                 placeholders = ",".join("?" for _ in included_ids)
+                connection.execute(
+                    f"DELETE FROM pending_spends WHERE tx_id IN ({placeholders})",
+                    included_ids,
+                )
+                connection.execute(
+                    f"DELETE FROM pending_migration_claims WHERE tx_id IN ({placeholders})",
+                    included_ids,
+                )
                 connection.execute(
                     f"DELETE FROM pending_transactions WHERE tx_id IN ({placeholders})",
                     included_ids,
