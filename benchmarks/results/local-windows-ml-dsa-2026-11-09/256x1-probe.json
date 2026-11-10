@@ -1,0 +1,84 @@
+{
+  "algorithm_family": "ml-dsa",
+  "backend": {
+    "algorithm_family": "ml-dsa",
+    "api_version": 1,
+    "available": true,
+    "backend_module": "qr_chain_mldsa_backend.oqs_backend",
+    "backend_name": "open_quantum_safe_liboqs_python",
+    "compatibility_aliases": [
+      "Dilithium3"
+    ],
+    "enabled_mechanisms": [
+      "ML-DSA-65"
+    ],
+    "implementation": "external_module_adapter",
+    "implementation_type": "library_adapter",
+    "library_module": "oqs",
+    "library_version": "unknown",
+    "module_path": "qr_chain_mldsa_backend",
+    "notes": "liboqs-backed ML-DSA-65 provider. ML-DSA is the NIST FIPS 204 standardized family derived from CRYSTALS-Dilithium; Dilithium3 maps to ML-DSA-65 compatibility.",
+    "provider_id": "mldsa65_oqs_v1",
+    "scheme_id": "mldsa65_oqs_v1",
+    "selected_mechanism": "ML-DSA-65",
+    "standardization": "NIST FIPS 204 ML-DSA family",
+    "status": "available",
+    "supports_reserved_signing": false,
+    "supports_signing": true,
+    "supports_stateful_signing": false
+  },
+  "benchmark_version": 1,
+  "block_validation": {
+    "block_hash": "0a8068e44f05630c9d16e798b995162191a644b108f577c2081457f6acb45a31",
+    "blocks_per_second": 2.2888312815304346,
+    "elapsed_seconds": 0.4369042000034824,
+    "repetitions": 1,
+    "state_root": "6b60f882a447e3acdee46914c60d8fb2061e641dd1b1399e3fb7f6a9fc9fe3e3",
+    "transactions_per_block": 257,
+    "transactions_verified_per_second": 585.9408080717913
+  },
+  "crypto": {
+    "keygen_seconds": 0.005137500003911555,
+    "mean_public_key_json_bytes": 4028.0,
+    "mean_signature_json_bytes": 6683.0,
+    "signing": {
+      "elapsed_seconds": 0.7252485000062734,
+      "mean_latency_ms": 2.8330019531495054,
+      "operations": 256,
+      "operations_per_second": 352.98246049152203
+    },
+    "verification": {
+      "elapsed_seconds": 0.14727119999588467,
+      "mean_latency_ms": 0.5752781249839245,
+      "operations": 256,
+      "operations_per_second": 1738.2896316941374
+    }
+  },
+  "environment": {
+    "operations_per_batch": 256,
+    "platform": "Windows-10-10.0.19045-SP0",
+    "processor": "Intel64 Family 6 Model 78 Stepping 3, GenuineIntel",
+    "python": "3.13.14"
+  },
+  "notes": [
+    "This measures the installed signature provider and SQLite-backed service path on this runner.",
+    "Mining is excluded from block validation timing; the candidate block is built once and validated repeatedly.",
+    "Results are measurements, not CI thresholds or performance guarantees."
+  ],
+  "provider": "mldsa65_oqs_v1",
+  "transaction": {
+    "node_submission_validation_and_storage": {
+      "elapsed_seconds": 86.79536640000879,
+      "mean_latency_ms": 339.04440000003433,
+      "operations": 256,
+      "operations_per_second": 2.9494662056058107
+    },
+    "wallet_transaction_signing": {
+      "elapsed_seconds": 11.890677600022173,
+      "mean_latency_ms": 46.44795937508661,
+      "operations": 256,
+      "operations_per_second": 21.529471121101007
+    }
+  }
+}
+

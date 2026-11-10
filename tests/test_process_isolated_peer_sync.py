@@ -9,6 +9,7 @@ import tempfile
 import threading
 import time
 import unittest
+from contextlib import ExitStack
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 from unittest.mock import patch
@@ -67,12 +68,28 @@ def _serve_node_process(
             server.server_close()
 
 
-def _request_json(url: str, path: str, *, payload: dict[str, object] | None = None) -> dict[str, object]:
+def _request_json(
+    url: str,
+    path: str,
+    *,
+    payload: dict[str, object] | None = None,
+    timeout: float = 30,
+) -> dict[str, object]:
     data = None if payload is None else json.dumps(payload, sort_keys=True).encode("utf-8")
     headers = {} if data is None else {"Content-Type": "application/json"}
     request = Request(f"{url}{path}", data=data, headers=headers, method="GET" if data is None else "POST")
-    with urlopen(request, timeout=30) as response:
+    with urlopen(request, timeout=timeout) as response:
         return json.loads(response.read().decode("utf-8"))
+
+
+def _stop_processes(processes) -> None:
+    for process in reversed(processes):
+        if process.is_alive():
+            process.terminate()
+        process.join(timeout=10)
+        if not process.is_alive():
+            process.close()
+    processes.clear()
 
 
 class ProcessIsolatedPeerSyncTests(unittest.TestCase):
@@ -141,7 +158,13 @@ class ProcessIsolatedPeerSyncTests(unittest.TestCase):
                 recipient_address = recipient.create_address()
                 miner_address = miner.create_address()
 
-                with tempfile.TemporaryDirectory(prefix="qbc-real-mldsa-multinode-") as temporary_root:
+                with ExitStack() as stack:
+                    temporary_root = stack.enter_context(
+                        tempfile.TemporaryDirectory(prefix="qbc-real-mldsa-multinode-")
+                    )
+                    # ExitStack runs callbacks in reverse order: stop nodes
+                    # before TemporaryDirectory removes their open SQLite files.
+                    stack.callback(_stop_processes, processes)
                     root = Path(temporary_root)
                     nodes = []
                     for node_name in ("leader", "validator-b", "validator-c"):
@@ -198,7 +221,12 @@ class ProcessIsolatedPeerSyncTests(unittest.TestCase):
                         leader_summary = _request_json(leader_url, "/chain/summary")
                         for node in nodes[1:]:
                             node_url = str(node["url"])
-                            sync_result = _request_json(node_url, "/sync", payload={"peer_url": leader_url})
+                            sync_result = _request_json(
+                                node_url,
+                                "/sync",
+                                payload={"peer_url": leader_url},
+                                timeout=120,
+                            )
                             self.assertEqual(
                                 sync_result["imported_blocks"],
                                 1,
