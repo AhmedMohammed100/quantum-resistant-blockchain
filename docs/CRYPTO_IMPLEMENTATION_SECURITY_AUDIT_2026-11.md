@@ -95,5 +95,6 @@ Clearly distinguish the QBC Lamport/Merkle reference construction from RFC 8391 
 - liboqs LMS stateful-signing advisory: https://github.com/open-quantum-safe/liboqs/security/advisories/GHSA-xv6c-h66p-6mfq
 - LMS native fix commit: https://github.com/open-quantum-safe/liboqs/commit/5c06c8a57e28d47466925fc86e5cfe777cb999c7
 - Research paper, *KAT-Seeded Fuzzing of Stateful Hash-Based Signature Verification in liboqs*, IACR ePrint 2026/1107: https://eprint.iacr.org/2026/1107
+- liboqs `OQS_SIG` API documentation (signature length is a maximum for variable-length algorithms): https://github.com/open-quantum-safe/liboqs/blob/main/src/sig/sig.h
 - NIST FIPS 204: https://csrc.nist.gov/pubs/fips/204/final
 
