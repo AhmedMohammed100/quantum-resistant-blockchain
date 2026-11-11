@@ -47,7 +47,7 @@ This branch adds the following protections and regression coverage:
 3. Stateful LMS reservation tokens are matched, consumed once, locked per keypair, and persisted through serialization. A failed signing/export leaves the reservation pending and the key blocked pending retirement/recovery; it does not silently sign again from the same serialized state.
 4. Existing SQLite wallet reservation handling persists the final serialized key state when a reserved signing attempt fails.
 5. External module verifier exceptions become `False` at the transaction verification boundary rather than escaping validation.
-6. Rust stateless liboqs verification rejects a public key or signature whose length differs from the selected algorithm's declared length before entering FFI.
+6. Rust stateless liboqs verification rejects wrong-sized public keys and empty or oversized signatures before entering FFI; it preserves valid variable-length signatures up to liboqs's declared maximum.
 7. A deterministic seeded malformed-input regression loop exercises 500 malformed QBC reference-XMSS verification inputs.
 
 These checks cover malformed metadata and serialization/hex shape, algorithm/mechanism mismatch, incorrect and replayed reservations, failed stateful signing, and reservation concurrency on a shared keypair. They do not prove that arbitrary native library inputs are memory safe.
