@@ -86,6 +86,22 @@ class CryptoBackendSafetyTests(unittest.TestCase):
             public_key["provider"] = "wrong-provider"
             self.assertFalse(lms.verify(b"msg", signature, public_key))
 
+    def test_lms_unsupported_runtime_is_a_controlled_verification_failure(self) -> None:
+        public_key = {
+            "scheme": lms.EXPECTED_SCHEME_ID,
+            "provider": lms.EXPECTED_SCHEME_ID,
+            "mechanism": "LMS_SHA256_H10_W4",
+            "library": "oqs",
+            "public_key_hex": "7075626c6963",
+        }
+        signature = {
+            "mechanism": "LMS_SHA256_H10_W4",
+            "library": "oqs",
+            "signature_hex": "736967",
+        }
+        with patch.object(lms, "_load_oqs", side_effect=ValueError("unsupported liboqs runtime")):
+            self.assertFalse(lms.verify(b"msg", signature, public_key))
+
     def test_lms_malformed_hex_is_a_controlled_verification_failure(self) -> None:
         public_key = {
             "scheme": lms.EXPECTED_SCHEME_ID,
