@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import ctypes as ct
 import importlib
 import os
+import threading
 
 from .contract import EXPECTED_ALGORITHM_FAMILY, EXPECTED_SCHEME_ID, XMSS_BACKEND_API_VERSION
 from qr_blockchain.lamport import sha256_hex
@@ -30,6 +31,8 @@ class OQSXMSSKeyPair:
     public_key_hex: str
     secret_key_hex: str
     signatures_used: int = 0
+    pending_reservation_id: int | None = None
+    _reservation_lock: object = field(default_factory=threading.RLock, repr=False, compare=False)
 
 
 def _load_oqs() -> object:
@@ -318,49 +321,62 @@ def serialize_keypair(keypair: object) -> object:
         "public_key_hex": keypair.public_key_hex,
         "secret_key_hex": keypair.secret_key_hex,
         "signatures_used": keypair.signatures_used,
+        "pending_reservation_id": keypair.pending_reservation_id,
     }
 
 
 def deserialize_keypair(payload: object) -> OQSXMSSKeyPair:
     if not isinstance(payload, dict):
         raise ValueError("OQS-backed XMSS key payload must be an object.")
-    signatures_used = int(payload.get("signatures_used", 0))
-    if signatures_used < 0:
+    signatures_used = payload.get("signatures_used", 0)
+    pending = payload.get("pending_reservation_id")
+    if isinstance(signatures_used, bool) or not isinstance(signatures_used, int) or signatures_used < 0:
         raise ValueError("OQS-backed XMSS key payload has an invalid signatures_used value.")
+    if pending is not None and (isinstance(pending, bool) or not isinstance(pending, int) or pending <= 0):
+        raise ValueError("OQS-backed XMSS key payload has an invalid pending reservation.")
     return OQSXMSSKeyPair(
         mechanism=str(payload["mechanism"]),
         public_key_hex=str(payload["public_key_hex"]),
         secret_key_hex=str(payload["secret_key_hex"]),
         signatures_used=signatures_used,
+        pending_reservation_id=pending,
     )
 
 
 def reserve_signing_material(keypair: object) -> object:
     if not isinstance(keypair, OQSXMSSKeyPair):
         raise ValueError("Invalid keypair for OQS-backed XMSS backend.")
-    return {"reservation_id": keypair.signatures_used + 1}
+    with keypair._reservation_lock:
+        if keypair.pending_reservation_id is not None:
+            raise ValueError("OQS-backed XMSS key has an unfinished signing reservation; retire the key before retrying.")
+        reservation_id = keypair.signatures_used + 1
+        keypair.pending_reservation_id = reservation_id
+        return {"reservation_id": reservation_id}
 
 
 def sign_with_reservation(keypair: object, message: bytes, reservation: object) -> tuple[object, object]:
     if not isinstance(keypair, OQSXMSSKeyPair):
         raise ValueError("Invalid keypair for OQS-backed XMSS backend.")
-    if not isinstance(reservation, dict) or "reservation_id" not in reservation:
+    if not isinstance(reservation, dict):
         raise ValueError("OQS-backed XMSS signing requires a reservation token.")
-    reservation_id = int(reservation["reservation_id"])
-    if reservation_id <= 0 or reservation_id != keypair.signatures_used + 1:
-        raise ValueError("OQS-backed XMSS reservation is stale or out of sequence.")
-
-    oqs_module = _load_oqs()
-    _ensure_mechanism_supported(oqs_module, keypair.mechanism)
-    secret_key = bytes.fromhex(keypair.secret_key_hex)
-    signer = _new_signer(oqs_module, keypair.mechanism, secret_key=secret_key)
-    signature = _sign_message(signer, message, secret_key)
-    next_secret_key = _secret_key_bytes_from_signer(signer)
-    keypair.secret_key_hex = next_secret_key.hex()
-    keypair.signatures_used += 1
-    return export_public_key(keypair), {
-        "mechanism": keypair.mechanism,
-        "library": "oqs",
-        "signature_hex": signature.hex(),
-        "signatures_used": keypair.signatures_used,
-    }
+    reservation_id = reservation.get("reservation_id")
+    if isinstance(reservation_id, bool) or not isinstance(reservation_id, int):
+        raise ValueError("OQS-backed XMSS reservation is malformed.")
+    with keypair._reservation_lock:
+        if reservation_id <= 0 or reservation_id != keypair.pending_reservation_id:
+            raise ValueError("OQS-backed XMSS reservation is stale, forged, or already consumed.")
+        oqs_module = _load_oqs()
+        _ensure_mechanism_supported(oqs_module, keypair.mechanism)
+        secret_key = bytes.fromhex(keypair.secret_key_hex)
+        signer = _new_signer(oqs_module, keypair.mechanism, secret_key=secret_key)
+        signature = _sign_message(signer, message, secret_key)
+        next_secret_key = _secret_key_bytes_from_signer(signer)
+        keypair.secret_key_hex = next_secret_key.hex()
+        keypair.signatures_used += 1
+        keypair.pending_reservation_id = None
+        return export_public_key(keypair), {
+            "mechanism": keypair.mechanism,
+            "library": "oqs",
+            "signature_hex": signature.hex(),
+            "signatures_used": keypair.signatures_used,
+        }
