@@ -113,6 +113,7 @@ fn decode_hex(value: &str) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
+#[cfg(any(feature = "liboqs", test))]
 fn exact_length_matches(expected: usize, actual: usize) -> bool {
     expected == actual
 }
