@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import ctypes as ct
 import importlib
 import os
+import re
+import threading
 
 from .contract import EXPECTED_ALGORITHM_FAMILY, EXPECTED_SCHEME_ID, XMSS_BACKEND_API_VERSION
 from qr_blockchain.lamport import sha256_hex
@@ -11,6 +13,7 @@ from qr_blockchain.lamport import sha256_hex
 
 OQS_MECHANISM_ENV = "QR_CHAIN_XMSS_OQS_MECHANISM"
 DEFAULT_OQS_MECHANISM = "XMSS-SHA2_10_256"
+MIN_SAFE_LIBOQS_VERSION = (0, 16, 0)
 
 XMSS_BACKEND_MANIFEST = {
     "backend_name": "open_quantum_safe_liboqs_python",
@@ -30,12 +33,34 @@ class OQSXMSSKeyPair:
     public_key_hex: str
     secret_key_hex: str
     signatures_used: int = 0
+    pending_reservation_id: int | None = None
+    _reservation_lock: object = field(default_factory=threading.RLock, repr=False, compare=False)
+
+
+def _native_liboqs_version(oqs_module: object) -> tuple[tuple[int, int, int], str]:
+    native_factory = getattr(oqs_module, "native", None)
+    version_factory = getattr(native_factory(), "OQS_version", None) if callable(native_factory) else None
+    if not callable(version_factory):
+        raise ValueError("Cannot verify the native liboqs version; OQS XMSS is disabled fail-closed.")
+    raw_version = version_factory()
+    version_text = raw_version.decode("ascii", "strict") if isinstance(raw_version, bytes) else str(raw_version)
+    match = re.match(r"^\s*(\d+)\.(\d+)\.(\d+)(?:$|[-+])", version_text)
+    if match is None:
+        raise ValueError(f"Cannot parse native liboqs version {version_text!r}; OQS XMSS is disabled fail-closed.")
+    version = tuple(int(match.group(index)) for index in (1, 2, 3))
+    if version < MIN_SAFE_LIBOQS_VERSION:
+        raise ValueError(
+            f"OQS-backed XMSS is disabled with native liboqs {version_text}; "
+            "CVE-2026-46344 requires liboqs >= 0.16.0."
+        )
+    return version, version_text
 
 
 def _load_oqs() -> object:
     try:
         oqs_module = importlib.import_module("oqs")
         _prepare_oqs_runtime(oqs_module)
+        _native_liboqs_version(oqs_module)
     except ModuleNotFoundError as error:
         raise ValueError(
             "The OQS-backed XMSS adapter requires the 'oqs' Python package from liboqs-python. "
@@ -232,7 +257,7 @@ def backend_info() -> dict[str, object]:
         "supports_stateful_signing": True,
         "supports_reserved_signing": True,
         "library_module": getattr(oqs_module, "__name__", "oqs"),
-        "library_version": getattr(oqs_module, "__version__", "unknown"),
+        "library_version": _native_liboqs_version(oqs_module)[1],
         "selected_mechanism": mechanism,
         "enabled_mechanisms": enabled,
     }
@@ -318,49 +343,62 @@ def serialize_keypair(keypair: object) -> object:
         "public_key_hex": keypair.public_key_hex,
         "secret_key_hex": keypair.secret_key_hex,
         "signatures_used": keypair.signatures_used,
+        "pending_reservation_id": keypair.pending_reservation_id,
     }
 
 
 def deserialize_keypair(payload: object) -> OQSXMSSKeyPair:
     if not isinstance(payload, dict):
         raise ValueError("OQS-backed XMSS key payload must be an object.")
-    signatures_used = int(payload.get("signatures_used", 0))
-    if signatures_used < 0:
+    signatures_used = payload.get("signatures_used", 0)
+    pending = payload.get("pending_reservation_id")
+    if isinstance(signatures_used, bool) or not isinstance(signatures_used, int) or signatures_used < 0:
         raise ValueError("OQS-backed XMSS key payload has an invalid signatures_used value.")
+    if pending is not None and (isinstance(pending, bool) or not isinstance(pending, int) or pending <= 0):
+        raise ValueError("OQS-backed XMSS key payload has an invalid pending reservation.")
     return OQSXMSSKeyPair(
         mechanism=str(payload["mechanism"]),
         public_key_hex=str(payload["public_key_hex"]),
         secret_key_hex=str(payload["secret_key_hex"]),
         signatures_used=signatures_used,
+        pending_reservation_id=pending,
     )
 
 
 def reserve_signing_material(keypair: object) -> object:
     if not isinstance(keypair, OQSXMSSKeyPair):
         raise ValueError("Invalid keypair for OQS-backed XMSS backend.")
-    return {"reservation_id": keypair.signatures_used + 1}
+    with keypair._reservation_lock:
+        if keypair.pending_reservation_id is not None:
+            raise ValueError("OQS-backed XMSS key has an unfinished signing reservation; retire the key before retrying.")
+        reservation_id = keypair.signatures_used + 1
+        keypair.pending_reservation_id = reservation_id
+        return {"reservation_id": reservation_id}
 
 
 def sign_with_reservation(keypair: object, message: bytes, reservation: object) -> tuple[object, object]:
     if not isinstance(keypair, OQSXMSSKeyPair):
         raise ValueError("Invalid keypair for OQS-backed XMSS backend.")
-    if not isinstance(reservation, dict) or "reservation_id" not in reservation:
+    if not isinstance(reservation, dict):
         raise ValueError("OQS-backed XMSS signing requires a reservation token.")
-    reservation_id = int(reservation["reservation_id"])
-    if reservation_id <= 0 or reservation_id != keypair.signatures_used + 1:
-        raise ValueError("OQS-backed XMSS reservation is stale or out of sequence.")
-
-    oqs_module = _load_oqs()
-    _ensure_mechanism_supported(oqs_module, keypair.mechanism)
-    secret_key = bytes.fromhex(keypair.secret_key_hex)
-    signer = _new_signer(oqs_module, keypair.mechanism, secret_key=secret_key)
-    signature = _sign_message(signer, message, secret_key)
-    next_secret_key = _secret_key_bytes_from_signer(signer)
-    keypair.secret_key_hex = next_secret_key.hex()
-    keypair.signatures_used += 1
-    return export_public_key(keypair), {
-        "mechanism": keypair.mechanism,
-        "library": "oqs",
-        "signature_hex": signature.hex(),
-        "signatures_used": keypair.signatures_used,
-    }
+    reservation_id = reservation.get("reservation_id")
+    if isinstance(reservation_id, bool) or not isinstance(reservation_id, int):
+        raise ValueError("OQS-backed XMSS reservation is malformed.")
+    with keypair._reservation_lock:
+        if reservation_id <= 0 or reservation_id != keypair.pending_reservation_id:
+            raise ValueError("OQS-backed XMSS reservation is stale, forged, or already consumed.")
+        oqs_module = _load_oqs()
+        _ensure_mechanism_supported(oqs_module, keypair.mechanism)
+        secret_key = bytes.fromhex(keypair.secret_key_hex)
+        signer = _new_signer(oqs_module, keypair.mechanism, secret_key=secret_key)
+        signature = _sign_message(signer, message, secret_key)
+        next_secret_key = _secret_key_bytes_from_signer(signer)
+        keypair.secret_key_hex = next_secret_key.hex()
+        keypair.signatures_used += 1
+        keypair.pending_reservation_id = None
+        return export_public_key(keypair), {
+            "mechanism": keypair.mechanism,
+            "library": "oqs",
+            "signature_hex": signature.hex(),
+            "signatures_used": keypair.signatures_used,
+        }

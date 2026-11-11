@@ -421,6 +421,9 @@ class SignatureProviderRegistryTests(unittest.TestCase):
         module.get_enabled_sig_mechanisms = lambda: list(available_sig_mechanisms)
         if native_error is None:
             class FakeNativeLibrary:
+                def OQS_version(self):
+                    return b"0.16.0"
+
                 def __init__(self):
                     self.OQS_SIG_STFL_SECRET_KEY_serialize = lambda *args: 0
                     self.OQS_SIG_STFL_SECRET_KEY_deserialize = lambda *args: 0

@@ -148,6 +148,7 @@ class LocalWalletSigner:
                     reservation_id,
                     owner_id=self._owner_id,
                     error_message=str(error),
+                    final_state=self._provider.serialize_keypair(keypair),
                 )
             raise
         return SigningResult(public_key=public_key, signature=signature, reservation_id=reservation_id)

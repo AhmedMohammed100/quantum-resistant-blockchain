@@ -113,6 +113,11 @@ fn decode_hex(value: &str) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
+#[cfg(any(feature = "liboqs", test))]
+fn signature_length_is_valid(maximum: usize, actual: usize) -> bool {
+    actual > 0 && actual <= maximum
+}
+
 fn json_string<'a>(value: &'a Value, field: &str) -> Result<&'a str, String> {
     value
         .get(field)
@@ -369,8 +374,11 @@ pub fn verify_oqs(
     let sig = handle.sig();
     let public_key = decode_hex(public_key_hex)?;
     let signature = decode_hex(signature_hex)?;
-    if public_key.len() != sig.length_public_key {
+    if !exact_length_matches(sig.length_public_key, public_key.len()) {
         return Err("invalid liboqs public key length".to_string());
+    }
+    if !signature_length_is_valid(sig.length_signature, signature.len()) {
+        return Err("invalid liboqs signature length".to_string());
     }
     Ok(unsafe {
         OQS_SIG_verify(
@@ -487,6 +495,14 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_signature_length_must_be_nonzero_and_within_maximum() {
+        assert!(signature_length_is_valid(64, 64));
+        assert!(signature_length_is_valid(64, 63));
+        assert!(!signature_length_is_valid(64, 0));
+        assert!(!signature_length_is_valid(64, 65));
+    }
 
     #[test]
     fn deterministic_test_signature_round_trips() {

@@ -490,7 +490,12 @@ class ExternalModuleSignatureProvider(SignatureProvider):
         return result
 
     def verify(self, message: bytes, signature: object, public_key: object) -> bool:
-        return bool(self._backend_function("verify")(message, signature, public_key))
+        try:
+            return bool(self._backend_function("verify")(message, signature, public_key))
+        except Exception:
+            # Optional/native verifiers process attacker-controlled transaction
+            # bytes. Backend errors must fail verification closed at this boundary.
+            return False
 
     def address_from_public_key(self, public_key: object) -> str:
         return str(self._backend_function("address_from_public_key")(public_key))

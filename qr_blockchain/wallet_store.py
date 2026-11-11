@@ -192,7 +192,12 @@ class SQLiteWalletStateStore:
             current_state_json = self._encode_state_bytes(current_state)
             next_state, reservation = reserve_fn(current_state)
             next_state_json = self._encode_state_bytes(next_state)
-            state_advanced = int(next_state_json != current_state_json)
+            # A persisted pending token records an unresolved stateful operation,
+            # not a safely advanced leaf. Expiry must require recovery, never reuse.
+            has_unfinished_stateful_reservation = (
+                isinstance(next_state, dict) and next_state.get("pending_reservation_id") is not None
+            )
+            state_advanced = int(next_state_json != current_state_json and not has_unfinished_stateful_reservation)
             payload_bytes = self._encode_state_bytes(next_state)
             protected_blob = self._custody.protect(
                 payload_bytes,
@@ -334,6 +339,7 @@ class SQLiteWalletStateStore:
         owner_id: str,
         error_message: str,
         now: float | None = None,
+        final_state: object | None = None,
     ) -> None:
         connection = self._connect()
         try:
@@ -352,13 +358,43 @@ class SQLiteWalletStateStore:
                 raise ValueError("Wallet signing reservation owner mismatch.")
             if str(row["status"]) != "pending":
                 return
+            final_status = (
+                "requires_recovery"
+                if isinstance(final_state, dict) and final_state.get("pending_reservation_id") is not None
+                else "failed"
+            )
+            if final_state is not None:
+                payload_bytes = self._encode_state_bytes(final_state)
+                protected_blob = self._custody.protect(
+                    payload_bytes,
+                    context=self._custody_context(label, address, provider_id),
+                )
+                connection.execute(
+                    """
+                    UPDATE wallet_keys
+                    SET
+                        key_state_json = ?,
+                        key_state_blob = ?,
+                        custody_backend = ?,
+                        state_version = state_version + 1
+                    WHERE label = ? AND address = ? AND provider_id = ?
+                    """,
+                    (
+                        self._PROTECTED_MARKER,
+                        sqlite3.Binary(protected_blob),
+                        self._custody.backend_id,
+                        label,
+                        address,
+                        provider_id,
+                    ),
+                )
             connection.execute(
                 """
                 UPDATE wallet_signing_reservations
-                SET status = 'failed', completed_at = ?, last_error = ?
+                SET status = ?, completed_at = ?, last_error = ?
                 WHERE reservation_id = ?
                 """,
-                (time.time() if now is None else now, error_message[:512], reservation_id),
+                (final_status, time.time() if now is None else now, error_message[:512], reservation_id),
             )
             connection.commit()
         except Exception:
@@ -494,6 +530,28 @@ class SQLiteWalletStateStore:
                 raise ValueError("Wallet key has no reservation history to recover.")
             if str(row["status"]) != "requires_recovery":
                 raise ValueError("Wallet key does not currently require recovery.")
+            key_row = connection.execute(
+                """
+                SELECT key_state_json, key_state_blob
+                FROM wallet_keys
+                WHERE label = ? AND address = ? AND provider_id = ?
+                """,
+                (label, address, provider_id),
+            ).fetchone()
+            if key_row is not None:
+                key_state = json.loads(
+                    self._decode_state_row(
+                        label,
+                        address,
+                        provider_id,
+                        key_row["key_state_blob"],
+                        key_row["key_state_json"],
+                    ).decode("utf-8")
+                )
+                if isinstance(key_state, dict) and key_state.get("pending_reservation_id") is not None:
+                    raise ValueError(
+                        "Stateful signing state is ambiguous; retire this key and create a replacement before reuse."
+                    )
             connection.execute(
                 """
                 UPDATE wallet_signing_reservations
