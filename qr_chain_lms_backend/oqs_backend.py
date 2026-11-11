@@ -1,8 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import importlib
 import os
+import re
+import secrets
+import threading
 
 from qr_blockchain.lamport import sha256_hex
 
@@ -30,15 +33,45 @@ class OQSLMSKeyPair:
     public_key_hex: str
     secret_key_hex: str
     signatures_used: int = 0
+    pending_reservation_id: str | None = None
+    _reservation_lock: object = field(default_factory=threading.RLock, repr=False, compare=False)
+
+
+MIN_SAFE_LIBOQS_VERSION = (0, 17, 0)
+
+
+def _native_liboqs_version(oqs_module: object) -> tuple[tuple[int, int, int], str]:
+    native_factory = getattr(oqs_module, "native", None)
+    if not callable(native_factory):
+        raise ValueError("Cannot verify the native liboqs version; LMS is disabled fail-closed.")
+    native = native_factory()
+    version_factory = getattr(native, "OQS_version", None)
+    if not callable(version_factory):
+        raise ValueError("Cannot verify the native liboqs version; LMS is disabled fail-closed.")
+    raw_version = version_factory()
+    version_text = raw_version.decode("ascii", "strict") if isinstance(raw_version, bytes) else str(raw_version)
+    match = re.match(r"^\s*(\d+)\.(\d+)\.(\d+)(?:$|[-+])", version_text)
+    if match is None:
+        raise ValueError(f"Cannot parse native liboqs version {version_text!r}; LMS is disabled fail-closed.")
+    version = tuple(int(match.group(index)) for index in (1, 2, 3))
+    if version < MIN_SAFE_LIBOQS_VERSION:
+        raise ValueError(
+            f"OQS-backed LMS is disabled with native liboqs {version_text}; "
+            "LMS verification and stateful signing require liboqs >= 0.17.0 because "
+            "0.16.0 and earlier contain disclosed LMS verification and signing defects."
+        )
+    return version, version_text
 
 
 def _load_oqs() -> object:
     try:
-        return importlib.import_module("oqs")
+        oqs_module = importlib.import_module("oqs")
     except ModuleNotFoundError as error:
         raise ValueError(
             "The OQS-backed LMS adapter requires the 'oqs' Python package from liboqs-python."
         ) from error
+    _native_liboqs_version(oqs_module)
+    return oqs_module
 
 
 def _selected_mechanism() -> str:
@@ -76,7 +109,7 @@ def backend_info() -> dict[str, object]:
         "supports_stateful_signing": True,
         "supports_reserved_signing": True,
         "library_module": getattr(oqs_module, "__name__", "oqs"),
-        "library_version": getattr(oqs_module, "__version__", "unknown"),
+        "library_version": _native_liboqs_version(oqs_module)[1],
         "selected_mechanism": mechanism,
         "enabled_mechanisms": _enabled_lms_mechanisms(oqs_module),
     }
@@ -125,12 +158,29 @@ def verify(message: bytes, signature: object, public_key: object) -> bool:
     mechanism = str(public_key.get("mechanism", ""))
     public_key_hex = str(public_key.get("public_key_hex", ""))
     signature_hex = str(signature.get("signature_hex", ""))
-    if not mechanism or not public_key_hex or not signature_hex:
+    if (
+        public_key.get("scheme") != EXPECTED_SCHEME_ID
+        or public_key.get("provider") != EXPECTED_SCHEME_ID
+        or public_key.get("library") != "oqs"
+        or signature.get("mechanism") != mechanism
+        or signature.get("library") != "oqs"
+        or not mechanism
+        or not public_key_hex
+        or not signature_hex
+    ):
         return False
     oqs_module = _load_oqs()
     _ensure_mechanism_supported(oqs_module, mechanism)
+    try:
+        public_key_bytes = bytes.fromhex(public_key_hex)
+        signature_bytes = bytes.fromhex(signature_hex)
+    except (TypeError, ValueError):
+        return False
     verifier = oqs_module.StatefulSignature(mechanism)
-    return bool(verifier.verify(message, bytes.fromhex(signature_hex), bytes.fromhex(public_key_hex)))
+    try:
+        return bool(verifier.verify(message, signature_bytes, public_key_bytes))
+    except (TypeError, ValueError):
+        return False
 
 
 def address_from_public_key(public_key: object) -> str:
@@ -150,41 +200,67 @@ def serialize_keypair(keypair: object) -> object:
         "public_key_hex": keypair.public_key_hex,
         "secret_key_hex": keypair.secret_key_hex,
         "signatures_used": keypair.signatures_used,
+        "pending_reservation_id": keypair.pending_reservation_id,
     }
 
 
 def deserialize_keypair(payload: object) -> OQSLMSKeyPair:
     if not isinstance(payload, dict):
         raise ValueError("OQS-backed LMS key payload must be an object.")
+    signatures_used = payload.get("signatures_used", 0)
+    if isinstance(signatures_used, bool) or not isinstance(signatures_used, int) or signatures_used < 0:
+        raise ValueError("OQS-backed LMS key payload has an invalid signatures_used value.")
+    pending = payload.get("pending_reservation_id")
+    if pending is not None and (not isinstance(pending, str) or not pending):
+        raise ValueError("OQS-backed LMS key payload has an invalid pending reservation.")
+    try:
+        bytes.fromhex(str(payload["public_key_hex"]))
+        bytes.fromhex(str(payload["secret_key_hex"]))
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError("OQS-backed LMS key payload has malformed key bytes.") from error
     return OQSLMSKeyPair(
         mechanism=str(payload["mechanism"]),
         public_key_hex=str(payload["public_key_hex"]),
         secret_key_hex=str(payload["secret_key_hex"]),
-        signatures_used=int(payload.get("signatures_used", 0)),
+        signatures_used=signatures_used,
+        pending_reservation_id=pending,
     )
 
 
 def reserve_signing_material(keypair: object) -> object:
     if not isinstance(keypair, OQSLMSKeyPair):
         raise ValueError("Invalid keypair for OQS-backed LMS backend.")
-    return {"reservation_id": keypair.signatures_used + 1}
+    with keypair._reservation_lock:
+        if keypair.pending_reservation_id is not None:
+            raise ValueError("OQS-backed LMS key has an unfinished signing reservation; retire the key before retrying.")
+        reservation_id = secrets.token_hex(16)
+        keypair.pending_reservation_id = reservation_id
+        return {"reservation_id": reservation_id}
 
 
 def sign_with_reservation(keypair: object, message: bytes, reservation: object) -> tuple[object, object]:
     if not isinstance(keypair, OQSLMSKeyPair):
         raise ValueError("Invalid keypair for OQS-backed LMS backend.")
-    if not isinstance(reservation, dict) or "reservation_id" not in reservation:
+    if not isinstance(reservation, dict) or not isinstance(reservation.get("reservation_id"), str):
         raise ValueError("OQS-backed LMS signing requires a reservation token.")
-    oqs_module = _load_oqs()
-    _ensure_mechanism_supported(oqs_module, keypair.mechanism)
-    signer = oqs_module.StatefulSignature(keypair.mechanism)
-    signer.import_secret_key(bytes.fromhex(keypair.secret_key_hex))
-    signature = signer.sign(message)
-    keypair.secret_key_hex = bytes(signer.export_secret_key()).hex()
-    keypair.signatures_used += 1
-    return export_public_key(keypair), {
-        "mechanism": keypair.mechanism,
-        "library": "oqs",
-        "signature_hex": bytes(signature).hex(),
-        "signatures_used": keypair.signatures_used,
-    }
+    with keypair._reservation_lock:
+        reservation_id = reservation["reservation_id"]
+        if keypair.pending_reservation_id is None or reservation_id != keypair.pending_reservation_id:
+            raise ValueError("OQS-backed LMS reservation is stale, forged, or already consumed.")
+        oqs_module = _load_oqs()
+        _ensure_mechanism_supported(oqs_module, keypair.mechanism)
+        signer = oqs_module.StatefulSignature(keypair.mechanism)
+        signer.import_secret_key(bytes.fromhex(keypair.secret_key_hex))
+        # Keep the reservation pending until the next state is exported. Any failure
+        # leaves the key unusable, so a possibly consumed LMS leaf cannot be reused.
+        signature = signer.sign(message)
+        next_secret_key_hex = bytes(signer.export_secret_key()).hex()
+        keypair.secret_key_hex = next_secret_key_hex
+        keypair.signatures_used += 1
+        keypair.pending_reservation_id = None
+        return export_public_key(keypair), {
+            "mechanism": keypair.mechanism,
+            "library": "oqs",
+            "signature_hex": bytes(signature).hex(),
+            "signatures_used": keypair.signatures_used,
+        }
