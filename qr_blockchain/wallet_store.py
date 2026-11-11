@@ -358,6 +358,11 @@ class SQLiteWalletStateStore:
                 raise ValueError("Wallet signing reservation owner mismatch.")
             if str(row["status"]) != "pending":
                 return
+            final_status = (
+                "requires_recovery"
+                if isinstance(final_state, dict) and final_state.get("pending_reservation_id") is not None
+                else "failed"
+            )
             if final_state is not None:
                 payload_bytes = self._encode_state_bytes(final_state)
                 protected_blob = self._custody.protect(
@@ -386,10 +391,10 @@ class SQLiteWalletStateStore:
             connection.execute(
                 """
                 UPDATE wallet_signing_reservations
-                SET status = 'failed', completed_at = ?, last_error = ?
+                SET status = ?, completed_at = ?, last_error = ?
                 WHERE reservation_id = ?
                 """,
-                (time.time() if now is None else now, error_message[:512], reservation_id),
+                (final_status, time.time() if now is None else now, error_message[:512], reservation_id),
             )
             connection.commit()
         except Exception:
