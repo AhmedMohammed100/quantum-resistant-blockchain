@@ -497,7 +497,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn native_signature_length_must_match_algorithm() {
+    fn native_signature_length_must_be_nonzero_and_within_maximum() {
         assert!(signature_length_is_valid(64, 64));
         assert!(signature_length_is_valid(64, 63));
         assert!(!signature_length_is_valid(64, 0));
