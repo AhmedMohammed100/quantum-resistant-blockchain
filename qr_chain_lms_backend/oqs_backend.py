@@ -169,17 +169,16 @@ def verify(message: bytes, signature: object, public_key: object) -> bool:
         or not signature_hex
     ):
         return False
-    oqs_module = _load_oqs()
-    _ensure_mechanism_supported(oqs_module, mechanism)
     try:
+        oqs_module = _load_oqs()
+        _ensure_mechanism_supported(oqs_module, mechanism)
         public_key_bytes = bytes.fromhex(public_key_hex)
         signature_bytes = bytes.fromhex(signature_hex)
-    except (TypeError, ValueError):
-        return False
-    verifier = oqs_module.StatefulSignature(mechanism)
-    try:
+        verifier = oqs_module.StatefulSignature(mechanism)
         return bool(verifier.verify(message, signature_bytes, public_key_bytes))
-    except (TypeError, ValueError):
+    except (OSError, RuntimeError, TypeError, ValueError):
+        # Provider/runtime incompatibility and malformed attacker-controlled inputs
+        # are verification failures, not exceptions to transaction admission.
         return False
 
 
