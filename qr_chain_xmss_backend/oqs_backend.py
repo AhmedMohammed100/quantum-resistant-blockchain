@@ -44,7 +44,7 @@ def _native_liboqs_version(oqs_module: object) -> tuple[tuple[int, int, int], st
         raise ValueError("Cannot verify the native liboqs version; OQS XMSS is disabled fail-closed.")
     raw_version = version_factory()
     version_text = raw_version.decode("ascii", "strict") if isinstance(raw_version, bytes) else str(raw_version)
-    match = re.match(r"^\\s*(\\d+)\\.(\\d+)\\.(\\d+)(?:$|[-+])", version_text)
+    match = re.match(r"^\s*(\d+)\.(\d+)\.(\d+)(?:$|[-+])", version_text)
     if match is None:
         raise ValueError(f"Cannot parse native liboqs version {version_text!r}; OQS XMSS is disabled fail-closed.")
     version = tuple(int(match.group(index)) for index in (1, 2, 3))
