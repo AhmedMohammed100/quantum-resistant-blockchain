@@ -113,6 +113,10 @@ fn decode_hex(value: &str) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
+fn exact_length_matches(expected: usize, actual: usize) -> bool {
+    expected == actual
+}
+
 fn json_string<'a>(value: &'a Value, field: &str) -> Result<&'a str, String> {
     value
         .get(field)
@@ -369,8 +373,11 @@ pub fn verify_oqs(
     let sig = handle.sig();
     let public_key = decode_hex(public_key_hex)?;
     let signature = decode_hex(signature_hex)?;
-    if public_key.len() != sig.length_public_key {
+    if !exact_length_matches(sig.length_public_key, public_key.len()) {
         return Err("invalid liboqs public key length".to_string());
+    }
+    if !exact_length_matches(sig.length_signature, signature.len()) {
+        return Err("invalid liboqs signature length".to_string());
     }
     Ok(unsafe {
         OQS_SIG_verify(
@@ -487,6 +494,13 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_signature_length_must_match_algorithm() {
+        assert!(exact_length_matches(64, 64));
+        assert!(!exact_length_matches(64, 63));
+        assert!(!exact_length_matches(64, 65));
+    }
 
     #[test]
     fn deterministic_test_signature_round_trips() {
