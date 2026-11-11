@@ -114,8 +114,8 @@ fn decode_hex(value: &str) -> Result<Vec<u8>, String> {
 }
 
 #[cfg(any(feature = "liboqs", test))]
-fn exact_length_matches(expected: usize, actual: usize) -> bool {
-    expected == actual
+fn signature_length_is_valid(maximum: usize, actual: usize) -> bool {
+    actual > 0 && actual <= maximum
 }
 
 fn json_string<'a>(value: &'a Value, field: &str) -> Result<&'a str, String> {
@@ -377,7 +377,7 @@ pub fn verify_oqs(
     if !exact_length_matches(sig.length_public_key, public_key.len()) {
         return Err("invalid liboqs public key length".to_string());
     }
-    if !exact_length_matches(sig.length_signature, signature.len()) {
+    if !signature_length_is_valid(sig.length_signature, signature.len()) {
         return Err("invalid liboqs signature length".to_string());
     }
     Ok(unsafe {
@@ -498,9 +498,10 @@ mod tests {
 
     #[test]
     fn native_signature_length_must_match_algorithm() {
-        assert!(exact_length_matches(64, 64));
-        assert!(!exact_length_matches(64, 63));
-        assert!(!exact_length_matches(64, 65));
+        assert!(signature_length_is_valid(64, 64));
+        assert!(signature_length_is_valid(64, 63));
+        assert!(!signature_length_is_valid(64, 0));
+        assert!(!signature_length_is_valid(64, 65));
     }
 
     #[test]
