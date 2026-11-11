@@ -38,6 +38,8 @@ jobs:
           toolchain: stable
       - name: Build native signer with locked dependencies
         run: cargo check --locked --manifest-path crates/qr_chain_native_signer/Cargo.toml
+      - name: Run native signer regression tests
+        run: cargo test --locked --manifest-path crates/qr_chain_native_signer/Cargo.toml
       - name: Install pinned audit tool
         run: cargo install cargo-audit --locked --version 0.22.2
       - name: Audit resolved dependency lockfile
