@@ -192,7 +192,12 @@ class SQLiteWalletStateStore:
             current_state_json = self._encode_state_bytes(current_state)
             next_state, reservation = reserve_fn(current_state)
             next_state_json = self._encode_state_bytes(next_state)
-            state_advanced = int(next_state_json != current_state_json)
+            # A persisted pending token records an unresolved stateful operation,
+            # not a safely advanced leaf. Expiry must require recovery, never reuse.
+            has_unfinished_stateful_reservation = (
+                isinstance(next_state, dict) and next_state.get("pending_reservation_id") is not None
+            )
+            state_advanced = int(next_state_json != current_state_json and not has_unfinished_stateful_reservation)
             payload_bytes = self._encode_state_bytes(next_state)
             protected_blob = self._custody.protect(
                 payload_bytes,
@@ -520,6 +525,28 @@ class SQLiteWalletStateStore:
                 raise ValueError("Wallet key has no reservation history to recover.")
             if str(row["status"]) != "requires_recovery":
                 raise ValueError("Wallet key does not currently require recovery.")
+            key_row = connection.execute(
+                """
+                SELECT key_state_json, key_state_blob
+                FROM wallet_keys
+                WHERE label = ? AND address = ? AND provider_id = ?
+                """,
+                (label, address, provider_id),
+            ).fetchone()
+            if key_row is not None:
+                key_state = json.loads(
+                    self._decode_state_row(
+                        label,
+                        address,
+                        provider_id,
+                        key_row["key_state_blob"],
+                        key_row["key_state_json"],
+                    ).decode("utf-8")
+                )
+                if isinstance(key_state, dict) and key_state.get("pending_reservation_id") is not None:
+                    raise ValueError(
+                        "Stateful signing state is ambiguous; retire this key and create a replacement before reuse."
+                    )
             connection.execute(
                 """
                 UPDATE wallet_signing_reservations
