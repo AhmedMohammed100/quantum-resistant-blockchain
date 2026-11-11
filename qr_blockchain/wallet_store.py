@@ -334,6 +334,7 @@ class SQLiteWalletStateStore:
         owner_id: str,
         error_message: str,
         now: float | None = None,
+        final_state: object | None = None,
     ) -> None:
         connection = self._connect()
         try:
@@ -352,6 +353,31 @@ class SQLiteWalletStateStore:
                 raise ValueError("Wallet signing reservation owner mismatch.")
             if str(row["status"]) != "pending":
                 return
+            if final_state is not None:
+                payload_bytes = self._encode_state_bytes(final_state)
+                protected_blob = self._custody.protect(
+                    payload_bytes,
+                    context=self._custody_context(label, address, provider_id),
+                )
+                connection.execute(
+                    """
+                    UPDATE wallet_keys
+                    SET
+                        key_state_json = ?,
+                        key_state_blob = ?,
+                        custody_backend = ?,
+                        state_version = state_version + 1
+                    WHERE label = ? AND address = ? AND provider_id = ?
+                    """,
+                    (
+                        self._PROTECTED_MARKER,
+                        sqlite3.Binary(protected_blob),
+                        self._custody.backend_id,
+                        label,
+                        address,
+                        provider_id,
+                    ),
+                )
             connection.execute(
                 """
                 UPDATE wallet_signing_reservations
