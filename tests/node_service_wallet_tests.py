@@ -346,27 +346,27 @@ class NodeServiceWalletTests(NodeServiceTestSupport):
                 self.assertEqual(status_before["reservation_status"]["requires_recovery"], 1)
                 self.assertTrue(status_before["wallet_keys"][0]["requires_recovery"])
 
-                recovered = service.recover_wallet_key(
-                    "Alice",
-                    funding,
-                    "xmss_nist_v1",
-                    note="cleared after crash inspection",
-                )
-                self.assertEqual(recovered["status"], "recovered")
+                with self.assertRaisesRegex(ValueError, "retire this key"):
+                    service.recover_wallet_key(
+                        "Alice",
+                        funding,
+                        "xmss_nist_v1",
+                        note="attempted recovery of ambiguous native state",
+                    )
 
                 status_after = service.wallet_key_statuses(label="Alice", provider_id="xmss_nist_v1")
-                self.assertEqual(status_after["reservation_status"]["recovered"], 1)
-                self.assertFalse(status_after["wallet_keys"][0]["requires_recovery"])
+                self.assertEqual(status_after["reservation_status"]["requires_recovery"], 1)
+                self.assertTrue(status_after["wallet_keys"][0]["requires_recovery"])
 
-                _, _, reservation_id = alice._state_store.reserve_wallet_key_state(
-                    alice.label,
-                    funding,
-                    alice.signature_provider,
-                    reserve_fn,
-                    owner_id=alice._owner_id,
-                    now=3.0,
-                )
-                self.assertTrue(reservation_id)
+                with self.assertRaisesRegex(ValueError, "requires operator recovery"):
+                    alice._state_store.reserve_wallet_key_state(
+                        alice.label,
+                        funding,
+                        alice.signature_provider,
+                        reserve_fn,
+                        owner_id=alice._owner_id,
+                        now=3.0,
+                    )
 
     def test_operational_status_reports_degraded_recovery_condition(self) -> None:
         wallet_db = self.wallet_state_db_path("health_recovery_wallet_state.db")
