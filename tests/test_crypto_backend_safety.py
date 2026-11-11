@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+import random
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
 from qr_chain_lms_backend import oqs_backend as lms
 from qr_chain_xmss_backend import oqs_backend as xmss
+from qr_blockchain.crypto import ExternalModuleSignatureProvider, get_signature_verifier
 
 
 class FakeStatefulSignature:
@@ -49,6 +51,46 @@ class FakeOQS:
 
 
 class CryptoBackendSafetyTests(unittest.TestCase):
+    def test_external_backend_exceptions_fail_verification_closed(self) -> None:
+        provider = ExternalModuleSignatureProvider(
+            provider_id="lms_nist_v1",
+            algorithm_family="lms",
+            module_env_var="UNUSED_TEST_BACKEND",
+            default_module_path="unused",
+            notes="test",
+        )
+        with patch.object(provider, "_backend_function", side_effect=RuntimeError("native verifier failure")):
+            self.assertFalse(provider.verify(b"msg", {}, {}))
+
+    def test_seeded_malformed_reference_xmss_inputs_never_escape_verifier(self) -> None:
+        rng = random.Random(0x514243)
+        verifier = get_signature_verifier("xmss_merkle_lamport_v1")
+        malformed_values = [
+            None,
+            [],
+            {},
+            b"\\xff",
+            -1,
+            1 << 128,
+            "not-hex",
+        ]
+        for index in range(500):
+            signature = {
+                "leaf_index": rng.choice(malformed_values),
+                "auth_path": rng.choice(malformed_values),
+                "leaf_public_key": rng.choice(malformed_values),
+                "lamport_signature": rng.choice(malformed_values),
+            }
+            public_key = {
+                "root": rng.choice(malformed_values),
+                "height": rng.choice(malformed_values),
+            }
+            try:
+                result = verifier.verify(b"fuzz", signature, public_key)
+            except Exception as error:
+                self.fail(f"malformed verifier input {index} escaped: {error!r}")
+            self.assertIsInstance(result, bool)
+
     def test_lms_rejects_liboqs_versions_with_disclosed_lms_issues(self) -> None:
         with self.assertRaisesRegex(ValueError, "require liboqs >= 0.17.0"):
             lms._native_liboqs_version(FakeOQS(b"0.16.0"))
