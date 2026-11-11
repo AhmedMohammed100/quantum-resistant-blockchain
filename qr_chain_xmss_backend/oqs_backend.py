@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 import ctypes as ct
 import importlib
 import os
+import re
 import threading
 
 from .contract import EXPECTED_ALGORITHM_FAMILY, EXPECTED_SCHEME_ID, XMSS_BACKEND_API_VERSION
@@ -12,6 +13,7 @@ from qr_blockchain.lamport import sha256_hex
 
 OQS_MECHANISM_ENV = "QR_CHAIN_XMSS_OQS_MECHANISM"
 DEFAULT_OQS_MECHANISM = "XMSS-SHA2_10_256"
+MIN_SAFE_LIBOQS_VERSION = (0, 16, 0)
 
 XMSS_BACKEND_MANIFEST = {
     "backend_name": "open_quantum_safe_liboqs_python",
@@ -35,10 +37,30 @@ class OQSXMSSKeyPair:
     _reservation_lock: object = field(default_factory=threading.RLock, repr=False, compare=False)
 
 
+def _native_liboqs_version(oqs_module: object) -> tuple[tuple[int, int, int], str]:
+    native_factory = getattr(oqs_module, "native", None)
+    version_factory = getattr(native_factory(), "OQS_version", None) if callable(native_factory) else None
+    if not callable(version_factory):
+        raise ValueError("Cannot verify the native liboqs version; OQS XMSS is disabled fail-closed.")
+    raw_version = version_factory()
+    version_text = raw_version.decode("ascii", "strict") if isinstance(raw_version, bytes) else str(raw_version)
+    match = re.match(r"^\\s*(\\d+)\\.(\\d+)\\.(\\d+)(?:$|[-+])", version_text)
+    if match is None:
+        raise ValueError(f"Cannot parse native liboqs version {version_text!r}; OQS XMSS is disabled fail-closed.")
+    version = tuple(int(match.group(index)) for index in (1, 2, 3))
+    if version < MIN_SAFE_LIBOQS_VERSION:
+        raise ValueError(
+            f"OQS-backed XMSS is disabled with native liboqs {version_text}; "
+            "CVE-2026-46344 requires liboqs >= 0.16.0."
+        )
+    return version, version_text
+
+
 def _load_oqs() -> object:
     try:
         oqs_module = importlib.import_module("oqs")
         _prepare_oqs_runtime(oqs_module)
+        _native_liboqs_version(oqs_module)
     except ModuleNotFoundError as error:
         raise ValueError(
             "The OQS-backed XMSS adapter requires the 'oqs' Python package from liboqs-python. "
@@ -235,7 +257,7 @@ def backend_info() -> dict[str, object]:
         "supports_stateful_signing": True,
         "supports_reserved_signing": True,
         "library_module": getattr(oqs_module, "__name__", "oqs"),
-        "library_version": getattr(oqs_module, "__version__", "unknown"),
+        "library_version": _native_liboqs_version(oqs_module)[1],
         "selected_mechanism": mechanism,
         "enabled_mechanisms": enabled,
     }
