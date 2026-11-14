@@ -1,0 +1,137 @@
+name: Native LMS and XMSS ASan fuzzing
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/native-stateful-signature-fuzz.yml"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/native-stateful-signature-fuzz.yml"
+  workflow_dispatch:
+    inputs:
+      fuzz_seconds:
+        description: Fuzz duration per target
+        required: true
+        default: "60"
+        type: choice
+        options: ["30", "60", "120"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-stateful-signature-fuzz-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  asan-fuzz:
+    name: liboqs LMS and XMSS verification fuzz targets
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      LIBOQS_COMMIT: 5c06c8a57e28d47466925fc86e5cfe777cb999c7
+      FUZZ_SECONDS: ${{ inputs.fuzz_seconds || '60' }}
+      ASAN_OPTIONS: detect_leaks=1:halt_on_error=1:abort_on_error=1
+    steps:
+      - name: Check out QBC
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check out pinned liboqs source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: open-quantum-safe/liboqs
+          ref: 5c06c8a57e28d47466925fc86e5cfe777cb999c7
+          path: third_party/liboqs
+          persist-credentials: false
+
+      - name: Install native build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes clang cmake ninja-build
+
+      - name: Configure liboqs with ASan and libFuzzer
+        run: |
+          CFLAGS="-fsanitize=address,fuzzer-no-link" \
+          LDFLAGS="-fsanitize=address" \
+          cmake -S third_party/liboqs -B build/liboqs -G Ninja \
+            -DCMAKE_C_COMPILER=clang \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DOQS_BUILD_ONLY_LIB=OFF \
+            -DOQS_BUILD_FUZZ_TESTS=ON \
+            -DOQS_USE_OPENSSL=OFF \
+            -DOQS_ENABLE_SIG_STFL_LMS=ON \
+            -DOQS_ENABLE_SIG_STFL_XMSS=ON \
+            -DOQS_HAZARDOUS_EXPERIMENTAL_ENABLE_SIG_STFL_KEY_SIG_GEN=OFF
+
+      - name: Build upstream LMS and XMSS fuzz targets
+        run: |
+          cmake --build build/liboqs --parallel 2 --target \
+            fuzz_test_sig_stfl_lms fuzz_test_sig_stfl_xmss
+
+      - name: Run KAT-seeded LMS and XMSS fuzz sessions
+        shell: bash
+        run: |
+          set -uo pipefail
+          report_dir="$RUNNER_TEMP/qbc-native-stateful-fuzz"
+          mkdir -p "$report_dir/corpus/lms" "$report_dir/corpus/xmss" \
+            "$report_dir/crashes/lms" "$report_dir/crashes/xmss"
+          python3 - "$report_dir/corpus" <<'PY'
+          from pathlib import Path
+          import sys
+
+          root = Path(sys.argv[1])
+          # The upstream harness mutates its embedded KAT public key, message,
+          # and signature. These inputs select both built-in parameter sets.
+          (root / "lms" / "lms_sha256_h5_w2").write_bytes(bytes((0, 0)))
+          (root / "lms" / "lms_sha256_h5_w8_h5_w8").write_bytes(bytes((1, 2)))
+          (root / "xmss" / "xmss_sha2_10_256").write_bytes(bytes((0, 0)))
+          (root / "xmss" / "xmssmt_sha2_20_2_256").write_bytes(bytes((1, 0)))
+          PY
+          overall_status=0
+          run_target() {
+            local name="$1"
+            local binary="$2"
+            local corpus="$3"
+            local crashes="$4"
+            local log="$report_dir/$name.log"
+            echo "Running $name for $FUZZ_SECONDS seconds"
+            "$binary" "$corpus" \
+              -max_total_time="$FUZZ_SECONDS" \
+              -timeout=10 \
+              -max_len=4096 \
+              -print_final_stats=1 \
+              -jobs=1 -workers=1 \
+              -artifact_prefix="$crashes/" >"$log" 2>&1
+            local status=$?
+            cat "$log"
+            if [ "$status" -ne 0 ]; then
+              echo "$name exited with status $status" | tee -a "$GITHUB_STEP_SUMMARY"
+              overall_status=1
+            fi
+          }
+          run_target lms build/liboqs/tests/fuzz_test_sig_stfl_lms \
+            "$report_dir/corpus/lms" "$report_dir/crashes/lms"
+          run_target xmss build/liboqs/tests/fuzz_test_sig_stfl_xmss \
+            "$report_dir/corpus/xmss" "$report_dir/crashes/xmss"
+          {
+            echo "## Native stateful-signature fuzz results"
+            echo
+            echo "- liboqs commit: `$LIBOQS_COMMIT`"
+            echo "- Duration: `$FUZZ_SECONDS` seconds per target"
+            echo "- LMS target: `fuzz_test_sig_stfl_lms`"
+            echo "- XMSS target: `fuzz_test_sig_stfl_xmss`"
+            echo "- ASan: enabled; libFuzzer: enabled"
+            echo "- Result: `$([ "$overall_status" -eq 0 ] && echo passed || echo failed)`"
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$overall_status"
+
+      - name: Preserve fuzz logs and crash artifacts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: native-stateful-signature-fuzz-${{ github.run_id }}
+          path: ${{ runner.temp }}/qbc-native-stateful-fuzz
+          if-no-files-found: ignore
+          retention-days: 14
