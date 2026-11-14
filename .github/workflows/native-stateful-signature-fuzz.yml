@@ -115,15 +115,21 @@ jobs:
             "$report_dir/corpus/lms" "$report_dir/crashes/lms"
           run_target xmss build/liboqs/tests/fuzz_test_sig_stfl_xmss \
             "$report_dir/corpus/xmss" "$report_dir/crashes/xmss"
+          lms_units=$(grep -F 'stat::number_of_executed_units:' "$report_dir/lms.log" | tail -1 | cut -d: -f2- | xargs || true)
+          xmss_units=$(grep -F 'stat::number_of_executed_units:' "$report_dir/xmss.log" | tail -1 | cut -d: -f2- | xargs || true)
           {
             echo "## Native stateful-signature fuzz results"
             echo
-            echo "- liboqs commit: `$LIBOQS_COMMIT`"
-            echo "- Duration: `$FUZZ_SECONDS` seconds per target"
-            echo "- LMS target: `fuzz_test_sig_stfl_lms`"
-            echo "- XMSS target: `fuzz_test_sig_stfl_xmss`"
+            echo "- liboqs commit: $LIBOQS_COMMIT"
+            echo "- Duration: $FUZZ_SECONDS seconds per target"
+            echo "- LMS target: fuzz_test_sig_stfl_lms; executed units: ${lms_units:-unavailable}"
+            echo "- XMSS target: fuzz_test_sig_stfl_xmss; executed units: ${xmss_units:-unavailable}"
             echo "- ASan: enabled; libFuzzer: enabled"
-            echo "- Result: `$([ "$overall_status" -eq 0 ] && echo passed || echo failed)`"
+            if [ "$overall_status" -eq 0 ]; then
+              echo "- Result: passed"
+            else
+              echo "- Result: failed"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
           exit "$overall_status"
 
