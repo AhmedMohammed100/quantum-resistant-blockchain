@@ -196,6 +196,9 @@ def verify(message: bytes, signature: object, public_key: object) -> bool:
     if str(public_key.get("library", "")) != "oqs" or str(signature.get("library", "")) != "oqs":
         return False
     mechanism = str(public_key.get("mechanism", ""))
+    signature_mechanism = str(signature.get("mechanism", ""))
+    if not mechanism or signature_mechanism != mechanism:
+        return False
     public_key_hex = str(public_key.get("public_key_hex", ""))
     signature_hex = str(signature.get("signature_hex", ""))
     if not mechanism or not public_key_hex or not signature_hex:
