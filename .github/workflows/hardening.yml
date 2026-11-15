@@ -165,6 +165,15 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Set up Go for independent ML-DSA verification
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.22.x"
+
+      - name: Build pinned CIRCL ML-DSA-65 helper
+        working-directory: conformance/go
+        run: go build -mod=readonly -o "$RUNNER_TEMP/qbc-circl-mldsa-crosscheck" ./cmd/mldsa-crosscheck
+
       - name: Install pinned liboqs-python and native runtime
         run: python -m pip install --upgrade "liboqs-python==0.16.0.2"
 
@@ -184,6 +193,11 @@ jobs:
 
       - name: Require the configured real ML-DSA backend
         run: python -c 'from qr_blockchain.crypto import get_signature_provider; status = get_signature_provider("mldsa65_oqs_v1").backend_status(); print(status); raise SystemExit(0 if status.get("available") is True else "Real ML-DSA backend is required")'
+
+      - name: Cross-check ML-DSA-65 signatures between liboqs and CIRCL
+        env:
+          QBC_CIRCL_MLDSA_TOOL: ${{ runner.temp }}/qbc-circl-mldsa-crosscheck
+        run: python -m unittest tests.test_mldsa65_cross_implementation -v
 
       - name: Prove real ML-DSA transactions and consensus across three processes
         run: python -W error::ResourceWarning -m unittest tests.test_process_isolated_peer_sync.ProcessIsolatedPeerSyncTests.test_real_mldsa_transaction_converges_across_three_process_nodes -v

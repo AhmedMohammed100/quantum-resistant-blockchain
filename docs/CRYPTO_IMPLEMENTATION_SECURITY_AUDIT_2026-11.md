@@ -75,9 +75,11 @@ Require a liboqs release that fixes both disclosed LMS defects before enabling O
 
 Build liboqs with LMS/XMSS enabled in an isolated job. Add KAT-seeded fuzz targets for LMS/HSS and XMSS/XMSSMT verification, run with AddressSanitizer, retain minimized regression corpus entries, and test the Rust/Python/native boundaries. Run this only against a patched upstream release/commit and record the precise revision.
 
-### P1 — Add independent ML-DSA cross-implementation verification
+### P1 — Independent ML-DSA cross-implementation verification
 
-Keep the official FIPS 204 ACVP known-answer suite and add generated sign/verify interoperability cases against a separately maintained implementation. Test malformed key/signature lengths, wrong algorithms, truncated/oversized buffers, and provider initialization failures. Never silently fall back to the deterministic test signer or a weaker algorithm.
+The real-liboqs CI job now builds a test-only Go helper pinned to Cloudflare CIRCL v1.6.0 and cross-verifies ML-DSA-65 signatures in both directions with QBC's configured liboqs provider. The regression cases include binary messages, tampered messages, truncated signatures, exact FIPS 204 public-key/signature lengths, and a signature metadata mechanism mismatch. The existing NIST ACVP vectors and real three-process transaction check still run in the same job.
+
+This provides repeatable interoperability evidence for the tested ML-DSA-65 pure-signature path. It is not a complete implementation audit, proof of constant-time behavior, or FIPS certification. Broader provider-initialization failure cases and malformed-key coverage remain open follow-up work.
 
 ### P2 — Exercise persistence and process-level concurrency
 
