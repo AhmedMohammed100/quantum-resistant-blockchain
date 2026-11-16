@@ -380,6 +380,60 @@ class AdversarialAndPropertyTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "cannot charge a fee"):
             service._validate_transaction_against_view(with_fee, {}, effective_height=1)
 
+    def test_imported_block_rejects_migration_claim_input_and_fee_bypasses(self) -> None:
+        cases = (
+            (
+                "UTXO input",
+                [TxInput(prev_tx_id="missing", output_index=0)],
+                0,
+                "cannot include UTXO inputs",
+            ),
+            ("fee", [], 1, "cannot charge a fee"),
+        )
+
+        for name, claim_inputs, claim_fee, expected_error in cases:
+            with self.subTest(name=name):
+                service = self.make_service(f"migration-claim-block-{name.replace(' ', '-')}")
+                service.create_genesis_block({"bootstrap": 10})
+                parent = service.get_block(0)
+                self.assertIsNotNone(parent)
+
+                reward = Transaction(
+                    inputs=[],
+                    outputs=[TxOutput(recipient="miner", amount=10)],
+                    chain_id=service.config.chain_id,
+                    signature_scheme=service.config.default_signature_provider,
+                    timestamp=parent.timestamp + 1,
+                )
+                reward.finalize()
+                claim = Transaction(
+                    inputs=claim_inputs,
+                    outputs=[TxOutput(recipient="attacker", amount=1)],
+                    kind="migration_claim",
+                    chain_id=service.config.chain_id,
+                    signature_scheme=service.config.default_signature_provider,
+                    timestamp=parent.timestamp + 1,
+                    fee=claim_fee,
+                )
+                claim.finalize()
+                block = Block(
+                    index=1,
+                    previous_hash=parent.block_hash,
+                    transactions=[reward, claim],
+                    miner="miner",
+                    difficulty=service.config.difficulty,
+                    chain_id=service.config.chain_id,
+                    version=3,
+                    timestamp=parent.timestamp + 2,
+                )
+                block.state_root = service._state_root_after_block(service.store.all_utxos(), block)
+                block.mine()
+
+                with self.assertRaisesRegex(ValueError, expected_error):
+                    service.import_block(block)
+                self.assertEqual(service.store.block_count(), 1)
+                self.assertIsNone(service.get_block(1))
+
     def test_security_invariant_report_flags_pending_signer_recovery(self) -> None:
         service = self.make_service("recovery-invariant")
         alice = Wallet(
