@@ -12,7 +12,7 @@ on:
       - "tests/test_crypto_backend_safety.py"
   # Run on every branch push so GitHub always schedules the sanitizer job;
   # branch/path-filtered pushes previously left jobless failed runs.
-  push:
+  push: {}
   workflow_dispatch:
     inputs:
       fuzz_seconds:
