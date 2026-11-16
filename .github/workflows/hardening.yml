@@ -199,6 +199,75 @@ jobs:
           QBC_CIRCL_MLDSA_TOOL: ${{ runner.temp }}/qbc-circl-mldsa-crosscheck
         run: python -m unittest tests.test_mldsa65_cross_implementation -v
 
+      - name: Record ML-DSA cross-implementation evidence
+        env:
+          QBC_EVIDENCE_COMMIT: ${{ github.sha }}
+          QBC_EVIDENCE_REF: ${{ github.ref }}
+          QBC_EVIDENCE_RUN_ID: ${{ github.run_id }}
+          QBC_EVIDENCE_RUN_ATTEMPT: ${{ github.run_attempt }}
+          QBC_EVIDENCE_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/mldsa-cross-implementation
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          from qr_blockchain.crypto import get_signature_provider
+
+          status = get_signature_provider("mldsa65_oqs_v1").backend_status()
+          if status.get("available") is not True or status.get("selected_mechanism") != "ML-DSA-65":
+              raise SystemExit(f"Expected an available real ML-DSA-65 provider, got {status!r}")
+
+          report = {
+              "schema_version": 1,
+              "result": "passed",
+              "commit": os.environ["QBC_EVIDENCE_COMMIT"],
+              "ref": os.environ["QBC_EVIDENCE_REF"],
+              "workflow_run_id": int(os.environ["QBC_EVIDENCE_RUN_ID"]),
+              "workflow_run_attempt": int(os.environ["QBC_EVIDENCE_RUN_ATTEMPT"]),
+              "workflow_run_url": os.environ["QBC_EVIDENCE_RUN_URL"],
+              "provider": "mldsa65_oqs_v1",
+              "mechanism": "ML-DSA-65",
+              "liboqs_python_version": "0.16.0.2",
+              "independent_implementation": "github.com/cloudflare/circl/sign/mldsa/mldsa65",
+              "circl_version": "v1.6.0",
+              "fips204_public_key_bytes": 1952,
+              "fips204_signature_bytes": 3309,
+              "test_command": "python -m unittest tests.test_mldsa65_cross_implementation -v",
+              "test_methods": [
+                  "test_liboqs_signatures_verify_in_independent_circl",
+                  "test_circl_signatures_verify_in_liboqs_and_reject_mismatch",
+              ],
+              "message_cases_per_direction": 2,
+              "checks": [
+                  "valid signatures verify across implementations in both directions",
+                  "modified messages are rejected",
+                  "truncated signatures are rejected",
+                  "ML-DSA parameter mismatch is rejected",
+                  "public key and signature lengths match FIPS 204 ML-DSA-65",
+              ],
+              "backend_status": status,
+          }
+          path = Path("artifacts/mldsa-cross-implementation/report.json")
+          path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+              summary.write("## ML-DSA-65 cross-implementation evidence\\n\\n")
+              summary.write(f"- Result: passed on commit `{report['commit']}`\\n")
+              summary.write("- Implementations: liboqs-python 0.16.0.2 and Cloudflare CIRCL v1.6.0\\n")
+              summary.write("- Both directions cover valid signatures, tampering, truncation, and parameter mismatch.\\n")
+              summary.write(f"- Retained report: `{path}` (90 days)\\n")
+          PY
+
+      - name: Upload ML-DSA cross-implementation evidence
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v4.6.2
+        with:
+          name: qbc-mldsa-cross-implementation-${{ github.run_id }}
+          path: artifacts/mldsa-cross-implementation/report.json
+          if-no-files-found: error
+          retention-days: 90
+
       - name: Prove real ML-DSA transactions and consensus across three processes
         run: python -W error::ResourceWarning -m unittest tests.test_process_isolated_peer_sync.ProcessIsolatedPeerSyncTests.test_real_mldsa_transaction_converges_across_three_process_nodes -v
 
