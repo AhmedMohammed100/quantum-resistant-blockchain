@@ -5,10 +5,20 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/native-stateful-signature-fuzz.yml"
+      - "crates/qr_chain_native_signer/**"
+      - "qr_chain_native_signer/**"
+      - "qr_blockchain/native_crypto.py"
+      - "requirements-oqs.txt"
+      - "tests/test_crypto_backend_safety.py"
   push:
     branches: [main]
     paths:
       - ".github/workflows/native-stateful-signature-fuzz.yml"
+      - "crates/qr_chain_native_signer/**"
+      - "qr_chain_native_signer/**"
+      - "qr_blockchain/native_crypto.py"
+      - "requirements-oqs.txt"
+      - "tests/test_crypto_backend_safety.py"
   workflow_dispatch:
     inputs:
       fuzz_seconds:
@@ -29,11 +39,13 @@ jobs:
   asan-fuzz:
     name: liboqs LMS and XMSS verification fuzz targets
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       LIBOQS_COMMIT: 5c06c8a57e28d47466925fc86e5cfe777cb999c7
       FUZZ_SECONDS: ${{ inputs.fuzz_seconds || '60' }}
       ASAN_OPTIONS: detect_leaks=1:halt_on_error=1:abort_on_error=1
+      LIBOQS_DIR: ${{ runner.temp }}/liboqs-install
+      LD_LIBRARY_PATH: ${{ runner.temp }}/liboqs-install/lib
     steps:
       - name: Check out QBC
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -49,7 +61,15 @@ jobs:
       - name: Install native build tools
         run: |
           sudo apt-get update
-          sudo apt-get install --yes clang cmake ninja-build
+          sudo apt-get install --yes clang clang++ cmake ninja-build
+
+      - name: Install pinned Rust nightly and cargo-fuzz
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # pinned action revision
+        with:
+          toolchain: nightly-2026-11-15
+
+      - name: Install pinned cargo-fuzz CLI
+        run: cargo install --locked cargo-fuzz --version 0.13.2
 
       - name: Configure liboqs with ASan and libFuzzer
         run: |
@@ -58,10 +78,14 @@ jobs:
           cmake -S third_party/liboqs -B build/liboqs -G Ninja \
             -DCMAKE_C_COMPILER=clang \
             -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_INSTALL_PREFIX="$LIBOQS_DIR" \
+            -DBUILD_SHARED_LIBS=ON \
             -DOQS_BUILD_ONLY_LIB=OFF \
             -DOQS_BUILD_FUZZ_TESTS=ON \
             -DOQS_USE_OPENSSL=OFF \
-            -DOQS_MINIMAL_BUILD="SIG_STFL_LMS;SIG_STFL_XMSS" \
+            -DOQS_MINIMAL_BUILD="SIG_ml_dsa_65;SIG_STFL_LMS;SIG_STFL_XMSS" \
+            -DOQS_ENABLE_SIG_ML_DSA=ON \
+            -DOQS_ENABLE_SIG_ml_dsa_65=ON \
             -DOQS_ENABLE_SIG_STFL_LMS=ON \
             -DOQS_ENABLE_SIG_STFL_XMSS=ON \
             -DOQS_HAZARDOUS_EXPERIMENTAL_ENABLE_SIG_STFL_KEY_SIG_GEN=OFF
@@ -70,6 +94,10 @@ jobs:
         run: |
           cmake --build build/liboqs --parallel 2 --target \
             fuzz_test_sig_stfl_lms fuzz_test_sig_stfl_xmss
+
+      - name: Install liboqs shared library for Rust FFI
+        id: install_liboqs
+        run: cmake --install build/liboqs
 
       - name: Run KAT-seeded LMS and XMSS fuzz sessions
         shell: bash
@@ -133,6 +161,66 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
           exit "$overall_status"
+
+      - name: Build QBC native FFI fuzz target
+        id: build_native_ffi
+        if: always() && steps.install_liboqs.outcome == 'success'
+        working-directory: crates/qr_chain_native_signer
+        env:
+          CC: clang
+          CXX: clang++
+        run: cargo +nightly-2026-11-15 fuzz build verify_native_batch
+
+      - name: Run seeded QBC native FFI fuzz session
+        id: run_native_ffi
+        if: always() && steps.build_native_ffi.outcome == 'success'
+        working-directory: crates/qr_chain_native_signer
+        env:
+          CC: clang
+          CXX: clang++
+        shell: bash
+        run: |
+          set -uo pipefail
+          report_dir="$RUNNER_TEMP/qbc-native-stateful-fuzz"
+          corpus="$report_dir/corpus/native-ffi"
+          crashes="$report_dir/crashes/native-ffi"
+          mkdir -p "$corpus" "$crashes"
+          python3 - "$corpus" <<'PY'
+          from pathlib import Path
+          import sys
+
+          corpus = Path(sys.argv[1])
+          # Each selector reaches a distinct QBC Rust/liboqs verification path.
+          for selector in range(8):
+              (corpus / f"ffi-case-{selector}").write_bytes(bytes((selector, 1, 0x5A, 0xA5)))
+          PY
+          log="$report_dir/native-ffi.log"
+          cargo +nightly-2026-11-15 fuzz run verify_native_batch -- \
+            "$corpus" \
+            -max_total_time="$FUZZ_SECONDS" \
+            -timeout=10 \
+            -max_len=4096 \
+            -print_final_stats=1 \
+            -artifact_prefix="$crashes/" >"$log" 2>&1
+          status=$?
+          cat "$log"
+          units=$(grep -F 'stat::number_of_executed_units:' "$log" | tail -1 | cut -d: -f2- | xargs || true)
+          {
+            echo
+            echo "## QBC Rust/liboqs FFI fuzz results"
+            echo
+            echo "- Target: verify_native_batch_json -> OQS_SIG_verify"
+            echo "- Seeded cases: 8"
+            echo "- Duration: $FUZZ_SECONDS seconds"
+            echo "- Executed units: ${units:-unavailable}"
+            echo "- AddressSanitizer: enabled for liboqs and libFuzzer"
+            if [ "$status" -eq 0 ]; then
+              echo "- Result: passed"
+            else
+              echo "- Result: failed (exit $status)"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
 
       - name: Preserve fuzz logs and crash artifacts
         if: always()
