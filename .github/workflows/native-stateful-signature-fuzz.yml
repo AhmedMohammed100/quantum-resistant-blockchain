@@ -1,15 +1,9 @@
 name: Native LMS and XMSS ASan fuzzing
 
 on:
+  # Always exercise sanitizer coverage in pull requests targeting main.
   pull_request:
     branches: [main]
-    paths:
-      - ".github/workflows/native-stateful-signature-fuzz.yml"
-      - "crates/qr_chain_native_signer/**"
-      - "qr_chain_native_signer/**"
-      - "qr_blockchain/native_crypto.py"
-      - "requirements-oqs.txt"
-      - "tests/test_crypto_backend_safety.py"
   # Run on every branch push so GitHub always schedules the sanitizer job;
   # branch/path-filtered pushes previously left jobless failed runs.
   push: {}
