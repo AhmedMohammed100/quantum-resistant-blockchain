@@ -4,9 +4,10 @@ on:
   # Always exercise sanitizer coverage in pull requests targeting main.
   pull_request:
     branches: [main]
-  # Run on every branch push so GitHub always schedules the sanitizer job;
-  # branch/path-filtered pushes previously left jobless failed runs.
-  push: {}
+  # Run on every main push. Avoid path filters so the mainline sanitizer
+  # job is always scheduled when the workflow is present.
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       fuzz_seconds:
