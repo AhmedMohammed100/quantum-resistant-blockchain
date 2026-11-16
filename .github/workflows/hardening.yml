@@ -253,11 +253,11 @@ jobs:
           path = Path("artifacts/mldsa-cross-implementation/report.json")
           path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
-              summary.write("## ML-DSA-65 cross-implementation evidence\\n\\n")
-              summary.write(f"- Result: passed on commit `{report['commit']}`\\n")
-              summary.write("- Implementations: liboqs-python 0.16.0.2 and Cloudflare CIRCL v1.6.0\\n")
-              summary.write("- Both directions cover valid signatures, tampering, truncation, and parameter mismatch.\\n")
-              summary.write(f"- Retained report: `{path}` (90 days)\\n")
+              summary.write("## ML-DSA-65 cross-implementation evidence\n\n")
+              summary.write(f"- Result: passed on commit `{report['commit']}`\n")
+              summary.write("- Implementations: liboqs-python 0.16.0.2 and Cloudflare CIRCL v1.6.0\n")
+              summary.write("- Both directions cover valid signatures, tampering, truncation, and parameter mismatch.\n")
+              summary.write(f"- Retained report: `{path}` (90 days)\n")
           PY
 
       - name: Upload ML-DSA cross-implementation evidence
