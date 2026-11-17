@@ -9,7 +9,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "=0.4.10"
-qr_chain_native_signer = { path = "..", default-features = false, features = ["liboqs"] }
+native_signer = { package = "qr_chain_native_signer", path = "..", default-features = false, features = ["liboqs"] }
 
 [[bin]]
 name = "verify_native_batch"

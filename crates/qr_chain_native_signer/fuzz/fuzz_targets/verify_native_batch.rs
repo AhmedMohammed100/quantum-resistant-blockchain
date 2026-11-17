@@ -1,7 +1,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use qr_chain_native_signer::{generate_oqs_keypair, sign_oqs, verify_native_batch_json};
+use native_signer::{generate_oqs_keypair, sign_oqs, verify_native_batch_json};
 use std::sync::OnceLock;
 
 const BASELINE_MESSAGE: &[u8] = b"QBC native liboqs FFI fuzz baseline v1";
@@ -53,14 +53,9 @@ fn make_request(
     )
 }
 
-#[no_mangle]
-pub extern "C" fn LLVMFuzzerInitialize(
-    _argc: *mut i32,
-    _argv: *mut *mut *mut std::ffi::c_char,
-) -> i32 {
-    let baseline = (|| {
-        let (public_key_hex, secret_key_hex) =
-            generate_oqs_keypair("ML-DSA-65")?;
+fn baseline() -> Result<&'static Baseline, String> {
+    let result = BASELINE.get_or_init(|| {
+        let (public_key_hex, secret_key_hex) = generate_oqs_keypair("ML-DSA-65")?;
         let signature_hex = sign_oqs("ML-DSA-65", &secret_key_hex, BASELINE_MESSAGE)?;
         let request = make_request(
             BASELINE_MESSAGE,
@@ -76,25 +71,11 @@ pub extern "C" fn LLVMFuzzerInitialize(
             public_key_hex,
             signature_hex,
         })
-    })();
-    let initialized = baseline.is_ok();
-    let _ = BASELINE.set(baseline);
-    if initialized {
-        0
-    } else {
-        eprintln!(
-            "native FFI fuzz baseline initialization failed: {}",
-            BASELINE.get().and_then(|value| value.as_ref().err()).map(String::as_str).unwrap_or("unknown error")
-        );
-        1
-    }
+    });
+    result.as_ref().map_err(Clone::clone)
 }
-
 fuzz_target!(|data: &[u8]| {
-    let baseline = BASELINE
-        .get()
-        .and_then(|value| value.as_ref().ok())
-        .expect("LLVMFuzzerInitialize must provide a real liboqs baseline");
+    let baseline = baseline().expect("real liboqs baseline initialization must succeed");
 
     // Exercise the actual batch parser with raw fuzz bytes as well as the
     // structured request that reaches QBC's checked Rust-to-C verification path.
