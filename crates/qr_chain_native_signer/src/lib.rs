@@ -374,7 +374,7 @@ pub fn verify_oqs(
     let sig = handle.sig();
     let public_key = decode_hex(public_key_hex)?;
     let signature = decode_hex(signature_hex)?;
-    if !exact_length_matches(sig.length_public_key, public_key.len()) {
+    if public_key.len() != sig.length_public_key {
         return Err("invalid liboqs public key length".to_string());
     }
     if !signature_length_is_valid(sig.length_signature, signature.len()) {
