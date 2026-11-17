@@ -47,10 +47,12 @@ jobs:
           path: third_party/liboqs
           persist-credentials: false
 
-      - name: Install native build tools
+      - name: Verify preinstalled native build tools
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes clang clang++ cmake ninja-build
+          clang-18 --version
+          clang++-18 --version
+          cmake --version
+          ninja --version
 
       - name: Install pinned Rust nightly and cargo-fuzz
         uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # pinned action revision
@@ -156,8 +158,8 @@ jobs:
         if: always() && steps.install_liboqs.outcome == 'success'
         working-directory: crates/qr_chain_native_signer
         env:
-          CC: clang
-          CXX: clang++
+          CC: clang-18
+          CXX: clang++-18
         run: cargo +nightly-2026-11-15 fuzz build verify_native_batch
 
       - name: Run seeded QBC native FFI fuzz session
