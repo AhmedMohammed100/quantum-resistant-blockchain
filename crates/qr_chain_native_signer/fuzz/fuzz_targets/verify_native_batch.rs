@@ -64,7 +64,7 @@ fn baseline() -> Result<&'static Baseline, String> {
             "ML-DSA-65",
         );
         let response = verify_native_batch_json(&request)?;
-        if !response.contains(r#"\"verified\":true"#) {
+        if !response.contains(r#""verified":true"#) {
             return Err("real liboqs baseline signature failed native batch verification".to_string());
         }
         Ok(Baseline {
