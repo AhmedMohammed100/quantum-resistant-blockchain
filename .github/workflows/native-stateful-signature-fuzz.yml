@@ -33,8 +33,8 @@ jobs:
       LIBOQS_COMMIT: 5c06c8a57e28d47466925fc86e5cfe777cb999c7
       FUZZ_SECONDS: ${{ inputs.fuzz_seconds || '60' }}
       ASAN_OPTIONS: detect_leaks=1:halt_on_error=1:abort_on_error=1
-      LIBOQS_DIR: ${{ runner.temp }}/liboqs-install
-      LD_LIBRARY_PATH: ${{ runner.temp }}/liboqs-install/lib
+      LIBOQS_DIR: ${{ github.workspace }}/build/liboqs-install
+      LD_LIBRARY_PATH: ${{ github.workspace }}/build/liboqs-install/lib
     steps:
       - name: Check out QBC
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
