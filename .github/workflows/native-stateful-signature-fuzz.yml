@@ -67,7 +67,7 @@ jobs:
           CFLAGS="-fsanitize=address,fuzzer-no-link" \
           LDFLAGS="-fsanitize=address" \
           cmake -S third_party/liboqs -B build/liboqs -G Ninja \
-            -DCMAKE_C_COMPILER=clang \
+            -DCMAKE_C_COMPILER=clang-18 \
             -DCMAKE_BUILD_TYPE=RelWithDebInfo \
             -DCMAKE_INSTALL_PREFIX="$LIBOQS_DIR" \
             -DBUILD_SHARED_LIBS=ON \
@@ -167,8 +167,8 @@ jobs:
         if: always() && steps.build_native_ffi.outcome == 'success'
         working-directory: crates/qr_chain_native_signer
         env:
-          CC: clang
-          CXX: clang++
+          CC: clang-18
+          CXX: clang++-18
         shell: bash
         run: |
           set -uo pipefail
