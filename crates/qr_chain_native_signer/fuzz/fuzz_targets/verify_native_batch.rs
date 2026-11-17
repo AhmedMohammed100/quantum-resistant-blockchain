@@ -1,7 +1,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use qr_chain_native_signer::{generate_oqs_keypair, sign_oqs, verify_native_batch_json};
+use native_signer::{generate_oqs_keypair, sign_oqs, verify_native_batch_json};
 use std::sync::OnceLock;
 
 const BASELINE_MESSAGE: &[u8] = b"QBC native liboqs FFI fuzz baseline v1";
