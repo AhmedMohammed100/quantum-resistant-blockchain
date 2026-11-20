@@ -290,3 +290,105 @@ def _check_outputs(transaction: Transaction, height: int) -> None:
     if not transaction.outputs or any(output.amount <= 0 or not output.recipient for output in transaction.outputs):
         raise ValueError(f"Transaction outputs are invalid at height {height}.")
 
+
+
+def verify_competing_chains(
+    candidates: dict[str, Iterable[Block | dict[str, object]]],
+    *,
+    chain_id: str,
+    subsidy_at_height: Callable[[int], int],
+    difficulty: int,
+    state_root_activation_height: int = 0,
+    max_money: int | None = None,
+    genesis_supply_cap: int | None = None,
+    migration_supply_cap: int | None = None,
+) -> dict[str, object]:
+    """Independently replay candidate branches and report the node's fork choice.
+
+    Valid branches are ranked by cumulative proof-of-work, then by lexicographically
+    greater head hash on equal work, matching NodeService._select_best_chain.
+    Invalid branches are reported and excluded. At least one valid branch is
+    required, and every candidate must share the same genesis block.
+    """
+    if not candidates:
+        return {
+            "valid": False,
+            "error": "No candidate chains were supplied.",
+            "candidates": {},
+            "best_candidate": None,
+            "best_head_hash": "",
+            "fork_choice": "cumulative_work_then_lexicographically_greater_head_hash",
+            "limitations": _LIMITATIONS,
+        }
+
+    reports: dict[str, dict[str, object]] = {}
+    genesis_hash: str | None = None
+    for name, source in candidates.items():
+        if not isinstance(name, str) or not name:
+            return {
+                "valid": False,
+                "error": "Candidate names must be non-empty strings.",
+                "candidates": reports,
+                "best_candidate": None,
+                "best_head_hash": "",
+                "fork_choice": "cumulative_work_then_lexicographically_greater_head_hash",
+                "limitations": _LIMITATIONS,
+            }
+        blocks = list(source)
+        report = verify_chain(
+            blocks,
+            chain_id=chain_id,
+            subsidy_at_height=subsidy_at_height,
+            difficulty=difficulty,
+            state_root_activation_height=state_root_activation_height,
+            max_money=max_money,
+            genesis_supply_cap=genesis_supply_cap,
+            migration_supply_cap=migration_supply_cap,
+        )
+        if report.get("valid"):
+            parsed = [Block.from_dict(item) if isinstance(item, dict) else item for item in blocks]
+            candidate_genesis = parsed[0].block_hash if parsed else ""
+            if genesis_hash is None:
+                genesis_hash = candidate_genesis
+            elif candidate_genesis != genesis_hash:
+                report = {
+                    "valid": False,
+                    "error": "Candidate does not share the common genesis block.",
+                    "blocks_checked": 0,
+                }
+            else:
+                work = sum(16 ** max(block.difficulty, 0) for block in parsed)
+                report["cumulative_work"] = work
+        reports[name] = report
+
+    valid_candidates = [
+        (int(report["cumulative_work"]), str(report["best_head_hash"]), name)
+        for name, report in reports.items()
+        if report.get("valid") and "cumulative_work" in report
+    ]
+    if not valid_candidates:
+        return {
+            "valid": False,
+            "error": "No valid candidate chain shares the common genesis.",
+            "candidates": reports,
+            "best_candidate": None,
+            "best_head_hash": "",
+            "fork_choice": "cumulative_work_then_lexicographically_greater_head_hash",
+            "limitations": _LIMITATIONS,
+        }
+
+    _, best_head_hash, best_candidate = max(valid_candidates)
+    return {
+        "valid": True,
+        "candidate_count": len(candidates),
+        "valid_candidate_count": len(valid_candidates),
+        "rejected_candidates": [
+            name for name, report in reports.items() if not report.get("valid")
+        ],
+        "candidates": reports,
+        "best_candidate": best_candidate,
+        "best_head_hash": best_head_hash,
+        "cumulative_work": max(valid_candidates)[0],
+        "fork_choice": "cumulative_work_then_lexicographically_greater_head_hash",
+        "limitations": _LIMITATIONS,
+    }
