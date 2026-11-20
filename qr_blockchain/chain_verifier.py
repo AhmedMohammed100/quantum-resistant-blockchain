@@ -350,7 +350,7 @@ def verify_competing_chains(
             candidate_genesis = parsed[0].block_hash if parsed else ""
             if genesis_hash is None:
                 genesis_hash = candidate_genesis
-            elif candidate_genesis != genesis_hash:
+            if candidate_genesis != genesis_hash:
                 report = {
                     "valid": False,
                     "error": "Candidate does not share the common genesis block.",
