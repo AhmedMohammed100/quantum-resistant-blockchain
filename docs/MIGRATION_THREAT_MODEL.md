@@ -47,3 +47,55 @@
 ## Release gate
 
 Before a public migration launch, exercise duplicate claims under concurrency, reorg/replay behavior, poisoned snapshots, signer/quorum compromise, emergency pause on every claim route, stale backup restoration, and rollback evidence retention. Keep the migration feature paused if any gate fails. This document is a threat model, not an independent audit or a guarantee of safety.
+
+
+## P1 proof threat-model review (2026-11-20)
+
+**Review result:** the cryptographic proof checks are present on transaction
+admission and block import, but migration is **not production-ready**. This
+review records current implementation behavior and release blockers; it does
+not claim an external cryptographic audit or change QBC v0.1 consensus.
+
+### Reviewed paths and existing controls
+
+- `NodeService._validate_migration_claim` is reached for submitted
+  transactions and for each transaction in an imported block. It checks the
+  claim window, pause flag, configured provider, locally seeded source and
+  snapshot status, source/provider/network binding, branch and canonical
+  duplicate claims, conversion amount, pool and epoch limits, public-key to
+  source identity, provider proof, source-address ownership, and destination
+  attestation when its configured height window is active.
+- Classical claim proofs bind `Transaction.migration_claim_payload()`; source
+  address format/network checks occur when source entries are seeded or a
+  snapshot is imported and are repeated during claim validation.
+- Existing regression coverage includes valid demo, secp256k1 and RSA proofs,
+  tampered demo proofs, mismatched secp256k1 source addresses, quarantined
+  snapshots, duplicate pending claims, claim-window enforcement, destination
+  dual control, dispute/escrow behavior, and branch-aware duplicate checks.
+- This review adds a regression for malformed RSA proof/key encodings, which
+  must produce a normal verification failure instead of an uncaught parse
+  exception.
+
+### Findings and release gates
+
+| ID / severity | Finding | Evidence and required action |
+| --- | --- | --- |
+| MTH-01 / **production blocker** | Claim validation depends on node-local migration source and snapshot database rows plus local policy configuration. A block's proof is rechecked, but the source amount, status, snapshot approval, provider allowlist, conversion ratio, and caps are not all committed as deterministic chain state. | Nodes with different imports or configuration can disagree on block validity or minted amount. Before public migration, define and activate a versioned, consensus-bound source registry/policy and distribute reproducible state. Until then, all validators must receive identical reviewed snapshots and policy out of band; this is an operational assumption, not a protocol guarantee. |
+| MTH-02 / **high** | Snapshot signature enforcement defaults off; an empty trusted signer list accepts any signer when signatures are supplied. Seeding a source can create an active local snapshot stub without an approval signature. | Production launch must require signed snapshot envelopes and pin trusted signer identities; verify the actual production configuration and reject launch readiness if either control is absent. A signature authenticates the signer, not source-chain truth. |
+| MTH-03 / **high** | The configured snapshot reviewer quorum is reported by readiness tooling, but the import path stores one signer identity and does not enforce or retain a multi-reviewer attestation set. Governance approval/quorum artifacts are likewise review artifacts, not consensus-enforced claim prerequisites. | Do not describe the configured number as an enforced quorum. Multi-reviewer persistence, signer independence and action/artifact binding require a separately specified governance/consensus change. |
+| MTH-04 / **high** | The RSA PKCS#1 v1.5 verifier is an in-repository pure-Python implementation. It has no independently demonstrated cryptographic review or certification, and currently has no declared accepted key-strength policy. | Treat RSA migration proofs as experimental; before public claims use an independently maintained, reviewed crypto implementation and explicitly specify key-strength and encoding policy. This review does not invent those parameters. |
+| MTH-05 / **medium** | Emergency pause, provider configuration, trusted signers, migration policy and source status are local operator controls. Local disagreement or malicious configuration can split validation outcomes. | Publish a signed network policy manifest, monitor policy/configuration drift and rehearse pause activation across all validators before enabling claims. |
+
+### Scope limitations and test evidence
+
+This review covers proof construction/verification, source-address binding,
+snapshot trust, claim replay, admission/import validation, and the migration
+configuration boundary. It does not verify the truth of legacy-chain exports,
+the independence of reviewers, production key custody, or real-world finality.
+The pure-Python RSA and secp256k1 implementations are not certified.
+
+The regression tests are executable evidence for local behaviors only. They
+do not prove cross-operator snapshot agreement or end-to-end mainnet migration
+safety. The P1 review is complete as an assessment; MTH-01 through MTH-04
+remain release gates requiring protocol, governance, or independent-cryptography
+work before production migration claims are enabled.
