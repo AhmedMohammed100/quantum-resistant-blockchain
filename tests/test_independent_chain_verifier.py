@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from qr_blockchain.chain_verifier import verify_chain
+from qr_blockchain.chain_verifier import verify_chain, verify_competing_chains
 from qr_blockchain.chain_state import project_block_utxos, state_root_after_block, utxo_state_root
 from qr_blockchain.config import NodeConfig
 from qr_blockchain.service import NodeService
@@ -96,6 +96,63 @@ class IndependentChainVerifierTests(unittest.TestCase):
         self.assertEqual(state_root_after_block(parent, blocks[1]), service._state_root_after_block(parent, blocks[1]))
         self.assertEqual(utxo_state_root(projected), service.state_root_for_utxos(projected))
         self.assertEqual(projected, service._state_root_utxos(parent, blocks[1]))
+
+
+    def test_competing_chains_select_cumulative_work_then_head_hash(self) -> None:
+        services = []
+        branches = {}
+        for miner_name in ("fork-miner-a", "fork-miner-b"):
+            temporary_root = tempfile.TemporaryDirectory(prefix="qbc-fork-verifier-")
+            self.addCleanup(temporary_root.cleanup)
+            root = Path(temporary_root.name)
+            service = NodeService(
+                NodeConfig(
+                    db_path=root / "chain.db",
+                    wallet_state_db_path=root / "wallet.db",
+                    difficulty=1,
+                    mining_reward=10,
+                    chain_id="qbc-fork-verifier-test",
+                    deployment_mode="test",
+                    state_root_activation_height=0,
+                )
+            )
+            service.create_genesis_block({"common-bootstrap": 1_000})
+            service.mine_pending_transactions(miner_name)
+            branches[miner_name] = service.store.path_to_root(service.store.best_head_hash())
+            services.append(service)
+
+        report = verify_competing_chains(
+            branches,
+            chain_id=services[0].config.chain_id,
+            subsidy_at_height=services[0].currency_policy().subsidy_at_height,
+            difficulty=services[0].config.difficulty,
+            state_root_activation_height=services[0].config.state_root_activation_height,
+            max_money=services[0].config.max_money,
+        )
+        self.assertTrue(report["valid"], report)
+        self.assertEqual(report["valid_candidate_count"], 2)
+        ranked = sorted(
+            (candidate["cumulative_work"], candidate["best_head_hash"], name)
+            for name, candidate in report["candidates"].items()
+        )
+        self.assertEqual(report["best_candidate"], ranked[-1][2])
+        self.assertEqual(report["best_head_hash"], ranked[-1][1])
+
+    def test_competing_chain_report_rejects_invalid_candidate_and_keeps_valid_choice(self) -> None:
+        service, blocks = self._chain()
+        invalid = copy.deepcopy(blocks)
+        invalid[1].previous_hash = "f" * 64
+        invalid[1].mine()
+        report = verify_competing_chains(
+            {"valid": blocks, "invalid": invalid},
+            chain_id=service.config.chain_id,
+            subsidy_at_height=service.currency_policy().subsidy_at_height,
+            difficulty=service.config.difficulty,
+            state_root_activation_height=service.config.state_root_activation_height,
+        )
+        self.assertTrue(report["valid"], report)
+        self.assertEqual(report["best_candidate"], "valid")
+        self.assertEqual(report["rejected_candidates"], ["invalid"])
 
 
 if __name__ == "__main__":
