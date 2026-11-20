@@ -9,11 +9,15 @@ _SHA256_DIGESTINFO_PREFIX = bytes.fromhex("3031300d06096086480165030402010500042
 def _parse_public_key(public_key: object) -> tuple[int, int]:
     if not isinstance(public_key, dict):
         raise ValueError("RSA migration public key must be an object.")
-    modulus_hex = str(public_key.get("modulus_hex", ""))
-    exponent = int(public_key.get("exponent", 0))
-    if not modulus_hex or exponent <= 1:
+    try:
+        modulus_hex = str(public_key.get("modulus_hex", ""))
+        modulus = int(modulus_hex, 16)
+        exponent = int(public_key.get("exponent", 0))
+    except (TypeError, ValueError, OverflowError) as error:
+        raise ValueError("RSA migration public key is malformed.") from error
+    if not modulus_hex or modulus <= 0 or exponent <= 1:
         raise ValueError("RSA migration public key is incomplete.")
-    return int(modulus_hex, 16), exponent
+    return modulus, exponent
 
 
 def verify_claim(message: bytes, proof: object, public_key: object) -> bool:
@@ -24,13 +28,13 @@ def verify_claim(message: bytes, proof: object, public_key: object) -> bool:
         return False
     try:
         modulus, exponent = _parse_public_key(public_key)
-    except ValueError:
+        signature_int = int(signature_hex, 16)
+        if signature_int <= 0 or signature_int >= modulus:
+            return False
+        k = (modulus.bit_length() + 7) // 8
+        em = pow(signature_int, exponent, modulus).to_bytes(k, "big")
+    except (TypeError, ValueError, OverflowError):
         return False
-    signature_int = int(signature_hex, 16)
-    if signature_int <= 0 or signature_int >= modulus:
-        return False
-    k = (modulus.bit_length() + 7) // 8
-    em = pow(signature_int, exponent, modulus).to_bytes(k, "big")
     digest = hashlib.sha256(message).digest()
     expected_t = _SHA256_DIGESTINFO_PREFIX + digest
     ps_length = k - len(expected_t) - 3
