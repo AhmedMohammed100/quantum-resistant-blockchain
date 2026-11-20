@@ -63,3 +63,19 @@ route changes should follow their separate repository and middleware
 boundaries: SQLite transaction ownership stays centralized, and API
 authentication/body limits remain enforced before route dispatch.
 
+
+
+## Competing branches and fork choice
+
+Use `verify_competing_chains` to replay separately exported candidate branches
+from a common genesis. Each branch is independently checked using the same
+checks as `verify_chain`. Invalid candidates are listed and excluded; the
+report is valid when at least one valid branch remains and all accepted
+candidates share the same genesis.
+
+The selected head follows the existing node rule:
+1. greatest cumulative proof-of-work (`16 ** difficulty` per block);
+2. on equal cumulative work, lexicographically greatest head hash.
+
+This mirrors `NodeService._select_best_chain`; it does not claim network
+finality or assess omitted branches. Candidate names are report labels only.
