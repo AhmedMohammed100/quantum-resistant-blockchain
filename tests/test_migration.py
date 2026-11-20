@@ -200,6 +200,20 @@ class ClassicalMigrationVerifierTests(unittest.TestCase):
         self.assertTrue(verifier.verify_claim(message, {"signature_hex": signature.hex()}, public_key))
         self.assertTrue(verifier.address_from_public_key(public_key).startswith("rsa-pkcs1v15:"))
 
+    def test_real_rsa_verifier_rejects_malformed_proof_and_key_as_normal_failure(self) -> None:
+        verifier = get_classical_claim_verifier("rsa_pkcs1v15_sha256_migration_v1")
+        message = classical_claim_message_bytes(b"claim-payload")
+        valid_shape_key = {"modulus_hex": "c1", "exponent": 65537}
+
+        self.assertFalse(
+            verifier.verify_claim(message, {"signature_hex": "not-hex"}, valid_shape_key)
+        )
+        self.assertFalse(
+            verifier.verify_claim(message, {"signature_hex": "01"}, {"modulus_hex": "not-hex", "exponent": 65537})
+        )
+        self.assertFalse(
+            verifier.verify_claim(message, {"signature_hex": "01"}, {"modulus_hex": "c1", "exponent": None})
+        )
 
 if __name__ == "__main__":
     unittest.main()
