@@ -3545,6 +3545,7 @@ class NodeService:
 
     def validate_independent_soak_bundle(self, bundle: dict[str, object]) -> dict[str, object]:
         """Validate signed participant receipts; physical independence remains external."""
+        bundle_version_valid = bundle.get("bundle_version") == 1 and not isinstance(bundle.get("bundle_version"), bool)
         raw_receipts = bundle.get("receipts", [])
         receipts = raw_receipts if isinstance(raw_receipts, list) else []
         validated: list[dict[str, object]] = []
@@ -3588,17 +3589,25 @@ class NodeService:
                     raise ValueError("Receipt node_id does not match its signing identity.")
                 if receipt.get("chain_id") != self.config.chain_id:
                     raise ValueError("Receipt chain_id does not match this verifier.")
-                if receipt.get("receipt_version") != 1:
+                if receipt.get("receipt_version") != 1 or isinstance(receipt.get("receipt_version"), bool):
                     raise ValueError("Unsupported independent soak receipt version.")
                 if not isinstance(receipt.get("passed"), bool):
                     raise ValueError("Receipt passed field is not boolean.")
-                if not isinstance(receipt.get("peer_node_ids"), list):
-                    raise ValueError("Receipt peer_node_ids must be a list.")
+                peers = receipt.get("peer_node_ids")
+                if not isinstance(peers, list) or any(not isinstance(peer, str) or not peer for peer in peers):
+                    raise ValueError("Receipt peer_node_ids must be a list of non-empty node IDs.")
+                if len(set(peers)) != len(peers) or signer_node_id in peers:
+                    raise ValueError("Receipt peer_node_ids contains duplicates or the signing node.")
                 duration = receipt.get("duration_seconds")
                 started_at = receipt.get("started_at")
                 if isinstance(duration, bool) or not isinstance(duration, int) or duration < 86400:
                     raise ValueError("Each operator receipt must cover at least 24 hours.")
-                if isinstance(started_at, bool) or not isinstance(started_at, (int, float)) or not math.isfinite(started_at):
+                if (
+                    isinstance(started_at, bool)
+                    or not isinstance(started_at, (int, float))
+                    or not math.isfinite(started_at)
+                    or started_at <= 0
+                ):
                     raise ValueError("Receipt started_at is invalid.")
                 for key in ("run_id", "operator_id", "machine_id", "manifest_digest", "software_commit", "final_head_hash"):
                     if not isinstance(receipt.get(key), str) or not receipt[key]:
@@ -3613,6 +3622,7 @@ class NodeService:
                 errors.append({"index": index, "error": str(error)})
 
         checks: list[dict[str, object]] = [
+            {"name": "bundle_version_supported", "passed": bundle_version_valid},
             {"name": "receipt_count_at_least_three", "passed": len(validated) >= 3},
             {"name": "all_receipts_valid", "passed": not errors},
         ]
