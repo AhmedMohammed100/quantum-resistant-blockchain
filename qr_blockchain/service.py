@@ -3522,6 +3522,21 @@ class NodeService:
         }
         if any(not receipt[key] for key in ("run_id", "operator_id", "machine_id", "manifest_digest", "software_commit", "final_head_hash")):
             raise ValueError("Independent soak identity and agreement fields must be non-empty.")
+        if (
+            len(receipt["manifest_digest"]) != 64
+            or any(char not in "0123456789abcdef" for char in receipt["manifest_digest"].lower())
+        ):
+            raise ValueError("Independent soak manifest_digest must be a SHA-256 hex digest.")
+        if (
+            len(receipt["software_commit"]) not in {40, 64}
+            or any(char not in "0123456789abcdef" for char in receipt["software_commit"].lower())
+        ):
+            raise ValueError("Independent soak software_commit must be a Git commit hex ID.")
+        if (
+            len(receipt["final_head_hash"]) != 64
+            or any(char not in "0123456789abcdef" for char in receipt["final_head_hash"].lower())
+        ):
+            raise ValueError("Independent soak final_head_hash must be a SHA-256 hex digest.")
         signed_payload = dict(receipt)
         receipt_hash = hashlib.sha256(canonical_json(signed_payload).encode("utf-8")).hexdigest()
         artifact = {**receipt, "receipt_hash": receipt_hash}
@@ -3612,6 +3627,21 @@ class NodeService:
                 for key in ("run_id", "operator_id", "machine_id", "manifest_digest", "software_commit", "final_head_hash"):
                     if not isinstance(receipt.get(key), str) or not receipt[key]:
                         raise ValueError(f"Receipt {key} must be a non-empty string.")
+                if (
+                    len(receipt["manifest_digest"]) != 64
+                    or any(char not in "0123456789abcdef" for char in receipt["manifest_digest"].lower())
+                ):
+                    raise ValueError("Receipt manifest_digest is not a SHA-256 hex digest.")
+                if (
+                    len(receipt["software_commit"]) not in {40, 64}
+                    or any(char not in "0123456789abcdef" for char in receipt["software_commit"].lower())
+                ):
+                    raise ValueError("Receipt software_commit is not a Git commit hex ID.")
+                if (
+                    len(receipt["final_head_hash"]) != 64
+                    or any(char not in "0123456789abcdef" for char in receipt["final_head_hash"].lower())
+                ):
+                    raise ValueError("Receipt final_head_hash is not a SHA-256 hex digest.")
                 validated.append({
                     "receipt": receipt,
                     "node_id": signer_node_id,
