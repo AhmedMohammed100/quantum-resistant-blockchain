@@ -3470,6 +3470,201 @@ class NodeService:
         result["validation_hash"] = hashlib.sha256(canonical_json(result).encode("utf-8")).hexdigest()
         return result
 
+
+    def build_independent_soak_receipt(self, result: dict[str, object]) -> dict[str, object]:
+        """Sign one operator's declaration for an externally run network soak."""
+        required = (
+            "run_id",
+            "operator_id",
+            "machine_id",
+            "started_at",
+            "duration_seconds",
+            "manifest_digest",
+            "software_commit",
+            "final_head_hash",
+            "peer_node_ids",
+            "passed",
+        )
+        missing = [name for name in required if name not in result]
+        if missing:
+            raise ValueError(f"Independent soak receipt is missing fields: {', '.join(missing)}.")
+        peers = result["peer_node_ids"]
+        if not isinstance(peers, list) or any(not isinstance(item, str) or not item for item in peers):
+            raise ValueError("Independent soak peer_node_ids must be a list of non-empty node IDs.")
+        try:
+            started_at = float(result["started_at"])
+            duration = int(result["duration_seconds"])
+        except (TypeError, ValueError, OverflowError) as error:
+            raise ValueError("Independent soak timing fields are invalid.") from error
+        if not math.isfinite(started_at) or started_at <= 0 or duration <= 0:
+            raise ValueError("Independent soak timing fields are invalid.")
+        if not isinstance(result["passed"], bool):
+            raise ValueError("Independent soak passed must be a boolean.")
+        metrics = result.get("metrics", {})
+        if not isinstance(metrics, dict):
+            raise ValueError("Independent soak metrics must be an object.")
+        receipt = {
+            "receipt_version": 1,
+            "chain_id": self.config.chain_id,
+            "node_id": self.config.node_id,
+            "run_id": str(result["run_id"]),
+            "operator_id": str(result["operator_id"]),
+            "machine_id": str(result["machine_id"]),
+            "started_at": started_at,
+            "duration_seconds": duration,
+            "manifest_digest": str(result["manifest_digest"]),
+            "software_commit": str(result["software_commit"]),
+            "final_head_hash": str(result["final_head_hash"]),
+            "peer_node_ids": sorted(set(peers)),
+            "passed": result["passed"],
+            "failure_summary": str(result.get("failure_summary", "")),
+            "metrics": dict(metrics),
+        }
+        if any(not receipt[key] for key in ("run_id", "operator_id", "machine_id", "manifest_digest", "software_commit", "final_head_hash")):
+            raise ValueError("Independent soak identity and agreement fields must be non-empty.")
+        signed_payload = dict(receipt)
+        receipt_hash = hashlib.sha256(canonical_json(signed_payload).encode("utf-8")).hexdigest()
+        artifact = {**receipt, "receipt_hash": receipt_hash}
+        artifact["envelope"] = self.identity.sign_claims(
+            "independent_operator_soak_receipt_v1",
+            {
+                "purpose": "independent_operator_soak_receipt_v1",
+                "chain_id": self.config.chain_id,
+                "node_id": self.config.node_id,
+                "receipt_hash": receipt_hash,
+                "run_id": receipt["run_id"],
+                "operator_id": receipt["operator_id"],
+                "machine_id": receipt["machine_id"],
+                "manifest_digest": receipt["manifest_digest"],
+                "software_commit": receipt["software_commit"],
+                "final_head_hash": receipt["final_head_hash"],
+                "passed": receipt["passed"],
+            },
+        )
+        return artifact
+
+    def validate_independent_soak_bundle(self, bundle: dict[str, object]) -> dict[str, object]:
+        """Validate signed participant receipts; physical independence remains external."""
+        raw_receipts = bundle.get("receipts", [])
+        receipts = raw_receipts if isinstance(raw_receipts, list) else []
+        validated: list[dict[str, object]] = []
+        errors: list[dict[str, object]] = []
+        for index, raw in enumerate(receipts):
+            if not isinstance(raw, dict):
+                errors.append({"index": index, "error": "Receipt must be an object."})
+                continue
+            receipt = dict(raw)
+            envelope = receipt.get("envelope", {})
+            observed_hash = str(receipt.get("receipt_hash", ""))
+            signed_payload = dict(receipt)
+            signed_payload.pop("receipt_hash", None)
+            signed_payload.pop("envelope", None)
+            expected_hash = hashlib.sha256(canonical_json(signed_payload).encode("utf-8")).hexdigest()
+            try:
+                if observed_hash != expected_hash or not observed_hash:
+                    raise ValueError("Receipt hash mismatch.")
+                verified = verify_signed_envelope(
+                    dict(envelope) if isinstance(envelope, dict) else {},
+                    expected_purpose="independent_operator_soak_receipt_v1",
+                    expected_chain_id=self.config.chain_id,
+                    time_skew_seconds=None,
+                )
+                claims = dict(verified["claims"])
+                signer_node_id = str(verified["node_id"])
+                signer_address = str(verified["address"])
+                binding_fields = (
+                    ("receipt_hash", observed_hash),
+                    ("run_id", receipt.get("run_id")),
+                    ("operator_id", receipt.get("operator_id")),
+                    ("machine_id", receipt.get("machine_id")),
+                    ("manifest_digest", receipt.get("manifest_digest")),
+                    ("software_commit", receipt.get("software_commit")),
+                    ("final_head_hash", receipt.get("final_head_hash")),
+                    ("passed", receipt.get("passed")),
+                )
+                if any(claims.get(key) != value for key, value in binding_fields):
+                    raise ValueError("Receipt signed claims do not match the receipt body.")
+                if signer_node_id != receipt.get("node_id"):
+                    raise ValueError("Receipt node_id does not match its signing identity.")
+                if receipt.get("chain_id") != self.config.chain_id:
+                    raise ValueError("Receipt chain_id does not match this verifier.")
+                if receipt.get("receipt_version") != 1:
+                    raise ValueError("Unsupported independent soak receipt version.")
+                if not isinstance(receipt.get("passed"), bool):
+                    raise ValueError("Receipt passed field is not boolean.")
+                if not isinstance(receipt.get("peer_node_ids"), list):
+                    raise ValueError("Receipt peer_node_ids must be a list.")
+                duration = receipt.get("duration_seconds")
+                started_at = receipt.get("started_at")
+                if isinstance(duration, bool) or not isinstance(duration, int) or duration < 86400:
+                    raise ValueError("Each operator receipt must cover at least 24 hours.")
+                if isinstance(started_at, bool) or not isinstance(started_at, (int, float)) or not math.isfinite(started_at):
+                    raise ValueError("Receipt started_at is invalid.")
+                for key in ("run_id", "operator_id", "machine_id", "manifest_digest", "software_commit", "final_head_hash"):
+                    if not isinstance(receipt.get(key), str) or not receipt[key]:
+                        raise ValueError(f"Receipt {key} must be a non-empty string.")
+                validated.append({
+                    "receipt": receipt,
+                    "node_id": signer_node_id,
+                    "signer_address": signer_address,
+                    "end_time": float(started_at) + duration,
+                })
+            except Exception as error:
+                errors.append({"index": index, "error": str(error)})
+
+        checks: list[dict[str, object]] = [
+            {"name": "receipt_count_at_least_three", "passed": len(validated) >= 3},
+            {"name": "all_receipts_valid", "passed": not errors},
+        ]
+        fields = ("run_id", "chain_id", "manifest_digest", "software_commit", "final_head_hash")
+        for field in fields:
+            values = {item["receipt"].get(field) for item in validated}
+            checks.append({"name": f"shared_{field}", "passed": len(values) == 1 and None not in values})
+        for field, label in (
+            ("node_id", "unique_node_identities"),
+            ("signer_address", "unique_signing_addresses"),
+            ("operator_id", "unique_operator_ids"),
+            ("machine_id", "unique_machine_ids"),
+        ):
+            values = [item[field] if field in item else item["receipt"].get(field) for item in validated]
+            checks.append({"name": label, "passed": len(values) >= 3 and len(set(values)) == len(values)})
+        overlap_start = max(
+            (float(item["receipt"].get("started_at", 0)) for item in validated),
+            default=0,
+        )
+        overlap_end = min((float(item["end_time"]) for item in validated), default=0)
+        checks.append({
+            "name": "common_24_hour_observation_window",
+            "passed": overlap_end - overlap_start >= 86400,
+        })
+        checks.append({
+            "name": "all_participants_report_pass",
+            "passed": len(validated) >= 3 and all(item["receipt"].get("passed") is True for item in validated),
+        })
+        node_ids = {item["node_id"] for item in validated}
+        checks.append({
+            "name": "participants_report_complete_peer_mesh",
+            "passed": len(node_ids) >= 3 and all(
+                node_ids - {item["node_id"]} <= set(item["receipt"].get("peer_node_ids", []))
+                for item in validated
+            ),
+        })
+        result = {
+            "valid": all(bool(item["passed"]) for item in checks),
+            "checks": checks,
+            "receipt_count": len(receipts),
+            "verified_receipt_count": len(validated),
+            "rejected_receipts": errors,
+            "external_independence_confirmed": False,
+            "review_required": [
+                "Verify operator identities and organizational independence outside this cryptographic bundle.",
+                "Verify machine separation using deployment evidence; signed machine_id values are self-asserted.",
+                "Retain raw logs, node configuration, network event timeline, and artifact digests with the review.",
+            ],
+        }
+        result["validation_hash"] = hashlib.sha256(canonical_json(result).encode("utf-8")).hexdigest()
+        return result
+
     def database_durability_report(self) -> dict[str, object]:
         chain = self._sqlite_database_status(self.config.db_path)
         wallet = self._sqlite_database_status(self.config.wallet_state_db_path)
