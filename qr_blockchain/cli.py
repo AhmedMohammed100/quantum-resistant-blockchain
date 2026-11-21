@@ -47,6 +47,8 @@ from .cli_commands import (
     cmd_native_release_provenance_validate,
     cmd_soak_result_artifact,
     cmd_soak_result_validate,
+    cmd_independent_soak_receipt,
+    cmd_independent_soak_verify,
     cmd_database_recovery_manifest,
     cmd_database_recovery_validate,
     cmd_external_audit_package,
@@ -262,6 +264,22 @@ def build_parser() -> argparse.ArgumentParser:
     soak_validate.add_argument("--input", required=True)
     soak_validate.add_argument("--output", default=None)
     soak_validate.set_defaults(handler=cmd_soak_result_validate)
+
+    independent_soak_receipt = subparsers.add_parser(
+        "independent-soak-receipt",
+        help="Sign this node operator's declaration for an external network soak",
+    )
+    independent_soak_receipt.add_argument("--result-json", required=True)
+    independent_soak_receipt.add_argument("--output", default=None)
+    independent_soak_receipt.set_defaults(handler=cmd_independent_soak_receipt)
+
+    independent_soak_verify = subparsers.add_parser(
+        "independent-soak-verify",
+        help="Validate a bundle of separately signed external soak receipts",
+    )
+    independent_soak_verify.add_argument("--input", required=True)
+    independent_soak_verify.add_argument("--output", default=None)
+    independent_soak_verify.set_defaults(handler=cmd_independent_soak_verify)
 
     recovery_manifest = subparsers.add_parser(
         "database-recovery-manifest",
