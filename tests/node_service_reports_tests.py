@@ -353,3 +353,78 @@ class NodeServiceReportTests(NodeServiceTestSupport):
         self.assertEqual(report["summary"]["critical_anomaly_count"], 1)
         self.assertEqual(report["anomalies"][0]["type"], "missing_snapshot_record")
 
+    def test_independent_operator_soak_receipts_validate_distinct_signed_participants(self) -> None:
+        first, _ = self.make_service()
+        services = [
+            first,
+            self.make_additional_service("operator-b", chain_id=first.config.chain_id),
+            self.make_additional_service("operator-c", chain_id=first.config.chain_id),
+        ]
+        node_ids = [service.config.node_id for service in services]
+        receipts = []
+        for index, service in enumerate(services):
+            receipts.append(
+                service.build_independent_soak_receipt(
+                    {
+                        "run_id": "qbc-private-soak-2026-11",
+                        "operator_id": f"operator-{index}",
+                        "machine_id": f"machine-{index}",
+                        "started_at": 1_790_000_000,
+                        "duration_seconds": 86_500,
+                        "manifest_digest": "a" * 64,
+                        "software_commit": "b" * 40,
+                        "final_head_hash": "c" * 64,
+                        "peer_node_ids": [node_id for node_id in node_ids if node_id != service.config.node_id],
+                        "passed": True,
+                        "metrics": {"partition_recoveries": 2, "restarts": 1},
+                    }
+                )
+            )
+
+        report = first.validate_independent_soak_bundle({"bundle_version": 1, "receipts": receipts})
+
+        self.assertTrue(report["valid"], report)
+        self.assertFalse(report["external_independence_confirmed"])
+        self.assertEqual(report["verified_receipt_count"], 3)
+        self.assertTrue(all(check["passed"] for check in report["checks"]))
+
+    def test_independent_operator_soak_bundle_rejects_duplicate_participant_and_tampering(self) -> None:
+        first, _ = self.make_service()
+        second = self.make_additional_service("operator-b", chain_id=first.config.chain_id)
+        third = self.make_additional_service("operator-c", chain_id=first.config.chain_id)
+        services = [first, second, third]
+        node_ids = [service.config.node_id for service in services]
+        receipts = []
+        for index, service in enumerate(services):
+            receipts.append(
+                service.build_independent_soak_receipt(
+                    {
+                        "run_id": "qbc-private-soak-duplicate",
+                        "operator_id": f"operator-{index}",
+                        "machine_id": f"machine-{index}",
+                        "started_at": 1_790_000_000,
+                        "duration_seconds": 86_400,
+                        "manifest_digest": "d" * 64,
+                        "software_commit": "e" * 40,
+                        "final_head_hash": "f" * 64,
+                        "peer_node_ids": [node_id for node_id in node_ids if node_id != service.config.node_id],
+                        "passed": True,
+                    }
+                )
+            )
+        duplicate_report = first.validate_independent_soak_bundle(
+            {"bundle_version": 1, "receipts": [receipts[0], receipts[1], receipts[1]]}
+        )
+        self.assertFalse(duplicate_report["valid"])
+        self.assertFalse(
+            next(check["passed"] for check in duplicate_report["checks"] if check["name"] == "unique_node_identities")
+        )
+
+        tampered = dict(receipts[2])
+        tampered["final_head_hash"] = "0" * 64
+        tampered_report = first.validate_independent_soak_bundle(
+            {"bundle_version": 1, "receipts": [receipts[0], receipts[1], tampered]}
+        )
+        self.assertFalse(tampered_report["valid"])
+        self.assertTrue(tampered_report["rejected_receipts"])
+

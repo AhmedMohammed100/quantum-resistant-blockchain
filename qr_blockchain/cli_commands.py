@@ -329,6 +329,28 @@ def cmd_soak_result_validate(args: argparse.Namespace) -> int:
     return 0
 
 
+
+def cmd_independent_soak_receipt(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    result = json.loads(args.result_json)
+    if not isinstance(result, dict):
+        raise ValueError("--result-json must decode to an object")
+    _write_json_output(
+        service.build_independent_soak_receipt(result),
+        None if args.output is None else Path(args.output),
+    )
+    return 0
+
+
+def cmd_independent_soak_verify(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    _write_json_output(
+        service.validate_independent_soak_bundle(_read_json_file(Path(args.input))),
+        None if args.output is None else Path(args.output),
+    )
+    return 0
+
+
 def cmd_database_recovery_manifest(args: argparse.Namespace) -> int:
     service = _service_from_args(args)
     _write_json_output(service.database_recovery_manifest(), None if args.output is None else Path(args.output))
