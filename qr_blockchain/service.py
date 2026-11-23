@@ -72,9 +72,15 @@ class NodeService:
             if not config.migration_consensus_profile_hash:
                 raise ValueError("Migration consensus profile path requires a pinned profile hash.")
             try:
-                profile_payload = json.loads(config.migration_consensus_profile_path.read_text(encoding="utf-8"))
+                profile_artifact = json.loads(config.migration_consensus_profile_path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError) as error:
                 raise ValueError(f"Migration consensus profile could not be loaded: {error}") from error
+            profile_payload = profile_artifact
+            if isinstance(profile_artifact, dict) and isinstance(profile_artifact.get("profile"), dict):
+                profile_payload = profile_artifact["profile"]
+                artifact_hash = str(profile_artifact.get("profile_hash", ""))
+                if artifact_hash != config.migration_consensus_profile_hash:
+                    raise ValueError("Migration consensus profile artifact hash does not match the configured commitment.")
             self.migration_consensus_profile = verify_migration_consensus_profile(
                 profile_payload,
                 expected_chain_id=config.chain_id,
@@ -4256,8 +4262,11 @@ class NodeService:
             },
             {
                 "name": "migration_consensus_profile_pinned_for_public_migration",
-                "passed": self.migration_consensus_profile is not None and bool(self.migration_consensus_profile_hash)
-                or not production_mode,
+                "passed": (
+                    self.migration_consensus_profile is not None
+                    and bool(self.migration_consensus_profile_hash)
+                    and int(self.migration_consensus_profile["activation_height"]) <= self.store.block_count() + 1
+                ) or not production_mode,
                 "severity": "blocker",
                 "detail": self.migration_consensus_profile_hash or "not configured",
             },
