@@ -155,15 +155,19 @@ class MigrationConsensusEnforcementTests(unittest.TestCase):
                 "classical_signature": {},
             },
         )
-        with patch("qr_blockchain.service.get_classical_claim_verifier", return_value=_AcceptingClassicalVerifier()):
+        with patch("qr_blockchain.service.get_classical_claim_verifier", return_value=_AcceptingClassicalVerifier()), patch.object(
+            service,
+            "_validate_destination_attestation",
+            return_value=None,
+        ):
             with patch.object(service.store, "migration_source", side_effect=AssertionError("local DB used")):
                 service._validate_migration_claim(
                     transaction,
                     effective_height=1,
                     claimed_classical_addresses=set(),
                 )
-        with self.assertRaisesRegex(ValueError, "local admission policy"):
-            service._validate_migration_claim(transaction, effective_height=1)
+            with self.assertRaisesRegex(ValueError, "local admission policy"):
+                service._validate_migration_claim(transaction, effective_height=1)
 
     def test_block_spendability_ignores_local_dispute_and_source_overlays(self) -> None:
         service = self.make_service()
