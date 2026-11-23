@@ -32,6 +32,7 @@ from .migration import (
 )
 from .migration_consensus import (
     migration_consensus_profile_hash,
+    validate_migration_consensus_profile,
     verify_migration_consensus_profile,
 )
 from .models import Block, Transaction, TxInput, TxOutput, canonical_json
@@ -911,6 +912,68 @@ class NodeService:
                 }
                 return source, snapshot
         return None
+
+    def build_migration_consensus_profile(self, activation_height: int) -> dict[str, object]:
+        if isinstance(activation_height, bool) or not isinstance(activation_height, int) or activation_height < 1:
+            raise ValueError("Migration profile activation_height must be a positive integer.")
+        if activation_height < self.store.block_count():
+            raise ValueError("Migration profile activation height cannot precede the current chain height.")
+
+        snapshots = []
+        sources = self.store.list_migration_sources()
+        for snapshot in self.store.list_migration_snapshots():
+            entries = tuple(
+                MigrationSnapshotEntry(
+                    classical_address=str(source["classical_address"]),
+                    provider_id=str(source["provider_id"]),
+                    amount=int(source["amount"]),
+                    source_address=str(source.get("source_address", "") or source["classical_address"]),
+                    source_address_format=str(source.get("source_address_format", "")),
+                    status=str(source.get("status", "active")),
+                    status_reason=str(source.get("status_reason", "")),
+                    reviewed_at=float(source.get("reviewed_at", 0.0)),
+                )
+                for source in sources
+                if source["snapshot_ref"] == snapshot["snapshot_ref"]
+                and source["source_network"] == snapshot["source_network"]
+            )
+            bundle = MigrationSnapshotBundle(
+                source_network=str(snapshot["source_network"]),
+                snapshot_ref=str(snapshot["snapshot_ref"]),
+                generated_at=float(snapshot["generated_at"]),
+                entries=entries,
+            ).to_dict()
+            if (
+                bundle["manifest_hash"] != snapshot["manifest_hash"]
+                or bundle["entries_root"] != snapshot["entries_root"]
+                or bundle["entry_count"] != snapshot["entry_count"]
+                or bundle["total_amount"] != snapshot["total_amount"]
+            ):
+                raise ValueError(
+                    f"Local source rows do not reproduce migration snapshot {snapshot['snapshot_ref']}."
+                )
+            snapshots.append(
+                {
+                    **bundle,
+                    "status": str(snapshot["status"]),
+                    "status_reason": str(snapshot.get("status_reason", "")),
+                    "reviewed_at": float(snapshot.get("reviewed_at", 0.0)),
+                }
+            )
+
+        profile: dict[str, object] = {
+            "profile_schema": "qbc-migration-consensus-profile",
+            "profile_version": 2,
+            "chain_id": self.config.chain_id,
+            "activation_height": activation_height,
+            "policy": self._migration_consensus_policy_from_config(),
+            "snapshots": snapshots,
+        }
+        normalized = validate_migration_consensus_profile(profile)
+        return {
+            "profile": normalized,
+            "profile_hash": migration_consensus_profile_hash(normalized),
+        }
 
     def migration_policy(self, height: int | None = None) -> dict[str, object]:
         effective_height = self.store.block_count() if height is None else height
