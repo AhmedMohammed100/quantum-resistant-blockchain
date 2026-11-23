@@ -952,6 +952,7 @@ class NodeService:
                     continue
                 source = {
                     **entry,
+                    "status": entry.get("status", "active"),
                     "source_network": snapshot["source_network"],
                     "snapshot_ref": snapshot["snapshot_ref"],
                     "snapshot_hash": snapshot["manifest_hash"],
