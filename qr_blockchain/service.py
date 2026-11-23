@@ -101,6 +101,8 @@ class NodeService:
         elif config.migration_consensus_profile_hash:
             raise ValueError("Migration consensus profile hash is configured without a profile path.")
         self.store = SQLiteChainStore(config.db_path)
+        if self.migration_consensus_profile is not None:
+            self._validate_migration_profile_chain_history()
         self.wallet_state_store = SQLiteWalletStateStore(
             config.wallet_state_db_path,
             custody_config=WalletCustodyConfig(
@@ -881,6 +883,36 @@ class NodeService:
                 symbol=self.config.currency_symbol,
             ),
         }
+
+    def _validate_migration_profile_chain_history(self) -> None:
+        head_hash = self.store.best_head_hash()
+        if head_hash is None:
+            return
+        claimed: set[str] = set()
+        migration_minted = 0
+        epoch_minted: dict[int, int] = {}
+        policy = dict(self.migration_consensus_profile["policy"])
+        for block in self.store.path_to_root(head_hash):
+            for transaction in block.transactions:
+                if transaction.kind != "migration_claim":
+                    continue
+                self._validate_migration_claim(
+                    transaction,
+                    effective_height=block.index,
+                    claimed_classical_addresses=claimed,
+                )
+                classical_address = str(transaction.metadata.get("classical_address", ""))
+                claimed.add(classical_address)
+                amount = sum(output.amount for output in transaction.outputs)
+                migration_minted += amount
+                pool_cap = int(policy["migration_pool_cap"])
+                if pool_cap > 0 and migration_minted > pool_cap:
+                    raise ValueError("Existing chain migration claims exceed the pinned migration pool cap.")
+                epoch_index, _, _ = self._migration_epoch_for_height(block.index)
+                epoch_minted[epoch_index] = epoch_minted.get(epoch_index, 0) + amount
+                epoch_cap = int(policy["epoch_mint_cap"])
+                if epoch_cap > 0 and epoch_minted[epoch_index] > epoch_cap:
+                    raise ValueError("Existing chain migration claims exceed the pinned epoch mint cap.")
 
     def _migration_consensus_policy_from_config(self) -> dict[str, object]:
         return {
