@@ -1169,7 +1169,50 @@ class NodeService:
         origin_height: int,
         current_height: int,
         claim: dict[str, object] | None = None,
+        consensus_context: bool = False,
     ) -> dict[str, object]:
+        profile = self.migration_consensus_profile
+        if (
+            consensus_context
+            and profile is not None
+            and current_height >= int(profile["activation_height"])
+        ):
+            policy = dict(profile["policy"])
+            source_snapshot = self._migration_profile_source(classical_address)
+            source_status = ""
+            snapshot_status = ""
+            if source_snapshot is not None:
+                source, snapshot = source_snapshot
+                source_status = str(source["status"])
+                snapshot_status = str(snapshot["status"])
+            unlock_height = origin_height + max(
+                int(policy["escrow_blocks"]),
+                int(policy["dispute_window_blocks"]),
+            )
+            spendable = (
+                source_status == "active"
+                and snapshot_status == "active"
+                and current_height >= unlock_height
+            )
+            state = "unlocked" if spendable else (
+                "escrow_locked" if current_height < unlock_height else "registry_blocked"
+            )
+            return {
+                "classical_address": classical_address,
+                "state": state,
+                "spendable": spendable,
+                "claim": claim or {},
+                "origin_height": origin_height,
+                "current_height": current_height,
+                "unlock_height": unlock_height,
+                "escrow_blocks": int(policy["escrow_blocks"]),
+                "dispute_window_blocks": int(policy["dispute_window_blocks"]),
+                "blocking_dispute_count": 0,
+                "resolved_fraud_count": 0,
+                "source_status": source_status,
+                "snapshot_status": snapshot_status,
+            }
+
         disputes = self.store.list_migration_disputes(classical_address)
         blocking = [item for item in disputes if item["status"] in {"open", "evidence_submitted"}]
         fraud = [item for item in disputes if item["status"] == "resolved_fraud"]
@@ -5624,6 +5667,7 @@ class NodeService:
                     str(metadata.get("classical_address", "")),
                     origin_height=int(metadata.get("height", 0)),
                     current_height=current_height,
+                    consensus_context=claimed_classical_addresses is not None,
                 )
                 if not finality["spendable"]:
                     raise ValueError(f"Migration output is not spendable: {finality['state']}.")
