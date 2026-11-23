@@ -4,6 +4,12 @@ This changelog preserves the implementation history that previously lived in the
 
 ## Historical Implementation Phases
 
+### Phase 87 - Migration Consensus Profile Multi-Node Conformance
+
+- Exercise authenticated loopback synchronization between separate SQLite-backed nodes with the same pinned migration profile and assert chain/state convergence.
+- Verify that a registry commitment mismatch rejects synchronization during peer handshake before block import or peer retention.
+- Document evidence scope and limits; this does not claim public-network activation or prove migration source truth.
+
 ### Phase 86 - Repeated Real ML-DSA Multi-Node Soak
 
 - Extend the real ML-DSA three-process integration proof into a configurable repeated transfer, mining, validator synchronization, balance agreement, and independent replay soak; the scheduled and PR workflow defaults to 60 rounds and manual runs accept 10-499.
