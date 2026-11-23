@@ -6122,6 +6122,20 @@ class NodeService:
                 raise ValueError("Migration claim source is blocked in the pinned registry.")
             if snapshot["status"] != "active":
                 raise ValueError("Migration claim snapshot is blocked in the pinned registry.")
+            if not consensus_block:
+                local_source = self.store.migration_source(classical_address)
+                if local_source is not None and str(local_source.get("status", "active")) != "active":
+                    raise ValueError("Migration claim source is blocked by local admission policy.")
+                local_snapshot = next(
+                    (
+                        item
+                        for item in self.store.list_migration_snapshots()
+                        if item["snapshot_ref"] == source["snapshot_ref"]
+                    ),
+                    None,
+                )
+                if local_snapshot is not None and local_snapshot["status"] != "active":
+                    raise ValueError("Migration claim snapshot is blocked by local admission policy.")
         else:
             source = self.store.migration_source(classical_address)
             if source is None:
