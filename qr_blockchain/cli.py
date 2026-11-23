@@ -19,6 +19,7 @@ from .cli_commands import (
     cmd_protocol,
     cmd_protocol_conformance,
     cmd_migration_readiness,
+    cmd_migration_consensus_profile,
     cmd_crypto_hardening,
     cmd_crypto_strategy,
     cmd_crypto_performance,
@@ -131,6 +132,14 @@ def build_parser() -> argparse.ArgumentParser:
     migration_readiness = subparsers.add_parser("migration-readiness", help="Show migration-layer readiness gates")
     migration_readiness.add_argument("--output", default=None)
     migration_readiness.set_defaults(handler=cmd_migration_readiness)
+
+    migration_consensus_profile = subparsers.add_parser(
+        "migration-consensus-profile",
+        help="Build a canonical migration consensus profile artifact",
+    )
+    migration_consensus_profile.add_argument("--activation-height", type=int, required=True)
+    migration_consensus_profile.add_argument("--output", default=None)
+    migration_consensus_profile.set_defaults(handler=cmd_migration_consensus_profile)
 
     crypto_hardening = subparsers.add_parser("crypto-hardening", help="Show pinned PQ runtime hardening status")
     crypto_hardening.add_argument("--output", default=None)
