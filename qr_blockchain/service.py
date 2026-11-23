@@ -505,7 +505,13 @@ class NodeService:
             if session is not None:
                 return session
 
-        request_envelope = self.build_signed_envelope("peer_handshake_v2", {"target_url": normalized})
+        request_envelope = self.build_signed_envelope(
+            "peer_handshake_v2",
+            {
+                "target_url": normalized,
+                "migration_consensus_profile_hash": self.migration_consensus_profile_hash,
+            },
+        )
         response = self._fetch_peer_json(
             with_path(normalized, "/peer/handshake"),
             method="POST",
@@ -527,6 +533,8 @@ class NodeService:
             time_skew_seconds=self.config.auth_time_skew_seconds,
         )
         claims = peer_identity["claims"]
+        if str(claims.get("migration_consensus_profile_hash", "")) != self.migration_consensus_profile_hash:
+            raise ValueError("Peer migration consensus profile does not match this node.")
         if response_payload.get("node_id") != peer_identity["node_id"]:
             raise ValueError("Peer handshake response node id does not match signed identity.")
         if claims.get("target_url") != normalize_peer_url(self.config.advertised_url):
@@ -560,6 +568,9 @@ class NodeService:
             require_existing_peer=False,
             require_session=False,
         )
+        remote_profile_hash = str(peer_identity["claims"].get("migration_consensus_profile_hash", ""))
+        if remote_profile_hash != self.migration_consensus_profile_hash:
+            raise ValueError("Peer migration consensus profile does not match this node.")
         self._admit_peer(peer_identity)
         session = self._issue_peer_session(peer_identity)
         return self._build_peer_response_frame(
@@ -573,6 +584,7 @@ class NodeService:
                 "peer_handshake_ack_v2",
                 {
                     "target_url": peer_identity["advertised_url"],
+                    "migration_consensus_profile_hash": self.migration_consensus_profile_hash,
                     "session_id": session["session_id"],
                     "session_expires_at": int(session["expires_at"]),
                 },
@@ -4135,6 +4147,13 @@ class NodeService:
                 "passed": bool(mode),
                 "severity": "blocker",
                 "detail": mode,
+            },
+            {
+                "name": "migration_consensus_profile_pinned_for_public_migration",
+                "passed": self.migration_consensus_profile is not None and bool(self.migration_consensus_profile_hash)
+                or not production_mode,
+                "severity": "blocker",
+                "detail": self.migration_consensus_profile_hash or "not configured",
             },
             {
                 "name": "wallet_custody_not_plaintext",
