@@ -98,7 +98,7 @@ class MigrationConsensusProfileTests(unittest.TestCase):
             validate_migration_consensus_profile(value)
         value = profile()
         value["snapshots"][0]["entries_root"] = "NOT-A-HASH"
-        with self.assertRaisesRegex(ValueError, "manifest_hash"):
+        with self.assertRaisesRegex(ValueError, "manifest and registry"):
             validate_migration_consensus_profile(value)
 
     def test_rejects_duplicate_snapshots_and_addresses(self) -> None:
