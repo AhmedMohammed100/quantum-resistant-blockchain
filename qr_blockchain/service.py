@@ -86,6 +86,14 @@ class NodeService:
                 expected_chain_id=config.chain_id,
                 expected_profile_hash=config.migration_consensus_profile_hash,
             )
+            if (
+                config.deployment_mode.strip().lower() in {"production", "mainnet", "public-testnet", "testnet"}
+                and int(self.migration_consensus_profile["activation_height"]) != 1
+            ):
+                raise ValueError(
+                    "Public migration consensus profiles must activate at height 1; later activation requires a "
+                    "versioned chain upgrade."
+                )
             self.migration_consensus_profile_hash = migration_consensus_profile_hash(
                 self.migration_consensus_profile
             )
@@ -924,6 +932,14 @@ class NodeService:
             raise ValueError("Migration profile activation_height must be a positive integer.")
         if activation_height < self.store.block_count():
             raise ValueError("Migration profile activation height cannot precede the current chain height.")
+        if (
+            self.config.deployment_mode.strip().lower() in {"production", "mainnet", "public-testnet", "testnet"}
+            and activation_height != 1
+        ):
+            raise ValueError(
+                "Public migration consensus profiles must activate at height 1; later activation requires a "
+                "versioned chain upgrade."
+            )
 
         snapshots = []
         sources = self.store.list_migration_sources()
@@ -4265,7 +4281,7 @@ class NodeService:
                 "passed": (
                     self.migration_consensus_profile is not None
                     and bool(self.migration_consensus_profile_hash)
-                    and int(self.migration_consensus_profile["activation_height"]) <= self.store.block_count() + 1
+                    and int(self.migration_consensus_profile["activation_height"]) == 1
                 ) or not production_mode,
                 "severity": "blocker",
                 "detail": self.migration_consensus_profile_hash or "not configured",
