@@ -165,6 +165,31 @@ class MigrationConsensusEnforcementTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "local admission policy"):
             service._validate_migration_claim(transaction, effective_height=1)
 
+    def test_block_spendability_ignores_local_dispute_and_source_overlays(self) -> None:
+        service = self.make_service()
+        local_source = {
+            "status": "revoked",
+            "classical_address": "source-a",
+        }
+        with patch.object(
+            service.store,
+            "list_migration_disputes",
+            return_value=[{"status": "resolved_fraud"}],
+        ), patch.object(service.store, "migration_source", return_value=local_source):
+            consensus = service._migration_output_finality_status(
+                "source-a",
+                origin_height=1,
+                current_height=100,
+                consensus_context=True,
+            )
+            local_report = service._migration_output_finality_status(
+                "source-a",
+                origin_height=1,
+                current_height=100,
+            )
+        self.assertTrue(consensus["spendable"])
+        self.assertFalse(local_report["spendable"])
+
     def test_public_mode_rejects_migration_claims_without_pinned_profile(self) -> None:
         service = object.__new__(NodeService)
         service.config = NodeConfig(deployment_mode="public-testnet")
