@@ -101,6 +101,8 @@ def _service_from_args(args: argparse.Namespace) -> NodeService:
             migration_allowed_classical_providers=base.migration_allowed_classical_providers,
             migration_trusted_snapshot_signers=base.migration_trusted_snapshot_signers,
             migration_trusted_snapshot_nodes=base.migration_trusted_snapshot_nodes,
+            migration_consensus_profile_path=base.migration_consensus_profile_path,
+            migration_consensus_profile_hash=base.migration_consensus_profile_hash,
             preferred_signature_providers=base.preferred_signature_providers,
             allowed_signature_providers=base.allowed_signature_providers,
             preferred_signature_profile=base.preferred_signature_profile,
@@ -140,6 +142,13 @@ def cmd_protocol_conformance(args: argparse.Namespace) -> int:
 def cmd_migration_readiness(args: argparse.Namespace) -> int:
     service = _service_from_args(args)
     _write_json_output(service.migration_readiness_report(), None if args.output is None else Path(args.output))
+    return 0
+
+
+def cmd_migration_consensus_profile(args: argparse.Namespace) -> int:
+    service = _service_from_args(args)
+    artifact = service.build_migration_consensus_profile(args.activation_height)
+    _write_json_output(artifact, None if args.output is None else Path(args.output))
     return 0
 
 
