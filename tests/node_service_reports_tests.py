@@ -294,6 +294,8 @@ class NodeServiceReportTests(NodeServiceTestSupport):
             state_root_activation_height=0,
         )
 
+        service.migration_consensus_profile = {"activation_height": 1}
+        service.migration_consensus_profile_hash = "a" * 64
         report = service.production_configuration_report()
 
         self.assertEqual(report["configuration_status"], "ready")
