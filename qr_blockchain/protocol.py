@@ -69,6 +69,7 @@ def protocol_manifest(
     peer_protocol_version: str,
     currency: dict[str, object],
     migration_policy: dict[str, object],
+    migration_consensus_profile_hash: str = "",
 ) -> dict[str, object]:
     manifest: dict[str, object] = {
         "protocol_name": "Quantum-Resistant Blockchain",
@@ -122,5 +123,11 @@ def protocol_manifest(
             "QBC supply cap enforcement",
         ],
     }
+    if migration_consensus_profile_hash:
+        manifest["migration"]["consensus_profile"] = {
+            "schema": "qbc-migration-consensus-profile",
+            "version": 2,
+            "hash": migration_consensus_profile_hash,
+        }
     manifest["protocol_manifest_hash"] = hashlib.sha256(canonical_json(manifest).encode("utf-8")).hexdigest()
     return manifest

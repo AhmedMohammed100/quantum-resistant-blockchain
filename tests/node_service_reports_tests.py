@@ -15,6 +15,14 @@ class NodeServiceReportTests(NodeServiceTestSupport):
         self.assertEqual(manifest["chain_id"], service.config.chain_id)
         self.assertEqual(manifest["native_currency"]["symbol"], "QBC")
         self.assertTrue(manifest["protocol_manifest_hash"])
+        self.assertNotIn("consensus_profile", manifest["migration"])
+
+        service.migration_consensus_profile_hash = "a" * 64
+        profiled_manifest = service.protocol_manifest()
+        self.assertEqual(
+            profiled_manifest["migration"]["consensus_profile"]["hash"],
+            "a" * 64,
+        )
 
     def test_migration_readiness_report_exposes_integrity_gates(self) -> None:
         service, _ = self.make_service()
@@ -286,6 +294,8 @@ class NodeServiceReportTests(NodeServiceTestSupport):
             state_root_activation_height=0,
         )
 
+        service.migration_consensus_profile = {"activation_height": 1}
+        service.migration_consensus_profile_hash = "a" * 64
         report = service.production_configuration_report()
 
         self.assertEqual(report["configuration_status"], "ready")

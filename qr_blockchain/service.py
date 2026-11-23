@@ -30,6 +30,11 @@ from .migration import (
     get_classical_claim_verifier,
     list_classical_claim_verifier_statuses,
 )
+from .migration_consensus import (
+    migration_consensus_profile_hash,
+    validate_migration_consensus_profile,
+    verify_migration_consensus_profile,
+)
 from .models import Block, Transaction, TxInput, TxOutput, canonical_json
 from .native_crypto import native_crypto_boundary_report
 from .network import fetch_json, normalize_peer_url, with_path
@@ -61,7 +66,43 @@ MAX_PEER_NONCE_BYTES = 128
 class NodeService:
     def __init__(self, config: NodeConfig):
         self.config = config
+        self.migration_consensus_profile: dict[str, object] | None = None
+        self.migration_consensus_profile_hash = ""
+        if config.migration_consensus_profile_path is not None:
+            if not config.migration_consensus_profile_hash:
+                raise ValueError("Migration consensus profile path requires a pinned profile hash.")
+            try:
+                profile_artifact = json.loads(config.migration_consensus_profile_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as error:
+                raise ValueError(f"Migration consensus profile could not be loaded: {error}") from error
+            profile_payload = profile_artifact
+            if isinstance(profile_artifact, dict) and isinstance(profile_artifact.get("profile"), dict):
+                profile_payload = profile_artifact["profile"]
+                artifact_hash = str(profile_artifact.get("profile_hash", ""))
+                if artifact_hash != config.migration_consensus_profile_hash:
+                    raise ValueError("Migration consensus profile artifact hash does not match the configured commitment.")
+            self.migration_consensus_profile = verify_migration_consensus_profile(
+                profile_payload,
+                expected_chain_id=config.chain_id,
+                expected_profile_hash=config.migration_consensus_profile_hash,
+            )
+            if (
+                config.deployment_mode.strip().lower() in {"production", "mainnet", "public-testnet", "testnet"}
+                and int(self.migration_consensus_profile["activation_height"]) != 1
+            ):
+                raise ValueError(
+                    "Public migration consensus profiles must activate at height 1; later activation requires a "
+                    "versioned chain upgrade."
+                )
+            self.migration_consensus_profile_hash = migration_consensus_profile_hash(
+                self.migration_consensus_profile
+            )
+            self._validate_migration_consensus_policy_configuration()
+        elif config.migration_consensus_profile_hash:
+            raise ValueError("Migration consensus profile hash is configured without a profile path.")
         self.store = SQLiteChainStore(config.db_path)
+        if self.migration_consensus_profile is not None:
+            self._validate_migration_profile_chain_history()
         self.wallet_state_store = SQLiteWalletStateStore(
             config.wallet_state_db_path,
             custody_config=WalletCustodyConfig(
@@ -481,7 +522,13 @@ class NodeService:
             if session is not None:
                 return session
 
-        request_envelope = self.build_signed_envelope("peer_handshake_v2", {"target_url": normalized})
+        request_envelope = self.build_signed_envelope(
+            "peer_handshake_v2",
+            {
+                "target_url": normalized,
+                "migration_consensus_profile_hash": self.migration_consensus_profile_hash,
+            },
+        )
         response = self._fetch_peer_json(
             with_path(normalized, "/peer/handshake"),
             method="POST",
@@ -503,6 +550,8 @@ class NodeService:
             time_skew_seconds=self.config.auth_time_skew_seconds,
         )
         claims = peer_identity["claims"]
+        if str(claims.get("migration_consensus_profile_hash", "")) != self.migration_consensus_profile_hash:
+            raise ValueError("Peer migration consensus profile does not match this node.")
         if response_payload.get("node_id") != peer_identity["node_id"]:
             raise ValueError("Peer handshake response node id does not match signed identity.")
         if claims.get("target_url") != normalize_peer_url(self.config.advertised_url):
@@ -536,6 +585,9 @@ class NodeService:
             require_existing_peer=False,
             require_session=False,
         )
+        remote_profile_hash = str(peer_identity["claims"].get("migration_consensus_profile_hash", ""))
+        if remote_profile_hash != self.migration_consensus_profile_hash:
+            raise ValueError("Peer migration consensus profile does not match this node.")
         self._admit_peer(peer_identity)
         session = self._issue_peer_session(peer_identity)
         return self._build_peer_response_frame(
@@ -549,6 +601,7 @@ class NodeService:
                 "peer_handshake_ack_v2",
                 {
                     "target_url": peer_identity["advertised_url"],
+                    "migration_consensus_profile_hash": self.migration_consensus_profile_hash,
                     "session_id": session["session_id"],
                     "session_expires_at": int(session["expires_at"]),
                 },
@@ -831,6 +884,152 @@ class NodeService:
             ),
         }
 
+    def _validate_migration_profile_chain_history(self) -> None:
+        head_hash = self.store.best_head_hash()
+        if head_hash is None:
+            return
+        claimed: set[str] = set()
+        migration_minted = 0
+        epoch_minted: dict[int, int] = {}
+        policy = dict(self.migration_consensus_profile["policy"])
+        for block in self.store.path_to_root(head_hash):
+            for transaction in block.transactions:
+                if transaction.kind != "migration_claim":
+                    continue
+                self._validate_migration_claim(
+                    transaction,
+                    effective_height=block.index,
+                    claimed_classical_addresses=claimed,
+                )
+                classical_address = str(transaction.metadata.get("classical_address", ""))
+                claimed.add(classical_address)
+                amount = sum(output.amount for output in transaction.outputs)
+                migration_minted += amount
+                pool_cap = int(policy["migration_pool_cap"])
+                if pool_cap > 0 and migration_minted > pool_cap:
+                    raise ValueError("Existing chain migration claims exceed the pinned migration pool cap.")
+                epoch_index, _, _ = self._migration_epoch_for_height(block.index)
+                epoch_minted[epoch_index] = epoch_minted.get(epoch_index, 0) + amount
+                epoch_cap = int(policy["epoch_mint_cap"])
+                if epoch_cap > 0 and epoch_minted[epoch_index] > epoch_cap:
+                    raise ValueError("Existing chain migration claims exceed the pinned epoch mint cap.")
+
+    def _migration_consensus_policy_from_config(self) -> dict[str, object]:
+        return {
+            "allowed_classical_providers": sorted(self.config.migration_allowed_classical_providers),
+            "allowed_signature_providers": sorted(self.config.allowed_signature_providers),
+            "claim_end_height": self.config.migration_claim_end_height or None,
+            "claim_start_height": self.config.migration_claim_start_height,
+            "conversion_denominator": self.config.migration_conversion_ratio_denominator,
+            "conversion_numerator": self.config.migration_conversion_ratio_numerator,
+            "conversion_policy": self.config.migration_conversion_policy,
+            "dispute_window_blocks": self.config.migration_dispute_window_blocks,
+            "dual_control_end_height": self.config.migration_dual_control_end_height,
+            "dual_control_start_height": self.config.migration_dual_control_start_height,
+            "epoch_length_blocks": self.config.migration_epoch_length_blocks,
+            "epoch_mint_cap": self.config.migration_epoch_mint_cap,
+            "escrow_blocks": self.config.migration_escrow_blocks,
+            "migration_pool_cap": self.config.migration_pool_cap,
+            "per_address_cap": self.config.migration_claim_per_address_cap,
+        }
+
+    def _validate_migration_consensus_policy_configuration(self) -> None:
+        profile = self.migration_consensus_profile
+        if profile is None:
+            return
+        if self._migration_consensus_policy_from_config() != profile["policy"]:
+            raise ValueError("Local migration policy does not match the pinned consensus profile.")
+
+    def _migration_profile_source(self, classical_address: str) -> tuple[dict[str, object], dict[str, object]] | None:
+        profile = self.migration_consensus_profile
+        if profile is None:
+            return None
+        for snapshot_obj in profile["snapshots"]:
+            snapshot = dict(snapshot_obj)
+            for entry_obj in snapshot["entries"]:
+                entry = dict(entry_obj)
+                if str(entry["classical_address"]) != classical_address:
+                    continue
+                source = {
+                    **entry,
+                    "status": entry.get("status", "active"),
+                    "source_network": snapshot["source_network"],
+                    "snapshot_ref": snapshot["snapshot_ref"],
+                    "snapshot_hash": snapshot["manifest_hash"],
+                }
+                return source, snapshot
+        return None
+
+    def build_migration_consensus_profile(self, activation_height: int) -> dict[str, object]:
+        if isinstance(activation_height, bool) or not isinstance(activation_height, int) or activation_height < 1:
+            raise ValueError("Migration profile activation_height must be a positive integer.")
+        if activation_height < self.store.block_count():
+            raise ValueError("Migration profile activation height cannot precede the current chain height.")
+        if (
+            self.config.deployment_mode.strip().lower() in {"production", "mainnet", "public-testnet", "testnet"}
+            and activation_height != 1
+        ):
+            raise ValueError(
+                "Public migration consensus profiles must activate at height 1; later activation requires a "
+                "versioned chain upgrade."
+            )
+
+        snapshots = []
+        sources = self.store.list_migration_sources()
+        for snapshot in self.store.list_migration_snapshots():
+            entries = tuple(
+                MigrationSnapshotEntry(
+                    classical_address=str(source["classical_address"]),
+                    provider_id=str(source["provider_id"]),
+                    amount=int(source["amount"]),
+                    source_address=str(source.get("source_address", "") or source["classical_address"]),
+                    source_address_format=str(source.get("source_address_format", "")),
+                    status=str(source.get("status", "active")),
+                    status_reason=str(source.get("status_reason", "")),
+                    reviewed_at=float(source.get("reviewed_at", 0.0)),
+                )
+                for source in sources
+                if source["snapshot_ref"] == snapshot["snapshot_ref"]
+                and source["source_network"] == snapshot["source_network"]
+            )
+            bundle = MigrationSnapshotBundle(
+                source_network=str(snapshot["source_network"]),
+                snapshot_ref=str(snapshot["snapshot_ref"]),
+                generated_at=float(snapshot["generated_at"]),
+                entries=entries,
+            ).to_dict()
+            if (
+                bundle["manifest_hash"] != snapshot["manifest_hash"]
+                or bundle["entries_root"] != snapshot["entries_root"]
+                or bundle["entry_count"] != snapshot["entry_count"]
+                or bundle["total_amount"] != snapshot["total_amount"]
+            ):
+                raise ValueError(
+                    f"Local source rows do not reproduce migration snapshot {snapshot['snapshot_ref']}."
+                )
+            snapshots.append(
+                {
+                    **bundle,
+                    "status": str(snapshot["status"]),
+                    "status_reason": str(snapshot.get("status_reason", "")),
+                    "reviewed_at": float(snapshot.get("reviewed_at", 0.0)),
+                }
+            )
+
+        profile: dict[str, object] = {
+            "profile_schema": "qbc-migration-consensus-profile",
+            "profile_version": 2,
+            "chain_id": self.config.chain_id,
+            "activation_height": activation_height,
+            "policy": self._migration_consensus_policy_from_config(),
+            "snapshots": snapshots,
+        }
+        normalized = validate_migration_consensus_profile(profile)
+        return {
+            "profile": normalized,
+            "profile_hash": migration_consensus_profile_hash(normalized),
+        }
+
     def migration_policy(self, height: int | None = None) -> dict[str, object]:
         effective_height = self.store.block_count() if height is None else height
         dual_control_required = self._migration_dual_control_required(effective_height)
@@ -878,6 +1077,7 @@ class NodeService:
             peer_protocol_version=self.config.peer_protocol_version,
             currency=self.monetary_policy(),
             migration_policy=self.migration_policy(),
+            migration_consensus_profile_hash=self.migration_consensus_profile_hash,
         )
 
     def protocol_conformance_report(self) -> dict[str, object]:
@@ -1087,7 +1287,50 @@ class NodeService:
         origin_height: int,
         current_height: int,
         claim: dict[str, object] | None = None,
+        consensus_context: bool = False,
     ) -> dict[str, object]:
+        profile = self.migration_consensus_profile
+        if (
+            consensus_context
+            and profile is not None
+            and current_height >= int(profile["activation_height"])
+        ):
+            policy = dict(profile["policy"])
+            source_snapshot = self._migration_profile_source(classical_address)
+            source_status = ""
+            snapshot_status = ""
+            if source_snapshot is not None:
+                source, snapshot = source_snapshot
+                source_status = str(source["status"])
+                snapshot_status = str(snapshot["status"])
+            unlock_height = origin_height + max(
+                int(policy["escrow_blocks"]),
+                int(policy["dispute_window_blocks"]),
+            )
+            spendable = (
+                source_status == "active"
+                and snapshot_status == "active"
+                and current_height >= unlock_height
+            )
+            state = "unlocked" if spendable else (
+                "escrow_locked" if current_height < unlock_height else "registry_blocked"
+            )
+            return {
+                "classical_address": classical_address,
+                "state": state,
+                "spendable": spendable,
+                "claim": claim or {},
+                "origin_height": origin_height,
+                "current_height": current_height,
+                "unlock_height": unlock_height,
+                "escrow_blocks": int(policy["escrow_blocks"]),
+                "dispute_window_blocks": int(policy["dispute_window_blocks"]),
+                "blocking_dispute_count": 0,
+                "resolved_fraud_count": 0,
+                "source_status": source_status,
+                "snapshot_status": snapshot_status,
+            }
+
         disputes = self.store.list_migration_disputes(classical_address)
         blocking = [item for item in disputes if item["status"] in {"open", "evidence_submitted"}]
         fraud = [item for item in disputes if item["status"] == "resolved_fraud"]
@@ -4067,6 +4310,16 @@ class NodeService:
                 "detail": mode,
             },
             {
+                "name": "migration_consensus_profile_pinned_for_public_migration",
+                "passed": (
+                    self.migration_consensus_profile is not None
+                    and bool(self.migration_consensus_profile_hash)
+                    and int(self.migration_consensus_profile["activation_height"]) == 1
+                ) or not production_mode,
+                "severity": "blocker",
+                "detail": self.migration_consensus_profile_hash or "not configured",
+            },
+            {
                 "name": "wallet_custody_not_plaintext",
                 "passed": self.config.wallet_custody_mode != "plaintext",
                 "severity": "blocker",
@@ -5535,6 +5788,7 @@ class NodeService:
                     str(metadata.get("classical_address", "")),
                     origin_height=int(metadata.get("height", 0)),
                     current_height=current_height,
+                    consensus_context=claimed_classical_addresses is not None,
                 )
                 if not finality["spendable"]:
                     raise ValueError(f"Migration output is not spendable: {finality['state']}.")
@@ -5871,9 +6125,18 @@ class NodeService:
         effective_height: int,
         claimed_classical_addresses: set[str] | None = None,
     ) -> None:
-        # These are consensus rules, not merely mempool admission policy: an
-        # imported block must not be able to smuggle a fee-bearing or UTXO-
-        # spending migration claim past the relay path.
+        # Block validation must use only the chain-pinned profile after its
+        # activation height. Local pause switches remain admission controls.
+        consensus_block = claimed_classical_addresses is not None
+        profile = self.migration_consensus_profile
+        profile_active = profile is not None and effective_height >= int(profile["activation_height"])
+        public_mode = self.config.deployment_mode.strip().lower() in {
+            "production", "mainnet", "public-testnet", "testnet"
+        }
+        if public_mode and profile is None:
+            raise ValueError("Public migration claims require a pinned consensus profile.")
+        if public_mode and profile is not None and not profile_active:
+            raise ValueError("Public migration claims are disabled before profile activation.")
         if transaction.inputs:
             raise ValueError("Migration claim transactions cannot include UTXO inputs.")
         if transaction.fee != 0:
@@ -5889,8 +6152,8 @@ class NodeService:
 
         if not classical_address or not provider_id or not source_network:
             raise ValueError("Migration claim metadata is incomplete.")
-        if self.config.migration_emergency_pause:
-            raise ValueError("Migration claims are paused by governance policy.")
+        if self.config.migration_emergency_pause and not consensus_block:
+            raise ValueError("Migration claims are paused by local admission policy.")
         if provider_id not in self.config.migration_allowed_classical_providers:
             raise ValueError("Migration claim provider is not allowed by node policy.")
         if not self._height_in_window(
@@ -5899,19 +6162,49 @@ class NodeService:
             self.config.migration_claim_end_height,
         ):
             raise ValueError("Migration claim is outside the configured claim window.")
-        source = self.store.migration_source(classical_address)
-        if source is None:
-            raise ValueError("Migration claim source address is unknown.")
-        if str(source.get("status", "active")) != "active":
-            raise ValueError("Migration claim source is blocked by migration review policy.")
-        snapshot = next((item for item in self.store.list_migration_snapshots() if item["snapshot_ref"] == source["snapshot_ref"]), None)
-        if snapshot is not None and snapshot["status"] != "active":
-            raise ValueError("Migration claim snapshot is blocked by migration review policy.")
+        if profile_active:
+            profile_source = self._migration_profile_source(classical_address)
+            if profile_source is None:
+                raise ValueError("Migration claim source is absent from the pinned registry.")
+            source, snapshot = profile_source
+            if source["status"] != "active":
+                raise ValueError("Migration claim source is blocked in the pinned registry.")
+            if snapshot["status"] != "active":
+                raise ValueError("Migration claim snapshot is blocked in the pinned registry.")
+            if not consensus_block:
+                local_source = self.store.migration_source(classical_address)
+                if local_source is not None and str(local_source.get("status", "active")) != "active":
+                    raise ValueError("Migration claim source is blocked by local admission policy.")
+                local_snapshot = next(
+                    (
+                        item
+                        for item in self.store.list_migration_snapshots()
+                        if item["snapshot_ref"] == source["snapshot_ref"]
+                    ),
+                    None,
+                )
+                if local_snapshot is not None and local_snapshot["status"] != "active":
+                    raise ValueError("Migration claim snapshot is blocked by local admission policy.")
+        else:
+            source = self.store.migration_source(classical_address)
+            if source is None:
+                raise ValueError("Migration claim source address is unknown.")
+            if str(source.get("status", "active")) != "active":
+                raise ValueError("Migration claim source is blocked by migration review policy.")
+            snapshot = next(
+                (item for item in self.store.list_migration_snapshots() if item["snapshot_ref"] == source["snapshot_ref"]),
+                None,
+            )
+            if snapshot is not None and snapshot["status"] != "active":
+                raise ValueError("Migration claim snapshot is blocked by migration review policy.")
         if source["provider_id"] != provider_id:
             raise ValueError("Migration claim provider does not match the seeded source.")
         if source["source_network"] != source_network:
             raise ValueError("Migration claim source network does not match the seeded source.")
-        if snapshot_ref and source["snapshot_ref"] and snapshot_ref != source["snapshot_ref"]:
+        if profile_active:
+            if snapshot_ref != source["snapshot_ref"]:
+                raise ValueError("Migration claim snapshot reference does not match the pinned registry.")
+        elif snapshot_ref and source["snapshot_ref"] and snapshot_ref != source["snapshot_ref"]:
             raise ValueError("Migration claim snapshot reference does not match the seeded source.")
         if source_address and source_address != str(source.get("source_address", "")):
             raise ValueError("Migration claim source address does not match the seeded source.")
@@ -5950,7 +6243,16 @@ class NodeService:
             source_network=source_network,
         ):
             raise ValueError("Migration claim public key does not prove ownership of the seeded source address.")
-        if self._migration_dual_control_required(effective_height):
+        dual_control_required = (
+            self._height_in_window(
+                effective_height,
+                int(profile["policy"]["dual_control_start_height"]),
+                int(profile["policy"]["dual_control_end_height"]),
+            )
+            if profile_active
+            else self._migration_dual_control_required(effective_height)
+        )
+        if dual_control_required:
             self._validate_destination_attestation(transaction)
 
     def _validate_destination_attestation(self, transaction: Transaction) -> None:

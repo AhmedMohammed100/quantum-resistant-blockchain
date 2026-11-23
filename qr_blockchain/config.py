@@ -102,6 +102,8 @@ class NodeConfig:
     )
     migration_trusted_snapshot_signers: tuple[str, ...] = ()
     migration_trusted_snapshot_nodes: tuple[str, ...] = ()
+    migration_consensus_profile_path: Path | None = None
+    migration_consensus_profile_hash: str = ""
     preferred_signature_providers: tuple[str, ...] = (
         "mldsa65_oqs_v1",
         "sphincsplus_v1",
@@ -151,6 +153,7 @@ class NodeConfig:
         migration_providers_env = os.getenv("QR_CHAIN_MIGRATION_ALLOWED_CLASSICAL_PROVIDERS", "").strip()
         trusted_snapshot_signers_env = os.getenv("QR_CHAIN_MIGRATION_TRUSTED_SNAPSHOT_SIGNERS", "").strip()
         trusted_snapshot_nodes_env = os.getenv("QR_CHAIN_MIGRATION_TRUSTED_SNAPSHOT_NODES", "").strip()
+        migration_consensus_profile_path_env = os.getenv("QR_CHAIN_MIGRATION_CONSENSUS_PROFILE_PATH", "").strip()
         peer_allowlist_env = os.getenv("QR_CHAIN_PEER_ALLOWLIST", "").strip()
         peer_denylist_env = os.getenv("QR_CHAIN_PEER_DENYLIST", "").strip()
         outbound_peer_url_allowlist_env = os.getenv("QR_CHAIN_OUTBOUND_PEER_URL_ALLOWLIST", "").strip()
@@ -277,6 +280,10 @@ class NodeConfig:
                 for item in trusted_snapshot_nodes_env.split(",")
                 if item.strip()
             ),
+            migration_consensus_profile_path=(
+                Path(migration_consensus_profile_path_env) if migration_consensus_profile_path_env else None
+            ),
+            migration_consensus_profile_hash=os.getenv("QR_CHAIN_MIGRATION_CONSENSUS_PROFILE_HASH", "").strip(),
             preferred_signature_providers=tuple(
                 item.strip()
                 for item in preferred_providers_env.split(",")
