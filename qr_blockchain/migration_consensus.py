@@ -138,7 +138,7 @@ def _validate_snapshots(snapshots: object) -> list[dict[str, object]]:
     if not isinstance(snapshots, list) or not snapshots:
         raise ValueError("Migration consensus profile must pin at least one snapshot.")
     normalized: list[dict[str, object]] = []
-    seen_snapshots: set[tuple[str, str]] = set()
+    seen_snapshots: set[str] = set()
     seen_addresses: set[str] = set()
 
     for snapshot in snapshots:
@@ -222,10 +222,9 @@ def _validate_snapshots(snapshots: object) -> list[dict[str, object]]:
             or finalized["total_amount"] != snapshot["total_amount"]
         ):
             raise ValueError("Snapshot manifest and registry contents do not match.")
-        key = (source_network, snapshot_ref)
-        if key in seen_snapshots:
-            raise ValueError("Migration consensus profile contains a duplicate snapshot.")
-        seen_snapshots.add(key)
+        if snapshot_ref in seen_snapshots:
+            raise ValueError("Migration consensus profile contains a duplicate snapshot_ref.")
+        seen_snapshots.add(snapshot_ref)
 
         reviewed_at = _require_nonnegative_number(snapshot["reviewed_at"], "reviewed_at")
         normalized.append(
