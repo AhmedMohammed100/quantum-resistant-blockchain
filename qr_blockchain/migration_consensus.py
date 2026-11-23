@@ -30,6 +30,7 @@ _POLICY_FIELDS = {
     "migration_pool_cap",
     "per_address_cap",
 }
+_ENTRY_FIELDS = {"amount", "classical_address", "provider_id", "reviewed_at", "source_address", "source_address_format", "status", "status_reason"}
 _SNAPSHOT_FIELDS = {
     "entries",
     "entries_root",
@@ -163,13 +164,44 @@ def _validate_snapshots(snapshots: object) -> list[dict[str, object]]:
         entries = snapshot["entries"]
         if not isinstance(entries, list):
             raise ValueError("Snapshot entries must be a list.")
+        normalized_entries: list[dict[str, object]] = []
         for entry in entries:
             if not isinstance(entry, dict):
                 raise ValueError("Snapshot entry must be an object.")
-            address = _require_nonempty_string(entry.get("classical_address"), "classical_address")
+            unknown_fields = set(entry) - _ENTRY_FIELDS
+            required_fields = {"amount", "classical_address", "provider_id", "source_address", "source_address_format"}
+            missing_fields = required_fields - set(entry)
+            if unknown_fields or missing_fields:
+                raise ValueError(f"Snapshot entry fields mismatch (missing={sorted(missing_fields)}, unknown={sorted(unknown_fields)}).")
+            address = _require_nonempty_string(entry["classical_address"], "classical_address")
+            provider_id = _require_nonempty_string(entry["provider_id"], "provider_id")
+            source_address = _require_nonempty_string(entry["source_address"], "source_address")
+            source_address_format = entry["source_address_format"]
+            if not isinstance(source_address_format, str):
+                raise ValueError("source_address_format must be a string.")
+            amount = entry["amount"]
+            if isinstance(amount, bool) or not isinstance(amount, int) or amount <= 0:
+                raise ValueError("Snapshot entry amount must be a positive integer.")
+            status = entry.get("status", "active")
+            status_reason = entry.get("status_reason", "")
+            if status not in {"active", "quarantined", "revoked"}:
+                raise ValueError("Snapshot entry status is invalid.")
+            if not isinstance(status_reason, str):
+                raise ValueError("Snapshot entry status_reason must be a string.")
+            if status != "active" and not status_reason.strip():
+                raise ValueError("Snapshot entry status_reason is required for blocked entries.")
+            reviewed_at = _require_nonnegative_number(entry.get("reviewed_at", 0.0), "entry reviewed_at")
+            normalized_entry: dict[str, object] = {"amount": amount, "classical_address": address, "provider_id": provider_id, "source_address": source_address, "source_address_format": source_address_format}
+            if status != "active" or status_reason or reviewed_at:
+                normalized_entry["status"] = status
+                if status_reason:
+                    normalized_entry["status_reason"] = status_reason
+                if reviewed_at:
+                    normalized_entry["reviewed_at"] = reviewed_at
             if address in seen_addresses:
                 raise ValueError("Migration consensus registry contains a duplicate classical address.")
             seen_addresses.add(address)
+            normalized_entries.append(normalized_entry)
 
         bundle_payload = {
             "source_network": source_network,
@@ -179,7 +211,7 @@ def _validate_snapshots(snapshots: object) -> list[dict[str, object]]:
             "entries_root": _require_nonempty_string(snapshot["entries_root"], "entries_root"),
             "entry_count": _require_nonnegative_integer(snapshot["entry_count"], "entry_count"),
             "total_amount": _require_nonnegative_integer(snapshot["total_amount"], "total_amount"),
-            "entries": entries,
+            "entries": normalized_entries,
         }
         bundle = validate_snapshot_bundle(MigrationSnapshotBundle.from_dict(bundle_payload))
         finalized = bundle.to_dict()
