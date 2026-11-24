@@ -10,22 +10,34 @@ from pathlib import Path
 from urllib.error import HTTPError
 
 from qr_blockchain.api import BoundedThreadingHTTPServer, NodeRequestHandler
+from qr_blockchain import Wallet
 from qr_blockchain.service import NodeService
+from qr_blockchain.migration import (
+    build_demo_classical_claim_address,
+    build_demo_classical_claim_proof,
+    build_demo_classical_claim_public_key,
+    classical_claim_message_bytes,
+)
 from qr_blockchain.migration_consensus import PROFILE_SCHEMA, PROFILE_VERSION, migration_consensus_profile_hash
 from qr_blockchain.snapshot import MigrationSnapshotBundle, MigrationSnapshotEntry
 from tests.node_service_test_support import NodeServiceTestSupport
 
 
 class AuthenticatedPeerLoopbackSyncTests(NodeServiceTestSupport):
-    def _profile(self, *, amount: int = 500) -> dict[str, object]:
+    def _profile(
+        self,
+        *,
+        amount: int = 500,
+        classical_address: str = "source-a",
+    ) -> dict[str, object]:
         bundle = MigrationSnapshotBundle(
             source_network="legacy-a",
             snapshot_ref="snapshot-a",
             generated_at=100.0,
             entries=(
                 MigrationSnapshotEntry(
-                    classical_address="source-a",
-                    provider_id="provider-a",
+                    classical_address=classical_address,
+                    provider_id="classical_claim_demo_v1",
                     amount=amount,
                     source_address="source-a",
                     source_address_format="hex",
@@ -38,7 +50,7 @@ class AuthenticatedPeerLoopbackSyncTests(NodeServiceTestSupport):
             "chain_id": "qr-chain-devnet",
             "activation_height": 1,
             "policy": {
-                "allowed_classical_providers": ["provider-a"],
+                "allowed_classical_providers": ["classical_claim_demo_v1"],
                 "allowed_signature_providers": ["native_test_pq_v1"],
                 "claim_start_height": 1,
                 "claim_end_height": 1000,
@@ -69,7 +81,7 @@ class AuthenticatedPeerLoopbackSyncTests(NodeServiceTestSupport):
             default_signature_provider="native_test_pq_v1",
             preferred_signature_providers=("native_test_pq_v1",),
             allowed_signature_providers=("native_test_pq_v1",),
-            migration_allowed_classical_providers=("provider-a",),
+            migration_allowed_classical_providers=("classical_claim_demo_v1",),
             migration_claim_start_height=1,
             migration_claim_end_height=1000,
             migration_conversion_policy="ratio",
@@ -188,6 +200,64 @@ class AuthenticatedPeerLoopbackSyncTests(NodeServiceTestSupport):
         self.assertEqual(raised.exception.code, 400)
         self.assertEqual(target.chain_summary()["height"], 1)
         self.assertNotIn(source_url, target.list_peers())
+
+    def test_migration_claim_sync_uses_pinned_registry_without_target_source_rows(self) -> None:
+        root = self._new_root()
+        classical_public_key = build_demo_classical_claim_public_key("profiled-network-claim")
+        classical_address = build_demo_classical_claim_address(classical_public_key)
+        profile = self._profile(amount=50, classical_address=classical_address)
+        source, source_url = self._start_node(root, "claim-source", profile=profile)
+        target, _ = self._start_node(root, "claim-target", profile=profile)
+        source.seed_migration_source(
+            classical_address=classical_address,
+            provider_id="classical_claim_demo_v1",
+            source_network="legacy-a",
+            amount=50,
+            snapshot_ref="snapshot-a",
+            source_address=classical_address,
+            source_address_format="hex",
+        )
+        allocations = {"shared-bootstrap": 1_000}
+        source.create_genesis_block(allocations)
+        target.create_genesis_block(allocations)
+        self.assertIsNone(target.store.migration_source(classical_address))
+
+        wallet = Wallet("Profiled Migration Destination")
+        destination = wallet.create_address()
+        draft = source.build_migration_claim_draft(
+            destination_address=destination,
+            classical_address=classical_address,
+            classical_provider_id="classical_claim_demo_v1",
+            source_network="legacy-a",
+            snapshot_ref="snapshot-a",
+            classical_public_key=classical_public_key,
+        )
+        proof = build_demo_classical_claim_proof(
+            classical_public_key,
+            classical_claim_message_bytes(draft.migration_claim_payload()),
+        )
+        claim = wallet.create_migration_claim(
+            source,
+            classical_address=classical_address,
+            classical_provider_id="classical_claim_demo_v1",
+            classical_public_key=classical_public_key,
+            classical_signature=proof,
+            source_network="legacy-a",
+            snapshot_ref="snapshot-a",
+            destination_address=destination,
+            timestamp=draft.timestamp,
+        )
+        source.submit_transaction(claim)
+        source.mine_pending_transactions("loopback-miner")
+
+        imported = target.sync_with_peer(source_url)
+
+        self.assertEqual(imported, 1)
+        self.assertEqual(target.chain_summary()["best_head_hash"], source.chain_summary()["best_head_hash"])
+        self.assertEqual(target.store.migration_claim(classical_address)["destination_address"], destination)
+        self.assertEqual(target.balance_for_address(destination), 25)
+        self.assertIsNone(target.store.migration_source(classical_address))
+        self.assertEqual(target.get_block(1).state_root, source.get_block(1).state_root)
 
     def test_http_peer_sync_rejects_a_different_chain_id(self) -> None:
         root = self._new_root()
