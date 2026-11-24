@@ -21,10 +21,11 @@ python -m unittest tests.test_authenticated_peer_loopback_sync -v
 ## Evidence limits
 
 This is an integration regression, not proof of a public network rollout or
-operator independence. It verifies profile digest agreement and ordinary block
-synchronization; it does not construct and mine a migration claim through the
-network. Existing service-level tests cover profile-backed migration claim
-validation and local database overlay behavior.
+operator independence. The classical claim verifier is a deterministic test
+double, so this validates profile-backed consensus handling and block transport,
+not a production classical signature implementation or external source ownership.
+Existing service-level tests cover malformed claims and local database overlay
+behavior.
 
 The profile remains opt-in and out-of-band. Public activation still requires
 all validators to pin the reviewed profile digest and compatible policy,

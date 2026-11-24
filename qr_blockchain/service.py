@@ -6243,15 +6243,18 @@ class NodeService:
             source_network=source_network,
         ):
             raise ValueError("Migration claim public key does not prove ownership of the seeded source address.")
-        dual_control_required = (
-            self._height_in_window(
+        if profile_active:
+            dual_control_start = int(profile["policy"]["dual_control_start_height"])
+            dual_control_end = int(profile["policy"]["dual_control_end_height"])
+            dual_control_required = not (
+                dual_control_start == 0 and dual_control_end == 0
+            ) and self._height_in_window(
                 effective_height,
-                int(profile["policy"]["dual_control_start_height"]),
-                int(profile["policy"]["dual_control_end_height"]),
+                dual_control_start,
+                dual_control_end,
             )
-            if profile_active
-            else self._migration_dual_control_required(effective_height)
-        )
+        else:
+            dual_control_required = self._migration_dual_control_required(effective_height)
         if dual_control_required:
             self._validate_destination_attestation(transaction)
 

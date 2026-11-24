@@ -10,10 +10,22 @@ from pathlib import Path
 from urllib.error import HTTPError
 
 from qr_blockchain.api import BoundedThreadingHTTPServer, NodeRequestHandler
+from qr_blockchain.models import Transaction, TxOutput
 from qr_blockchain.service import NodeService
 from qr_blockchain.migration_consensus import PROFILE_SCHEMA, PROFILE_VERSION, migration_consensus_profile_hash
 from qr_blockchain.snapshot import MigrationSnapshotBundle, MigrationSnapshotEntry
 from tests.node_service_test_support import NodeServiceTestSupport
+
+
+class _AcceptingClassicalVerifier:
+    def address_from_public_key(self, _public_key: object) -> str:
+        return "source-a"
+
+    def verify_claim(self, _message: bytes, _proof: object, _public_key: object) -> bool:
+        return True
+
+    def verify_source_address_ownership(self, _public_key: object, **_kwargs: object) -> bool:
+        return True
 
 
 class AuthenticatedPeerLoopbackSyncTests(NodeServiceTestSupport):
@@ -61,6 +73,26 @@ class AuthenticatedPeerLoopbackSyncTests(NodeServiceTestSupport):
                 "reviewed_at": 0.0,
             }],
         }
+
+    def _migration_claim_transaction(self) -> Transaction:
+        transaction = Transaction(
+            inputs=[],
+            outputs=[TxOutput(recipient="pq-migration-destination", amount=250)],
+            kind="migration_claim",
+            chain_id="qr-chain-devnet",
+            metadata={
+                "classical_address": "source-a",
+                "classical_provider_id": "provider-a",
+                "source_network": "legacy-a",
+                "snapshot_ref": "snapshot-a",
+                "source_address": "source-a",
+                "source_address_format": "hex",
+                "classical_public_key": {},
+                "classical_signature": {},
+            },
+        )
+        transaction.finalize()
+        return transaction
 
     def _profiled_config(self, config, profile: dict[str, object], profile_path: Path):
         profile_path.write_text(json.dumps(profile), encoding="utf-8")
@@ -163,11 +195,17 @@ class AuthenticatedPeerLoopbackSyncTests(NodeServiceTestSupport):
             target.protocol_manifest()["migration"]["consensus_profile"]["hash"],
         )
 
-        source.mine_pending_transactions("loopback-miner")
-        imported = target.sync_with_peer(source_url)
+        claim = self._migration_claim_transaction()
+        with patch("qr_blockchain.service.get_classical_claim_verifier", return_value=_AcceptingClassicalVerifier()):
+            source.submit_transaction(claim)
+            source.mine_pending_transactions("loopback-miner")
+            imported = target.sync_with_peer(source_url)
+
         self.assertEqual(imported, 1)
         self.assertEqual(target.chain_summary()["best_head_hash"], source.chain_summary()["best_head_hash"])
         self.assertEqual(target.get_block(1).state_root, source.get_block(1).state_root)
+        self.assertEqual(target.balance_for_address("pq-migration-destination"), 250)
+        self.assertEqual(source.balance_for_address("pq-migration-destination"), 250)
 
     def test_profiled_loopback_nodes_reject_a_mismatched_profile_before_import(self) -> None:
         root = self._new_root()
@@ -180,10 +218,13 @@ class AuthenticatedPeerLoopbackSyncTests(NodeServiceTestSupport):
             source.protocol_manifest()["migration"]["consensus_profile"]["hash"],
             target.protocol_manifest()["migration"]["consensus_profile"]["hash"],
         )
-        source.mine_pending_transactions("loopback-miner")
+        claim = self._migration_claim_transaction()
+        with patch("qr_blockchain.service.get_classical_claim_verifier", return_value=_AcceptingClassicalVerifier()):
+            source.submit_transaction(claim)
+            source.mine_pending_transactions("loopback-miner")
 
-        with self.assertRaises(HTTPError) as raised:
-            target.sync_with_peer(source_url)
+            with self.assertRaises(HTTPError) as raised:
+                target.sync_with_peer(source_url)
 
         self.assertEqual(raised.exception.code, 400)
         self.assertEqual(target.chain_summary()["height"], 1)
