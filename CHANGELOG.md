@@ -4,6 +4,12 @@ This changelog preserves the implementation history that previously lived in the
 
 ## Historical Implementation Phases
 
+### Phase 88 - Migration Claim Loopback Conformance
+
+- Extend the matching-profile authenticated loopback test to submit and mine a deterministic test migration claim, sync it to a second independently stored node, and compare the imported block, state root, and destination balance.
+- Extend the profile-mismatch case to reject the migration claim block during handshake before import.
+- Explicitly scope the test verifier as a test double; this does not validate a production classical signature provider or source-data truth.
+
 ### Phase 87 - Migration Consensus Profile Multi-Node Conformance
 
 - Exercise authenticated loopback synchronization between separate SQLite-backed nodes with the same pinned migration profile and assert chain/state convergence.
