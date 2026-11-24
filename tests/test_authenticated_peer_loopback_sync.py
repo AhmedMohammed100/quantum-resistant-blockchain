@@ -39,7 +39,7 @@ class AuthenticatedPeerLoopbackSyncTests(NodeServiceTestSupport):
                     classical_address=classical_address,
                     provider_id="classical_claim_demo_v1",
                     amount=amount,
-                    source_address="source-a",
+                    source_address=classical_address,
                     source_address_format="hex",
                 ),
             ),
@@ -222,7 +222,7 @@ class AuthenticatedPeerLoopbackSyncTests(NodeServiceTestSupport):
         target.create_genesis_block(allocations)
         self.assertIsNone(target.store.migration_source(classical_address))
 
-        wallet = Wallet("Profiled Migration Destination")
+        wallet = Wallet("Profiled Migration Destination", signature_provider="native_test_pq_v1")
         destination = wallet.create_address()
         draft = source.build_migration_claim_draft(
             destination_address=destination,
