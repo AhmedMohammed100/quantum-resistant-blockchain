@@ -2,32 +2,34 @@
 
 ## Scope
 
-This integration test exercises profile digest agreement through the authenticated
-loopback HTTP peer path, using separate SQLite stores and node identities.
+Authenticated loopback integration tests exercise profile agreement and
+migration-claim validation across nodes with separate SQLite stores and node
+identities.
 
-- Two nodes with the same chain ID, genesis allocation, migration profile, and
-  profile digest establish peer synchronization and converge on the same block
-  hash and state root.
-- A node with a different registry commitment advertises a different digest;
-  synchronization rejects the peer during handshake before importing a block
-  or retaining the peer.
+- Nodes with matching chain IDs, genesis allocations, profile data, and pinned
+  profile digests submit, mine, and synchronize a deterministic test migration
+  claim. They converge on the block hash, state root, and destination balance.
+- Nodes with different registry commitments reject the peer during handshake
+  before importing the migration block or retaining the peer.
+- Service-level candidate-block tests reject a source already claimed on the
+  candidate branch and reject outputs that do not match the profile's
+  conversion amount.
 
-Run it with:
+Run the focused suites with:
 
 ```bash
-python -m unittest tests.test_authenticated_peer_loopback_sync -v
+python -m unittest tests.test_authenticated_peer_loopback_sync tests.test_migration_consensus_enforcement -v
 ```
 
 ## Evidence limits
 
-This is an integration regression, not proof of a public network rollout or
-operator independence. The classical claim verifier is a deterministic test
-double, so this validates profile-backed consensus handling and block transport,
-not a production classical signature implementation or external source ownership.
-Existing service-level tests cover malformed claims and local database overlay
-behavior.
+The classical claim verifier is a deterministic test double. These regressions
+exercise profile-backed consensus handling, duplicate-claim protection, amount
+checks, and block transport; they do not validate a production classical
+signature implementation or establish external source ownership.
 
-The profile remains opt-in and out-of-band. Public activation still requires
-all validators to pin the reviewed profile digest and compatible policy,
-verification providers, and software. This test does not establish source-data
-truth, external cryptographic review, or production readiness.
+The profile remains opt-in and out-of-band. Public activation requires all
+validators to pin the reviewed profile digest and compatible policy,
+verification providers, and software. These tests do not establish source-data
+truth, external cryptographic review, operator independence, or production
+readiness.

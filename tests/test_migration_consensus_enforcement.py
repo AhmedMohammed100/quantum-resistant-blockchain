@@ -113,6 +113,52 @@ class MigrationConsensusEnforcementTests(unittest.TestCase):
             )
         )
 
+    def _claim_transaction(self, *, amount: int = 250) -> Transaction:
+        transaction = Transaction(
+            inputs=[],
+            outputs=[TxOutput(recipient="pq-destination", amount=amount)],
+            kind="migration_claim",
+            chain_id="qbc-testnet",
+            metadata={
+                "classical_address": "source-a",
+                "classical_provider_id": "provider-a",
+                "source_network": "legacy-a",
+                "snapshot_ref": "snapshot-a",
+                "source_address": "source-a",
+                "source_address_format": "hex",
+                "classical_public_key": {},
+                "classical_signature": {},
+            },
+        )
+        transaction.finalize()
+        return transaction
+
+    def test_candidate_block_rejects_replayed_profile_source_claim(self) -> None:
+        service = self.make_service()
+        transaction = self._claim_transaction()
+        branch_claims = {"source-a"}
+
+        with self.assertRaisesRegex(ValueError, "already been claimed on this branch"):
+            service._validate_migration_claim(
+                transaction,
+                effective_height=1,
+                claimed_classical_addresses=branch_claims,
+            )
+
+        self.assertEqual(branch_claims, {"source-a"})
+
+    def test_candidate_block_rejects_wrong_profile_conversion_amount(self) -> None:
+        service = self.make_service()
+        transaction = self._claim_transaction(amount=251)
+
+        with patch("qr_blockchain.service.get_classical_claim_verifier", return_value=_AcceptingClassicalVerifier()):
+            with self.assertRaisesRegex(ValueError, "amount does not match"):
+                service._validate_migration_claim(
+                    transaction,
+                    effective_height=1,
+                    claimed_classical_addresses=set(),
+                )
+
     def test_loaded_profile_is_the_source_of_consensus_registry_data(self) -> None:
         service = self.make_service()
         source, snapshot = service._migration_profile_source("source-a") or ({}, {})

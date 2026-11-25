@@ -4,6 +4,12 @@ This changelog preserves the implementation history that previously lived in the
 
 ## Historical Implementation Phases
 
+### Phase 89 - Adversarial Migration Profile Claims
+
+- Add activated candidate-block regressions proving a source already claimed on the candidate branch is rejected without mutating the branch claim set.
+- Reject migration outputs that differ from the amount derived from the pinned profile conversion policy.
+- Reconcile the multi-node conformance document with the merged migration-claim integration evidence and state the deterministic verifier's limits.
+
 ### Phase 88 - Migration Claim Loopback Conformance
 
 - Extend the matching-profile authenticated loopback test to submit and mine a deterministic test migration claim, sync it to a second independently stored node, and compare the imported block, state root, and destination balance.
