@@ -14,6 +14,8 @@ identities.
 - Service-level candidate-block tests reject a source already claimed on the
   candidate branch and reject outputs that do not match the profile's
   conversion amount.
+- Restart tests replay a mined migration claim against the pinned registry and
+  reject startup when a replacement registry would imply a different amount.
 
 Run the focused suites with:
 
