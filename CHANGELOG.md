@@ -4,6 +4,12 @@ This changelog preserves the implementation history that previously lived in the
 
 ## Historical Implementation Phases
 
+### Phase 90 - Migration Profile Restart Replay
+
+- Reopen a node database containing a mined profile-backed migration claim and verify startup replays the claim against the pinned registry.
+- Replace the registry with a valid, differently hashed profile that changes the derived mint amount and verify startup rejects the persisted chain.
+- Document the restart-recovery evidence and its deterministic verifier limits.
+
 ### Phase 89 - Adversarial Migration Profile Claims
 
 - Add activated candidate-block regressions proving a source already claimed on the candidate branch is rejected without mutating the branch claim set.
