@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import shutil
 import unittest
+from dataclasses import replace
 from unittest.mock import patch
 
 from qr_blockchain import NodeConfig, NodeService
@@ -16,7 +17,7 @@ from qr_blockchain.models import Transaction, TxOutput
 from qr_blockchain.snapshot import MigrationSnapshotBundle, MigrationSnapshotEntry
 
 
-def profile_payload() -> dict[str, object]:
+def profile_payload(*, source_amount: int = 500) -> dict[str, object]:
     bundle = MigrationSnapshotBundle(
         source_network="legacy-a",
         snapshot_ref="snapshot-a",
@@ -25,7 +26,7 @@ def profile_payload() -> dict[str, object]:
             MigrationSnapshotEntry(
                 classical_address="source-a",
                 provider_id="provider-a",
-                amount=500,
+                amount=source_amount,
                 source_address="source-a",
                 source_address_format="hex",
             ),
@@ -132,6 +133,39 @@ class MigrationConsensusEnforcementTests(unittest.TestCase):
         )
         transaction.finalize()
         return transaction
+
+    def _service_with_mined_claim(self) -> NodeService:
+        service = self.make_service()
+        service.create_genesis_block({"bootstrap": 1_000})
+        with patch("qr_blockchain.service.get_classical_claim_verifier", return_value=_AcceptingClassicalVerifier()):
+            service.submit_transaction(self._claim_transaction())
+            service.mine_pending_transactions("test-miner")
+        return service
+
+    def test_startup_replays_pinned_migration_claim_after_restart(self) -> None:
+        service = self._service_with_mined_claim()
+        expected_head = service.chain_summary()["best_head_hash"]
+
+        with patch("qr_blockchain.service.get_classical_claim_verifier", return_value=_AcceptingClassicalVerifier()):
+            restarted = NodeService(service.config)
+
+        self.assertEqual(restarted.chain_summary()["best_head_hash"], expected_head)
+        self.assertEqual(restarted.balance_for_address("pq-destination"), 250)
+
+    def test_startup_rejects_history_if_pinned_registry_changes_mint_amount(self) -> None:
+        service = self._service_with_mined_claim()
+        changed_profile = profile_payload(source_amount=502)
+        profile_path = service.config.migration_consensus_profile_path
+        self.assertIsNotNone(profile_path)
+        Path(profile_path).write_text(json.dumps(changed_profile), encoding="utf-8")
+        changed_config = replace(
+            service.config,
+            migration_consensus_profile_hash=migration_consensus_profile_hash(changed_profile),
+        )
+
+        with patch("qr_blockchain.service.get_classical_claim_verifier", return_value=_AcceptingClassicalVerifier()):
+            with self.assertRaisesRegex(ValueError, "amount does not match"):
+                NodeService(changed_config)
 
     def test_candidate_block_rejects_replayed_profile_source_claim(self) -> None:
         service = self.make_service()
