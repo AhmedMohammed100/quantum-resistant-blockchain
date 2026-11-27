@@ -16,6 +16,8 @@ identities.
   conversion amount.
 - Restart tests replay a mined migration claim against the pinned registry and
   reject startup when a replacement registry would imply a different amount.
+- A competing longer branch removes an abandoned migration claim from canonical
+  state; the same transaction can then be claimed on the new branch.
 
 Run the focused suites with:
 

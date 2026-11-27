@@ -4,6 +4,12 @@ This changelog preserves the implementation history that previously lived in the
 
 ## Historical Implementation Phases
 
+### Phase 91 - Migration Claim Reorganization Recovery
+
+- Extend profile-backed multi-node tests with a longer competing branch that excludes a previously mined migration claim.
+- Verify canonical claim indexing and destination balance are rebuilt after reorganization.
+- Re-submit or re-mine the abandoned claim on the new branch, confirming branch-aware replay protection releases it only after the original claim leaves canonical history.
+
 ### Phase 90 - Migration Profile Restart Replay
 
 - Reopen a node database containing a mined profile-backed migration claim and verify startup replays the claim against the pinned registry.

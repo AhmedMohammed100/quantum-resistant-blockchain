@@ -207,6 +207,40 @@ class AuthenticatedPeerLoopbackSyncTests(NodeServiceTestSupport):
         self.assertEqual(target.balance_for_address("pq-migration-destination"), 250)
         self.assertEqual(source.balance_for_address("pq-migration-destination"), 250)
 
+    def test_reorg_releases_profiled_migration_claim_for_reclaim(self) -> None:
+        root = self._new_root()
+        profile = self._profile()
+        claimant, _ = self._start_node(root, "claimant", profile=profile)
+        competing, _ = self._start_node(root, "competing", profile=profile)
+        allocations = {"shared-bootstrap": 1_000}
+        claimant.create_genesis_block(allocations)
+        competing.create_genesis_block(allocations)
+        claim = self._migration_claim_transaction()
+
+        with patch("qr_blockchain.service.get_classical_claim_verifier", return_value=_AcceptingClassicalVerifier()):
+            claimant.submit_transaction(claim)
+            claim_block = claimant.mine_pending_transactions("claim-miner")
+            self.assertIn(claim.tx_id, [tx.tx_id for tx in claim_block.transactions])
+            self.assertIsNotNone(claimant.store.migration_claim("source-a"))
+
+            competing.mine_pending_transactions("competing-miner")
+            competing_tip = competing.mine_pending_transactions("competing-miner")
+            claimant.import_block(competing.get_block(1))
+            claimant.import_block(competing_tip)
+
+            self.assertEqual(claimant.chain_summary()["best_head_hash"], competing_tip.block_hash)
+            self.assertIsNone(claimant.store.migration_claim("source-a"))
+            self.assertEqual(claimant.balance_for_address("pq-migration-destination"), 0)
+
+            pending_ids = {tx.tx_id for tx in claimant.store.pending_transactions()}
+            if claim.tx_id not in pending_ids:
+                claimant.submit_transaction(claim)
+            reclaimed_block = claimant.mine_pending_transactions("reclaim-miner")
+
+        self.assertIn(claim.tx_id, [tx.tx_id for tx in reclaimed_block.transactions])
+        self.assertIsNotNone(claimant.store.migration_claim("source-a"))
+        self.assertEqual(claimant.balance_for_address("pq-migration-destination"), 250)
+
     def test_profiled_loopback_nodes_reject_a_mismatched_profile_before_import(self) -> None:
         root = self._new_root()
         source, source_url = self._start_node(root, "profile-source", profile=self._profile(amount=500))
