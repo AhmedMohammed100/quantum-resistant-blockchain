@@ -822,6 +822,7 @@ python -W error::ResourceWarning -m unittest discover -s tests -v
 
 - Integrate audited, standards-aligned PQ backends for XMSS, LMS/HSS, SPHINCS+, and NIST-standard signature families where appropriate.
 - Build reproducible Bitcoin/Ethereum source extraction pipelines for migration snapshots.
+- Independently verify saved migration artifacts with `scripts/verify_migration_artifact.py`; network-specific extraction and source-chain truth checks remain open.
 - Complete production deployment review for encrypted peer transport, rate limiting, allowlists, and peer scoring.
 - Define validator/miner participation, governance, and reward distribution rules for QBC.
 - Expand the process-isolated network soak with longer runs, repeated partitions and restarts, and larger real-PQ verification batches.
@@ -835,5 +836,6 @@ python -W error::ResourceWarning -m unittest discover -s tests -v
 ## Changelog
 
 Historical implementation phases were moved to [CHANGELOG.md](CHANGELOG.md).
+
 
 

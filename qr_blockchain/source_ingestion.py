@@ -368,6 +368,29 @@ def validate_ingestion_manifest(normalized_payload: dict[str, object]) -> dict[s
         if isinstance(normalized_payload.get("source_provenance"), dict)
         else {}
     )
+    record_projection = [
+        {
+            "classical_address": item.get("classical_address"),
+            "provider_id": item.get("provider_id"),
+            "amount": item.get("amount"),
+            "source_address": item.get("source_address", item.get("classical_address", "")),
+            "source_address_format": item.get("source_address_format", ""),
+        }
+        for item in normalized_records
+    ]
+    snapshot_projection = [
+        {
+            "classical_address": entry.classical_address,
+            "provider_id": entry.provider_id,
+            "amount": entry.amount,
+            "source_address": entry.source_address or entry.classical_address,
+            "source_address_format": entry.source_address_format,
+        }
+        for entry in bundle.normalized_entries()
+    ]
+    records_match_snapshot = sorted(record_projection, key=canonical_json) == sorted(
+        snapshot_projection, key=canonical_json
+    )
     manifest_without_hash = dict(manifest)
     observed_manifest_hash = str(manifest_without_hash.pop("ingestion_manifest_hash", ""))
     recomputed_manifest_hash = hashlib.sha256(canonical_json(manifest_without_hash).encode("utf-8")).hexdigest()
@@ -441,6 +464,10 @@ def validate_ingestion_manifest(normalized_payload: dict[str, object]) -> dict[s
         {
             "name": "normalized_records_present",
             "passed": bool(normalized_records),
+        },
+        {
+            "name": "normalized_records_match_snapshot_entries",
+            "passed": records_match_snapshot,
         },
         {
             "name": "records_root_matches_normalized_records",
@@ -591,3 +618,4 @@ def validate_ingestion_approval(normalized_payload: dict[str, object], approval:
         "accepted": all(bool(item["passed"]) for item in checks),
         "checks": checks,
     }
+
