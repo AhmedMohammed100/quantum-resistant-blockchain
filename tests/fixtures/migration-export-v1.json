@@ -1,0 +1,78 @@
+{
+  "bundle": {
+    "entries": [
+      {
+        "amount": 12345,
+        "classical_address": "d4370eaa6caaa3b9b5d3db0817de0320a800ab9c7604265b60158aaa3763209b",
+        "provider_id": "classical_claim_demo_v1",
+        "source_address": "551ebcc397ca84390e53746bbf4c3b1a30c31f3ed35065dc724c40a8bbb89fc4",
+        "source_address_format": "demo_claim_address"
+      }
+    ],
+    "entries_root": "83d97ebe1824768b0cc35216b195ea80e586f812798fcc0e2ef99b3d37ad992b",
+    "entry_count": 1,
+    "generated_at": 1720000000.0,
+    "manifest_hash": "328e6491eeb1303b835c934277ba5efb3d7bec6c84a52b1d682f61e2e58d42e9",
+    "snapshot_ref": "golden-export-v1",
+    "source_network": "legacy-demo-ledger",
+    "total_amount": 12345
+  },
+  "ingestion_manifest": {
+    "generated_at": 1720000000.0,
+    "ingestion_manifest_hash": "42b80590b1198efe21cf97a5e64fc774319b773737c33039a2237123355a05d9",
+    "ingestion_version": 1,
+    "provider_id": "classical_claim_demo_v1",
+    "record_count": 1,
+    "records_root": "d0727ef15e31fcaee8192d7ba7c6c29eb838e9ea8da1cbf54260e996e6cf5a70",
+    "snapshot_entries_root": "83d97ebe1824768b0cc35216b195ea80e586f812798fcc0e2ef99b3d37ad992b",
+    "snapshot_manifest_hash": "328e6491eeb1303b835c934277ba5efb3d7bec6c84a52b1d682f61e2e58d42e9",
+    "snapshot_ref": "golden-export-v1",
+    "source_export_hash": "c5e1f6eaf9b5e606042abd37820cf0fec751fb56a955b2f901ad527cc1de321c",
+    "source_network": "legacy-demo-ledger",
+    "source_provenance_hash": "f223786fabb1d1fe43c62c914ce04d94ca2640e26e77084c8795ff6e1b945548",
+    "total_amount": 12345,
+    "warnings": [
+      {
+        "classical_address": "d4370eaa6caaa3b9b5d3db0817de0320a800ab9c7604265b60158aaa3763209b",
+        "kind": "missing_public_key",
+        "message": "Record relies on a precomputed canonical classical_address.",
+        "source_address": "551ebcc397ca84390e53746bbf4c3b1a30c31f3ed35065dc724c40a8bbb89fc4"
+      }
+    ]
+  },
+  "normalized_records": [
+    {
+      "amount": 12345,
+      "classical_address": "d4370eaa6caaa3b9b5d3db0817de0320a800ab9c7604265b60158aaa3763209b",
+      "provider_id": "classical_claim_demo_v1",
+      "source_address": "551ebcc397ca84390e53746bbf4c3b1a30c31f3ed35065dc724c40a8bbb89fc4",
+      "source_address_format": "demo_claim_address",
+      "source_height": 99,
+      "source_network": "legacy-demo-ledger",
+      "source_output_index": 2,
+      "source_tx_id": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
+    }
+  ],
+  "source_provenance": {
+    "extractor": {
+      "code_commit": "0123456789abcdef0123456789abcdef01234567",
+      "command": "fixture export",
+      "name": "fixture-exporter",
+      "version": "1.0.0"
+    },
+    "provenance_version": 1,
+    "provider_id": "classical_claim_demo_v1",
+    "record_count": 1,
+    "records_root": "d0727ef15e31fcaee8192d7ba7c6c29eb838e9ea8da1cbf54260e996e6cf5a70",
+    "snapshot_ref": "golden-export-v1",
+    "source_anchor": {
+      "block_hash": "abababababababababababababababababababababababababababababababab",
+      "exported_at": "2024-07-03T09:46:40Z",
+      "height": 100
+    },
+    "source_export_hash": "c5e1f6eaf9b5e606042abd37820cf0fec751fb56a955b2f901ad527cc1de321c",
+    "source_network": "legacy-demo-ledger",
+    "source_provenance_hash": "f223786fabb1d1fe43c62c914ce04d94ca2640e26e77084c8795ff6e1b945548"
+  }
+}
+
