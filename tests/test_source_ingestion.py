@@ -196,6 +196,17 @@ class SourceExportIngestionTests(unittest.TestCase):
             )["passed"]
         )
 
+        mismatched_projection = json.loads(json.dumps(normalized))
+        mismatched_projection["normalized_records"][0]["amount"] += 1
+        projection_status = service.source_ingestion_manifest_status(mismatched_projection)
+        self.assertFalse(
+            next(
+                check
+                for check in projection_status["checks"]
+                if check["name"] == "normalized_records_match_snapshot_entries"
+            )["passed"]
+        )
+
     def test_batch_normalizes_multiple_source_exports(self) -> None:
         service = self.make_service()
         first_key = self.secp_public_key(1)
@@ -496,3 +507,4 @@ class SourceExportIngestionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
